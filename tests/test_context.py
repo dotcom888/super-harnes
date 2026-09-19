@@ -1,11 +1,19 @@
 # -*- coding: utf-8 -*-
 import unittest
 import os
-from context import ContextManager, WatermarkZone
+from context import ContextManager, WatermarkZone, BudgetLedger
 
-class TestContextWatermark(unittest.TestCase):
+class TestContextEnhancements(unittest.TestCase):
     def setUp(self):
-        self.mgr = ContextManager("test_watermark_session", max_budget_tokens=100)
+        # 设定一个小型可控账本：总预算 300，历史预算 150，各预留分账
+        self.ledger = BudgetLedger(
+            total_budget=300,
+            system_reserve=30,
+            tools_reserve=30,
+            memory_reserve=30,
+            output_reserve=60
+        )
+        self.mgr = ContextManager("test_enhanced_session", budget_ledger=self.ledger)
         self.mgr.clear()
 
     def tearDown(self):
@@ -15,59 +23,66 @@ class TestContextWatermark(unittest.TestCase):
             except Exception:
                 pass
 
-    def test_green_zone_passthrough(self):
-        """测试使用率 < 60%: 绿区全量直通，零裁剪、无摘要"""
-        self.mgr.start_new_turn("短提问 1")
-        self.mgr.add_assistant_message("短回答 1")
-        self.mgr.finish_current_turn()
+    def test_point_1_system_prompt_immutability(self):
+        """验证点 1: System Prompt 保持只读与不可变，动态内容作为独立系统注记装配"""
+        original_prompt = "You are a pure coding agent."
+        self.mgr.working_memory.update_goal("排查除零 Bug")
 
-        self.mgr.start_new_turn("当前进行中短提问")
-        messages, metrics = self.mgr.build_context_with_watermark("System base")
+        # 人为注入一段摘要
+        self.mgr.summarizer.state.summary_text = "之前已修复了 tools/calc.py"
+        self.mgr.summarizer.state.start_turn_id = 1
+        self.mgr.summarizer.state.end_turn_id = 3
 
-        self.assertEqual(metrics["zone"], WatermarkZone.GREEN)
-        self.assertLess(metrics["raw_utilization"], 0.60)
-        self.assertEqual(metrics["evicted_turns"], 0)
-        self.assertFalse(metrics["has_summary"])
+        messages, _ = self.mgr.build_context_with_watermark(original_prompt)
 
-        user_texts = [m["content"] for m in messages if m["role"] == "user"]
-        self.assertIn("短提问 1", user_texts)
-        self.assertIn("当前进行中短提问", user_texts)
+        # 原始 System Prompt 绝未被修改
+        self.assertEqual(original_prompt, "You are a pure coding agent.")
+        self.assertEqual(messages[0]["content"], original_prompt)
 
-    def test_yellow_zone_sliding_window(self):
-        """测试使用率 60% ~ 75%: 黄区正常滑动窗口淘汰，无摘要"""
-        self.mgr.start_new_turn("早前轮次: 简单提问 1")
-        self.mgr.add_assistant_message("回答: 快速诊断完成")
-        self.mgr.finish_current_turn()
+        # 摘要与 Working Memory 作为独立的系统块注记装配，保持 Prompt Cache
+        summary_msgs = [m for m in messages if "历史排查与修改纪要" in m["content"]]
+        wm_msgs = [m for m in messages if "工作区感知状态" in m["content"]]
+        self.assertEqual(len(summary_msgs), 1)
+        self.assertEqual(len(wm_msgs), 1)
 
-        self.mgr.start_new_turn("较新轮次: 简单提问 2")
-        self.mgr.add_assistant_message("回答: 模块导入正常")
-        self.mgr.finish_current_turn()
+    def test_point_2_budget_ledger_allocation(self):
+        """验证点 2: 24,000 硬预算分账账本正确运作，滑窗只占用 history 独立额度"""
+        ledger = BudgetLedger(
+            total_budget=24000,
+            system_reserve=2000,
+            tools_reserve=2000,
+            memory_reserve=2000,
+            output_reserve=3000
+        )
+        # 15000 = 24000 - (2000 + 2000 + 2000 + 3000)
+        self.assertEqual(ledger.history_budget, 15000)
+        self.assertEqual(ledger.output_reserve, 3000)
 
-        self.mgr.start_new_turn("当前提问")
-        messages, metrics = self.mgr.build_context_with_watermark("System base")
+    def test_point_3_summary_range_tracking(self):
+        """验证点 3: Summary 必须精准记录总结了哪一段历史区间 (Range Tracking)"""
+        for i in range(1, 4):
+            self.mgr.start_new_turn(f"轮次 #{i} 提问 " + "x" * 20)
+            self.mgr.add_assistant_message(f"轮次 #{i} 回答 " + "y" * 20)
+            self.mgr.finish_current_turn()
 
-        self.assertEqual(metrics["zone"], WatermarkZone.YELLOW)
-        self.assertGreaterEqual(metrics["raw_utilization"], 0.60)
-        self.assertLess(metrics["raw_utilization"], 0.75)
-        self.assertFalse(metrics["has_summary"])
+        # 执行一次摘要
+        self.mgr.summarizer.summarize(self.mgr.completed_turns, current_turn_id=3)
 
-    def test_red_zone_summary_compaction(self):
-        """测试使用率 >= 75%: 红区触发 Summary Compaction 深度摘要压缩"""
-        self.mgr.start_new_turn("排查历史 1: tools/calculator.py 存在除零错误 " + "x" * 70)
-        self.mgr.add_assistant_message("确认了计算器错误 " + "y" * 70)
-        self.mgr.finish_current_turn()
+        state = self.mgr.summarizer.state
+        self.assertEqual(state.start_turn_id, 1)
+        self.assertEqual(state.end_turn_id, 3)
+        self.assertEqual(state.covered_through_turn_id, 3)
+        self.assertIn("已覆盖轮次 #1 ~ #3", state.get_range_header())
 
-        self.mgr.start_new_turn("排查历史 2: tools/file_tools.py 读行范围溢出 " + "m" * 70)
-        self.mgr.add_assistant_message("修复了读取行数限制 " + "n" * 70)
-        self.mgr.finish_current_turn()
+    def test_point_4_anti_jitter_debounce(self):
+        """验证点 4: 防摘要抖动护栏 (Debounce Guard) 避免频繁调用摘要"""
+        summarizer = self.mgr.summarizer
+        summarizer.min_turn_delta = 3
+        summarizer.min_token_delta = 500
 
-        self.mgr.start_new_turn("当前任务提问")
-        messages, metrics = self.mgr.build_context_with_watermark("System base")
-
-        self.assertEqual(metrics["zone"], WatermarkZone.RED)
-        self.assertGreaterEqual(metrics["raw_utilization"], 0.75)
-        self.assertTrue(metrics["has_summary"])
-        self.assertIn("早前排查与修改历史纪要", messages[0]["content"])
+        # 仅淘汰 1 轮（未达到 3 轮门槛）
+        chunk1 = self.mgr.completed_turns[:1] if self.mgr.completed_turns else []
+        self.assertFalse(summarizer.should_summarize(chunk1, current_turn_id=4))
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,6 +11,7 @@ from openai.types.chat import ChatCompletionMessage
 from context.token_counter import TokenCounter, default_token_counter
 from context.window import TurnChunk, SlidingWindow
 from context.summarizer import ContextSummarizer
+from context.budget import BudgetLedger, default_budget_ledger
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 HISTORY_DIR = WORKSPACE_ROOT / "history"
@@ -18,7 +19,7 @@ HISTORY_DIR = WORKSPACE_ROOT / "history"
 class WatermarkZone:
     GREEN = "GREEN"    # < 60%: 全量直通
     YELLOW = "YELLOW"  # 60% ~ 75%: 正常滑动窗口淘汰
-    RED = "RED"        # >= 75%: 触发 Summary Compaction
+    RED = "RED"        # >= 75%: 触发 Summary Compaction (带防抖与区间记录)
 
 
 class WorkingMemory:
@@ -73,7 +74,7 @@ class WorkingMemory:
 
         if not sections:
             return ""
-        return "\n\n【当前工作区感知状态 (Working Memory - 锁定保留)】:\n" + "\n".join(sections)
+        return "【系统注记 - 工作区感知状态 (Working Memory - 锁定保留)】:\n" + "\n".join(sections)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -99,15 +100,24 @@ class WorkingMemory:
 class ContextManager:
     """
     统一上下文调度中枢：
-    集成高精度 TokenCounter、TurnChunk 滑动窗口、工程摘要器与三段式水位状态机。
+    严格兑现 4 大工程规范：
+    1. System Prompt 绝对不可变 (Immutable)，动态内容作为独立系统注记装配，保持 Prompt Cache；
+    2. 全局硬预算分账 (BudgetLedger)，历史滑窗严格运行在独立额度 (默认 15,000) 内；
+    3. 摘要区间锚点追踪 (Range Tracking: #start ~ #end)；
+    4. 防摘要抖动护栏 (Debounce Guard: 最小轮数、最小Token、冷却周期)。
     """
-    def __init__(self, session_id: str = "default", max_budget_tokens: int = 24000):
+    def __init__(
+        self,
+        session_id: str = "default",
+        budget_ledger: Optional[BudgetLedger] = None,
+        token_counter: Optional[TokenCounter] = None,
+        summarizer: Optional[ContextSummarizer] = None
+    ):
         self.session_id = session_id
-        self.max_budget_tokens = int(os.getenv("MAX_CONTEXT_TOKENS", str(max_budget_tokens)))
-
-        self.token_counter = default_token_counter
+        self.budget = budget_ledger or default_budget_ledger
+        self.token_counter = token_counter or default_token_counter
         self.window = SlidingWindow(self.token_counter)
-        self.summarizer = ContextSummarizer()
+        self.summarizer = summarizer or ContextSummarizer()
         self.working_memory = WorkingMemory()
 
         self.completed_turns: List[TurnChunk] = []
@@ -116,6 +126,14 @@ class ContextManager:
 
         HISTORY_DIR.mkdir(parents=True, exist_ok=True)
         self.history_file = HISTORY_DIR / f"{self.session_id}.jsonl"
+
+    @property
+    def max_budget_tokens(self) -> int:
+        return self.budget.total_budget
+
+    @property
+    def history_budget(self) -> int:
+        return self.budget.history_budget
 
     def _append_to_disk(self, record_type: str, payload: Dict[str, Any]):
         try:
@@ -185,7 +203,8 @@ class ContextManager:
             self.completed_turns.append(self.current_turn)
             self._append_to_disk("turn_finished", {
                 "turn_id": self.current_turn.turn_id,
-                "working_memory": self.working_memory.to_dict()
+                "working_memory": self.working_memory.to_dict(),
+                "summary_state": self.summarizer.state.to_dict()
             })
             self.current_turn = None
 
@@ -258,9 +277,6 @@ class ContextManager:
         client: Optional[OpenAI] = None,
         model: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """
-        向后兼容别名，调用完整组装器
-        """
         msgs, _ = self.build_context_with_watermark(base_system_prompt, client, model)
         return msgs
 
@@ -268,32 +284,30 @@ class ContextManager:
         self,
         base_system_prompt: str,
         client: Optional[OpenAI] = None,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        force_summary: bool = False
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
-        核心实现：三段式动态水位阈值上下文组装
-        - 使用率 < 60%: 【绿区】全量直通，零额外开销
-        - 60% ~ 75%:    【黄区】正常滑动窗口，淘汰早期轮次
-        - >= 75%:       【红区】触发 Summary Compaction 深度摘要压缩
+        核心装配方法：
+        1. base_system_prompt 保持不可变只读，严禁原地拼接污染；
+        2. 历史滑动窗口严格在 self.history_budget (15,000 Tokens) 独立额度内运作；
+        3. 水位判定基于历史额度；
+        4. >=75% 触发带防抖判定与区间记录的 Summary 压缩。
         """
-        # 1. 基础系统 Prompt 与当前轮次计算
-        wm_text = self.working_memory.format_prompt_context()
-        base_system_text = base_system_prompt + (wm_text if wm_text else "")
-        system_tokens = self.token_counter.count_message({"role": "system", "content": base_system_text})
-
+        # 1. 计算当前历史与进行中轮次的真实 Token
         current_turn_msgs = self.current_turn.messages if self.current_turn else []
         current_turn_tokens = self.token_counter.count_messages(current_turn_msgs)
 
-        # 2. 计算如果把“所有历史轮次”全量拼接时的原始总 Token
         all_historical_tokens = sum(c.estimate_tokens(self.token_counter) for c in self.completed_turns)
-        total_raw_tokens = system_tokens + current_turn_tokens + all_historical_tokens
+        total_history_tokens = all_historical_tokens + current_turn_tokens
 
-        # 3. 计算当前原始水位率 (0.0 ~ 1.0+)
-        raw_utilization = self.token_counter.get_utilization(total_raw_tokens, self.max_budget_tokens)
+        # 水位基准：基于 History 专属预算 (例如 15,000) 评估
+        raw_utilization = self.token_counter.get_utilization(total_history_tokens, self.history_budget)
 
         zone = WatermarkZone.GREEN
         active_chunks = []
         evicted_chunks = []
+        did_summarize = False
 
         # --- 策略 A: 绿区 (< 60%) 全量直通 ---
         if raw_utilization < 0.60:
@@ -304,52 +318,74 @@ class ContextManager:
         # --- 策略 B: 黄区 (60% ~ 75%) 正常滑动窗口淘汰 ---
         elif 0.60 <= raw_utilization < 0.75:
             zone = WatermarkZone.YELLOW
-            available_history_budget = self.max_budget_tokens - (system_tokens + current_turn_tokens)
+            avail_budget = max(50, self.history_budget - current_turn_tokens)
             active_chunks, evicted_chunks = self.window.split_by_budget(
                 self.completed_turns,
-                available_history_budget
+                avail_budget
             )
 
-        # --- 策略 C: 红区 (>= 75%) 触发 Summary Compaction 深度摘要压缩 ---
+        # --- 策略 C: 红区 (>= 75%) 深度压缩与防抖控制 ---
         else:
             zone = WatermarkZone.RED
-            # 压缩目标：将历史轮次预算压缩到 50% 水位左右，确保压缩后总水位稳定在绿区
-            target_history_budget = int(self.max_budget_tokens * 0.50) - (system_tokens + current_turn_tokens)
+            # 压缩后目标历史预算回落到 50% 水位左右
+            target_history_budget = max(50, int(self.history_budget * 0.50) - current_turn_tokens)
             active_chunks, evicted_chunks = self.window.split_by_budget(
                 self.completed_turns,
-                max(100, target_history_budget)
+                target_history_budget
             )
 
-            # 对淘汰轮次执行工程排查摘要压缩
-            if evicted_chunks:
-                self.summarizer.summarize(evicted_chunks, client=client, model=model)
+            # 防抖判定：检查是否满足最小新增轮数、最小Token与冷却周期
+            if evicted_chunks and self.summarizer.should_summarize(
+                evicted_chunks,
+                self.turn_count,
+                self.token_counter,
+                force=force_summary
+            ):
+                self.summarizer.summarize(
+                    evicted_chunks,
+                    self.turn_count,
+                    client=client,
+                    model=model
+                )
+                did_summarize = True
 
-        # 4. 组装最终发给 LLM 的完整消息流
-        full_system_content = base_system_text
-        if self.summarizer.current_summary:
-            full_system_content += f"\n\n【早前排查与修改历史纪要 (已压缩)】:\n{self.summarizer.current_summary}"
+        # 4. 组装输出（原则 1：base_system_prompt 保持纯洁，动态内容作为独立系统注记注入）
+        final_messages: List[Dict[str, Any]] = [
+            {"role": "system", "content": base_system_prompt}
+        ]
 
-        final_system_msg = {"role": "system", "content": full_system_content}
-        final_messages: List[Dict[str, Any]] = [final_system_msg]
+        # 注入长期记忆摘要块（带区间锚点）
+        if self.summarizer.state.has_summary():
+            range_header = self.summarizer.state.get_range_header()
+            summary_block = f"{range_header}:\n{self.summarizer.state.summary_text}"
+            final_messages.append({"role": "system", "content": summary_block})
 
+        # 注入工作区感知状态块
+        wm_context = self.working_memory.format_prompt_context()
+        if wm_context:
+            final_messages.append({"role": "system", "content": wm_context})
+
+        # 追加活跃历史轮次
         for chunk in active_chunks:
             final_messages.extend(chunk.messages)
 
+        # 追加当前正在执行的一轮
         if current_turn_msgs:
             final_messages.extend(current_turn_msgs)
 
         actual_tokens = self.token_counter.count_messages(final_messages)
-        actual_utilization = self.token_counter.get_utilization(actual_tokens, self.max_budget_tokens)
 
         metrics = {
             "zone": zone,
             "raw_utilization": raw_utilization,
-            "actual_utilization": actual_utilization,
             "actual_tokens": actual_tokens,
-            "max_budget": self.max_budget_tokens,
+            "max_budget": self.budget.total_budget,
+            "history_budget": self.history_budget,
             "active_turns": len(active_chunks),
             "evicted_turns": len(evicted_chunks),
-            "has_summary": bool(self.summarizer.current_summary)
+            "has_summary": self.summarizer.state.has_summary(),
+            "did_summarize": did_summarize,
+            "summary_range": (self.summarizer.state.start_turn_id, self.summarizer.state.end_turn_id)
         }
 
         return final_messages, metrics
