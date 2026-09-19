@@ -23,7 +23,7 @@ DEFAULT_SYSTEM_PROMPT = """你是一个具备高级多步推理和工具调用�
 
 class ReActAgent:
     """
-    具备多轮对话记忆、工作区状态感知与 ReAct 决策循环的智能体引擎
+    具备安全滑动窗口、磁盘持久化归档与 ReAct 决策循环的智能体引擎
     """
     def __init__(
         self,
@@ -49,25 +49,25 @@ class ReActAgent:
         self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
 
     def reset_session(self):
-        """重置当前会话记忆与工作区状态"""
+        """重置当前内存会话"""
         self.session.clear()
 
     def run(self, user_prompt: str, verbose: bool = True) -> str:
         """
-        运行带记忆的多轮 ReAct 核心循环：
+        运行 ReAct 核心循环：
         User Turn -> Thought -> Action -> Observation -> ... -> Final Answer
         """
-        # 1. 将用户输入加入当前多轮会话
-        self.session.add_user_message(user_prompt)
+        # 1. 开启新原子轮次（原则 6：当前正在执行的一轮不截断）
+        self.session.start_new_turn(user_prompt)
 
-        # 2. 动态组装上下文（注入 Working Memory 与剪枝后的历史）
+        # 2. 动态安全滑动窗口组装上下文（严格遵守 6 大原则）
         messages = self.session.build_messages(self.system_prompt)
 
         # 动态获取已注册工具清单
         tools_schema = self.executor.registry.get_schemas()
 
         if verbose:
-            print(f"\n{'='*20} 开始处理任务 (轮次 #{self.session.turn_count}) {'='*20}")
+            print(f"\n{'='*20} 开始处理任务 (轮次 #{self.session.turn_count} | 引擎: {self.model}) {'='*20}")
             print(f"用户目标: {user_prompt}\n")
 
         for step in range(1, self.max_steps + 1):
@@ -86,7 +86,6 @@ class ReActAgent:
 
             # 2. 判断是否需要调用工具 (Action)
             if response_msg.tool_calls:
-                # 记录模型意图与思考
                 messages.append(response_msg)
                 self.session.add_assistant_message(response_msg)
 
@@ -99,7 +98,7 @@ class ReActAgent:
                     verbose=verbose
                 )
 
-                # 将工具执行结果同步更新至工作区记忆 (Working Memory)
+                # 将工具执行结果同步更新至工作区状态感知 (Working Memory)
                 for tc, tr in zip(response_msg.tool_calls, tool_results):
                     try:
                         args = json.loads(tc.function.arguments) if tc.function.arguments else {}
@@ -111,46 +110,46 @@ class ReActAgent:
                         tr.get("content", "")
                     )
 
-                # 追加工具结果到当前推理上下文及持久化会话
+                # 追加工具结果到当前推理上下文及当前原子轮次中
                 messages.extend(tool_results)
                 self.session.add_tool_results(tool_results)
-                # 继续进入下一个 step 循环
             else:
-                # 4. 模型完成本轮推理，给出最终答案 (Final Answer)
+                # 4. 给出最终回答并结束本轮
                 if verbose:
                     print(f"\n[任务达成] Agent 在第 {step} 步完成了本轮推理。")
 
                 final_text = response_msg.content or "（无返回内容）"
                 self.session.add_assistant_message(response_msg)
-
-                # 轮次结束，触发历史超长观察的安全压缩，避免下一轮 Token 膨胀
-                self.session.compact_history()
+                self.session.finish_current_turn()
                 return final_text
 
-        # 超过最大步数熔断保护
         fallback_msg = f"已达到最大执行步数限制 ({self.max_steps} 步)，强制结束任务以避免死循环。"
         if verbose:
             print(f"\n[警告] {fallback_msg}")
         self.session.add_assistant_message(fallback_msg)
+        self.session.finish_current_turn()
         return fallback_msg
 
 
 def print_help():
     print("""
 可用控制指令：
-  /status, /memory  - 查看当前会话状态与工作区感知记忆（已读/已改文件、目标、测试状态）
-  /new, /reset      - 清空会话历史与工作区记忆，开启全新排查任务
+  /status, /memory  - 查看当前 Working Memory (已读代码、补丁修改、验证状态)
+  /restore          - 从磁盘 history/ 目录恢复历史会话
   /undo             - 回滚上一轮对话历史
+  /new, /reset      - 清空内存会话记忆，开启全新排查任务
   /history          - 查看会话历史简报
   /help             - 显示此帮助信息
   quit, exit        - 退出程序
 """)
 
 if __name__ == "__main__":
-    print("正在启动 ReAct Agent 交互控制台 (多轮协同增强版)...")
+    print("正在启动 ReAct Agent 交互控制台 (滑动窗口 & 磁盘持久化增强版)...")
     try:
         agent = ReActAgent(max_steps=10)
-        print("Agent 就绪！已启用多轮对话记忆与工作区状态感知。输入 /help 查看协同指令。")
+        print(f"Agent 就绪！当前激活模型: 【{agent.model}】")
+        print(f"安全滑动窗口预算: {agent.session.max_budget_tokens} Tokens | 历史落盘目录: history/{agent.session.session_id}.jsonl")
+        print("💡 提示：输入 /help 查看协同控制指令。")
 
         while True:
             prompt = input("\n你: ").strip()
@@ -163,17 +162,25 @@ if __name__ == "__main__":
                 break
             elif cmd_lower in ["/new", "/clear", "/reset"]:
                 agent.reset_session()
-                print("【会话已重置】所有对话历史与工作区感知已清空，开启全新排查任务。")
+                print("【会话已重置】内存对话历史与工作区感知已清空，开启全新排查任务。")
+                continue
+            elif cmd_lower == "/restore":
+                if agent.session.restore_from_disk():
+                    print(f"【恢复成功】已从本地磁盘 history/{agent.session.session_id}.jsonl 恢复共 {agent.session.turn_count} 轮历史！")
+                else:
+                    print("【恢复失败】未找到有效的历史归档文件或归档为空。")
                 continue
             elif cmd_lower in ["/status", "/memory"]:
                 wm = agent.session.working_memory
                 print("\n" + "="*20 + " 当前工作区感知状态 " + "="*20)
+                print(f"当前模型: {agent.model}")
                 print(f"当前轮次: {agent.session.turn_count}")
                 print(f"当前目标: {wm.current_goal or '（未指定）'}")
                 print(f"已读文件: {list(wm.inspected_files.keys()) or '（无）'}")
                 print(f"已改文件: {wm.modified_files or '（无）'}")
                 print(f"最新测试: {wm.last_test_status or '（无）'}")
-                print(f"消息总数: {len(agent.session.messages)} 条")
+                print(f"已完成原子轮次: {len(agent.session.completed_turns)} 轮")
+                print(f"归档路径: {agent.session.history_file}")
                 print("="*60)
                 continue
             elif cmd_lower == "/undo":
@@ -184,14 +191,12 @@ if __name__ == "__main__":
                 continue
             elif cmd_lower == "/history":
                 print("\n" + "="*20 + " 会话历史摘要 " + "="*20)
-                for idx, msg in enumerate(agent.session.messages, 1):
-                    role = msg.get("role", "")
-                    content = msg.get("content", "")
-                    snippet = (content[:60] + "...") if content and len(content) > 60 else (content or "")
-                    if role == "assistant" and msg.get("tool_calls"):
-                        funcs = [tc['function']['name'] for tc in msg.get("tool_calls", [])]
-                        snippet = f"调用工具: {', '.join(funcs)}"
-                    print(f"[{idx}] {role}: {snippet}")
+                if not agent.session.completed_turns:
+                    print("（当前暂无已完成的轮次）")
+                for chunk in agent.session.completed_turns:
+                    user_text = chunk.messages[0].get("content", "") if chunk.messages else ""
+                    print(f"[轮次 #{chunk.turn_id}] 用户: {user_text[:60]}")
+                    print(f"             消息条数: {len(chunk.messages)} 条, 预估 Token: ~{chunk.estimate_tokens()}")
                 print("="*54)
                 continue
             elif cmd_lower == "/help":
