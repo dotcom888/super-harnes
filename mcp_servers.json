@@ -2,11 +2,17 @@
   "mcpServers": {
     "calculator": {
       "command": "python",
-      "args": ["mcp/servers/calc_server.py"]
+      "args": ["mcp/servers/calc_server.py"],
+      "trust_level": "trusted",
+      "timeout_seconds": 15,
+      "max_output_chars": 4000
     },
     "system_info": {
       "command": "python",
-      "args": ["mcp/servers/sysinfo_server.py"]
+      "args": ["mcp/servers/sysinfo_server.py"],
+      "trust_level": "trusted",
+      "timeout_seconds": 15,
+      "max_output_chars": 4000
     }
   }
 }
