@@ -3,6 +3,10 @@
     "calculator": {
       "command": "python",
       "args": ["mcp/servers/calc_server.py"]
+    },
+    "system_info": {
+      "command": "python",
+      "args": ["mcp/servers/sysinfo_server.py"]
     }
   }
 }

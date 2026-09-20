@@ -1,25 +1,31 @@
 # -*- coding: utf-8 -*-
+"""
+tools/__init__.py:
+本地内置核心工具加载入口。
+原则：仅注册严苛沙箱环境下的核心代码工程工具 (read_file, apply_patch, run_shell, grep, find)。
+外围扩展业务工具（如计算器、系统环境探测）统一剥离并通过 MCP 协议外接。
+"""
 import importlib
-import pkgutil
-from pathlib import Path
 from tools.registry import default_registry, register_tool
 
-def _auto_discover_tools():
-    """
-    自动扫描并加载当前 tools/ 目录下的所有 Python 模块。
-    任何新增的 .py 工具文件只需放入本目录，都会被自动引入并触发 @register_tool。
-    """
-    current_dir = Path(__file__).parent
-    for module_info in pkgutil.iter_modules([str(current_dir)]):
-        mod_name = module_info.name
-        # 排除注册中心本身和当前初始化脚本
-        if mod_name not in ("registry", "__init__"):
-            importlib.import_module(f"tools.{mod_name}")
+# 本地核心工具白名单模块
+CORE_TOOL_MODULES = [
+    "tools.file_tools",
+    "tools.patch_tool",
+    "tools.search_tools",
+    "tools.shell_tool",
+]
 
-# 执行自动发现
-_auto_discover_tools()
+def _load_core_native_tools():
+    """仅显式加载本地核心代码沙箱工具"""
+    for mod in CORE_TOOL_MODULES:
+        try:
+            importlib.import_module(mod)
+        except Exception as e:
+            print(f"[Warning] 加载核心工具模块 '{mod}' 失败: {e}")
 
-# 对外统一暴露单例 registry 和装饰器
+_load_core_native_tools()
+
 registry = default_registry
 
 __all__ = ["registry", "register_tool"]
