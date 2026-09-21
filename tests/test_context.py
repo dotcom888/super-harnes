@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 import unittest
 import os
-from context import ContextManager, WatermarkZone, BudgetLedger
+from context import ContextManager, WatermarkZone, BudgetLedger, TokenCounter
 
 class TestContextEnhancements(unittest.TestCase):
     def setUp(self):
-        # 设定一个小型可控账本：总预算 300，历史预算 150，各预留分账
+        # 设定一个小型可控账本：总预算 300，各预留分账
         self.ledger = BudgetLedger(
             total_budget=300,
             system_reserve=30,
@@ -40,8 +40,8 @@ class TestContextEnhancements(unittest.TestCase):
         self.assertEqual(messages[0]["content"], original_prompt)
 
         # 摘要与 Working Memory 作为独立的系统块注记装配，保持 Prompt Cache
-        summary_msgs = [m for m in messages if "历史排查与修改纪要" in m["content"]]
-        wm_msgs = [m for m in messages if "工作区感知状态" in m["content"]]
+        summary_msgs = [m for m in messages if "历史排查与修改纪要" in m.get("content", "")]
+        wm_msgs = [m for m in messages if "工作区感知状态" in m.get("content", "")]
         self.assertEqual(len(summary_msgs), 1)
         self.assertEqual(len(wm_msgs), 1)
 
@@ -83,6 +83,60 @@ class TestContextEnhancements(unittest.TestCase):
         # 仅淘汰 1 轮（未达到 3 轮门槛）
         chunk1 = self.mgr.completed_turns[:1] if self.mgr.completed_turns else []
         self.assertFalse(summarizer.should_summarize(chunk1, current_turn_id=4))
+
+    def test_point_5_budget_ledger_validation_and_dynamic_recalc(self):
+        """验证点 5: 账本参数校验、超支判定与实际用量动态重算"""
+        # 非法参数（负数或预留超过总预算）必须抛出 ValueError
+        with self.assertRaises(ValueError):
+            BudgetLedger(total_budget=1000, system_reserve=-100)
+
+        with self.assertRaises(ValueError):
+            BudgetLedger(
+                total_budget=1000,
+                system_reserve=300,
+                tools_reserve=300,
+                memory_reserve=300,
+                output_reserve=300  # 和为 1200 > 1000
+            )
+
+        ledger = BudgetLedger(total_budget=10000, output_reserve=2000)
+        # 动态根据实际 tools (例如 3500 tokens) 和实际 system (例如 800 tokens) 重算
+        new_history = ledger.recalculate_history_budget(
+            actual_system_tokens=800,
+            actual_tools_tokens=3500,
+            actual_memory_tokens=1000
+        )
+        # 10000 - (800 + 3500 + 1000 + 2000) = 2700
+        self.assertEqual(new_history, 2700)
+        self.assertEqual(ledger.get_remaining_budget(8000), 2000)
+        self.assertTrue(ledger.is_over_budget(10001))
+        self.assertFalse(ledger.is_over_budget(9999))
+
+    def test_point_6_token_counter_precision_and_structures(self):
+        """验证点 6: TokenCounter 中英文分级加权与 OpenAI 消息结构开销"""
+        counter = TokenCounter()
+        # 中文计费高于 2.8 字符/token
+        text_cn = "排查计算器除零异常并更新单元测试"  # 16 个汉字
+        tokens_cn = counter.count_text(text_cn)
+        self.assertGreaterEqual(tokens_cn, 16, "每个汉字通常不应低于 1 个 Token")
+
+        # 包含 tool_calls 与结构开销
+        msg = {
+            "role": "assistant",
+            "content": "正在调用工具",
+            "tool_calls": [
+                {
+                    "id": "call_abc123",
+                    "type": "function",
+                    "function": {
+                        "name": "apply_patch",
+                        "arguments": '{"patch_content": "*** Update File: main.py"}'
+                    }
+                }
+            ]
+        }
+        tokens_msg = counter.count_message(msg)
+        self.assertGreater(tokens_msg, 20)
 
 if __name__ == "__main__":
     unittest.main()

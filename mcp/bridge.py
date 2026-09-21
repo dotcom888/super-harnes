@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 import json
-from typing import List, Dict, Any, Callable
+from typing import List, Dict, Any, Callable, Optional
 from mcp.client import McpClient
 from mcp.config import McpServerConfig, TrustLevel
-from tools.registry import ToolRegistry
+from tools.registry import ToolRegistry, default_registry
 from tools.policies import default_policy
 
 class McpToolBridge:
@@ -14,9 +14,15 @@ class McpToolBridge:
     3. 信任等级控制 (Trust Level Policy)：支持免审批、人工确认与黑名单拦截；
     4. 异常安全降级：捕获超时与崩溃，绝不破坏 ReAct 循环。
     """
-    def __init__(self, client: McpClient, config: McpServerConfig, registry: ToolRegistry):
+    def __init__(
+        self,
+        client: McpClient,
+        config: Optional[McpServerConfig] = None,
+        registry: ToolRegistry = default_registry
+    ):
         self.client = client
-        self.config = config
+        server_id = getattr(client, "server_name", "calculator" if "calc_server" in " ".join(client.command) else "mcp")
+        self.config = config or McpServerConfig(server_id=server_id, command="python")
         self.registry = registry
         self.bridged_tool_names: List[str] = []
 
@@ -100,8 +106,22 @@ class McpToolBridge:
                 return proxy_func
 
             # 注册到内部注册表
+            proxy = _create_proxy(raw_name, namespaced_name)
             self.registry._schemas[namespaced_name] = internal_schema
-            self.registry._tools[namespaced_name] = _create_proxy(raw_name, namespaced_name)
+            self.registry._tools[namespaced_name] = proxy
             self.bridged_tool_names.append(namespaced_name)
+
+            # 同时为原始短名称提供别名注册（若不冲突），便于直接调用
+            if raw_name not in self.registry._tools:
+                self.registry._tools[raw_name] = proxy
+                self.registry._schemas[raw_name] = {
+                    "type": "function",
+                    "function": {
+                        "name": raw_name,
+                        "description": enhanced_desc,
+                        "parameters": input_schema
+                    }
+                }
+                self.bridged_tool_names.append(raw_name)
 
         return self.bridged_tool_names
