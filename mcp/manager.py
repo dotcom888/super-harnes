@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 import json
-import subprocess
+import concurrent.futures
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Callable, List
 from mcp.client import McpClient
 from mcp.config import McpServerConfig, TrustLevel
 from mcp.bridge import McpToolBridge
@@ -12,10 +12,10 @@ WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 
 class McpManager:
     """
-    加固型 MCP 管理器：
-    1. 统一管理多个独立外部进程服务的生命周期；
-    2. 集中化安全参数（TrustLevel、超时、限额）校验；
-    3. 服务状态追踪与安全退出清理。
+    加固型 MCP 服务管理器：
+    1. 并行并发握手：使用多线程并行启动多个外部子进程，消除单点慢服务阻塞整个 CLI 启动
+    2. 进程树生命周期统一管控与退出清理
+    3. 异常隔离：单个外部服务启动失败或超时不影响其他服务
     """
     def __init__(self, config_path: Optional[str] = None, registry: ToolRegistry = default_registry):
         if config_path:
@@ -54,28 +54,44 @@ class McpManager:
         self.configs = loaded
         return loaded
 
-    def start_and_bridge_all(self) -> Dict[str, list]:
+    def _start_single_server(self, server_id: str, cfg: McpServerConfig) -> List[str]:
+        full_cmd = [cfg.command] + cfg.args
+        client = McpClient(
+            command=full_cmd,
+            env=cfg.env,
+            cwd=cfg.cwd,
+            default_timeout=cfg.timeout_seconds,
+            server_name=server_id
+        )
+        bridge = McpToolBridge(client=client, config=cfg, registry=self.registry)
+        bridged_tools = bridge.bridge()
+        self.clients[server_id] = client
+        return bridged_tools
+
+    def start_and_bridge_all(self, progress_callback: Optional[Callable[[str, str], None]] = None) -> Dict[str, list]:
         configs = self.load_configs()
         results = {}
+        if not configs:
+            return results
 
-        for server_id, cfg in configs.items():
-            try:
-                full_cmd = [cfg.command] + cfg.args
-                client = McpClient(
-                    command=full_cmd,
-                    env=cfg.env,
-                    cwd=cfg.cwd,
-                    default_timeout=cfg.timeout_seconds
-                )
-                client.server_name = server_id
-                bridge = McpToolBridge(client=client, config=cfg, registry=self.registry)
-                bridged_tools = bridge.bridge()
-
-                self.clients[server_id] = client
-                results[server_id] = bridged_tools
-            except Exception as e:
-                # 单个外部服务失败不阻塞整体
-                results[server_id] = [f"【启动异常: {str(e)}】"]
+        # 采用并行多线程连接，彻底避免串行等待带来的白屏假死
+        max_workers = min(8, max(1, len(configs)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_to_server = {
+                pool.submit(self._start_single_server, s_id, cfg): s_id
+                for s_id, cfg in configs.items()
+            }
+            for future in concurrent.futures.as_completed(future_to_server):
+                server_id = future_to_server[future]
+                try:
+                    tools = future.result()
+                    results[server_id] = tools
+                    if progress_callback:
+                        progress_callback(server_id, f"就绪 ({len(tools)} 个工具)")
+                except Exception as e:
+                    results[server_id] = [f"启动失败: {str(e)}"]
+                    if progress_callback:
+                        progress_callback(server_id, f"失败: {str(e)}")
 
         return results
 

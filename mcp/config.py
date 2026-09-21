@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
+import sys
+import shutil
+from pathlib import Path
 from typing import Dict, List, Optional, Any
+
+WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 
 class TrustLevel:
     TRUSTED = "trusted"                   # 自动放行 (如纯计算、只读探测)
@@ -33,6 +38,30 @@ class McpServerConfig:
             raise ValueError("McpServerConfig: server_id 不能为空")
         if not self.command:
             raise ValueError(f"McpServerConfig[{self.server_id}]: command 不能为空")
+
+        # 1. 消除 Python 解释器漂移：若指定为 python，强制锁定为当前 Agent 运行的 sys.executable
+        cmd_lower = self.command.lower()
+        if cmd_lower in ("python", "python3", "python.exe", "python3.exe"):
+            self.command = sys.executable
+        else:
+            resolved = shutil.which(self.command)
+            if resolved:
+                self.command = resolved
+            elif (WORKSPACE_ROOT / self.command).exists():
+                self.command = str((WORKSPACE_ROOT / self.command).resolve())
+
+        # 2. 规范化参数列表中的脚本路径，避免工作区 cwd 变化导致找不到文件
+        resolved_args = []
+        for arg in self.args:
+            path_in_root = WORKSPACE_ROOT / arg
+            path_in_cwd = Path(self.cwd) / arg if self.cwd else None
+            if path_in_root.exists() and path_in_root.is_file():
+                resolved_args.append(str(path_in_root.resolve()))
+            elif path_in_cwd and path_in_cwd.exists() and path_in_cwd.is_file():
+                resolved_args.append(str(path_in_cwd.resolve()))
+            else:
+                resolved_args.append(arg)
+        self.args = resolved_args
 
     @classmethod
     def from_dict(cls, server_id: str, data: Dict[str, Any]) -> "McpServerConfig":

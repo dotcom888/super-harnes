@@ -13,6 +13,8 @@ def _auto_discover_builtin_tools():
             importlib.import_module(f"tools.builtin.{module_info.name}")
 
 _auto_discover_builtin_tools()
+# 自动将所有原生内置核心工具锁定为不可覆盖，防御恶意或同名 MCP 劫持 (Tool Shadowing)
+default_registry.lock_all()
 
 registry = default_registry
 

@@ -12,14 +12,9 @@ def main():
         agent = ReActAgent(max_steps=10)
         print(f"Agent 就绪！激活模型: 【{agent.model}】")
 
-        native_tools = [
-            name for name in agent.executor.registry.get_tool_names()
-            if not name.startswith("mcp_") and name not in ("get_current_time", "get_system_info")
-        ]
-        mcp_tools = [
-            name for name in agent.executor.registry.get_tool_names()
-            if name not in native_tools
-        ]
+        all_tools = agent.executor.registry.get_tool_names()
+        mcp_tools = [name for name in all_tools if name.startswith("mcp__")]
+        native_tools = [name for name in all_tools if not name.startswith("mcp__")]
 
         print(f"  [本地内置工具]: {', '.join(native_tools)}")
         print(f"  [MCP 外部工具]: {', '.join(mcp_tools) if mcp_tools else '（无）'}")

@@ -20,23 +20,30 @@ class ToolRegistry:
         self._tools: Dict[str, Callable] = {}
         # 存储大模型所需 JSON Schema: {tool_name: schema_dict}
         self._schemas: Dict[str, dict] = {}
+        # 存储受保护的核心内置工具集合，禁止外部/MCP覆写
+        self._immutable_tools: set = set()
 
     def register(
         self,
         name: Optional[str] = None,
         description: Optional[str] = None,
-        param_descriptions: Optional[Dict[str, str]] = None
+        param_descriptions: Optional[Dict[str, str]] = None,
+        immutable: bool = False
     ):
         """
         装饰器：将一个普通的 Python 函数自动注册为 Agent 可调用的工具
         :param name: 工具名称（不传则默认取函数名）
         :param description: 工具描述（不传则默认取函数 docstring）
         :param param_descriptions: 参数描述字典，例如 {"expression": "要计算的表达式"}
+        :param immutable: 是否将该工具标记为受保护内置工具（禁止覆写）
         """
         param_descriptions = param_descriptions or {}
 
         def decorator(func: Callable) -> Callable:
             tool_name = name or func.__name__
+            if tool_name in self._immutable_tools:
+                raise PermissionError(f"安全拒绝：工具 '{tool_name}' 为受保护的内置核心工具，禁止覆盖！")
+
             tool_desc = description or (func.__doc__ or "无描述").strip()
 
             # 使用 inspect 模块自动提取函数的参数和类型注解
@@ -45,11 +52,9 @@ class ToolRegistry:
             required = []
 
             for param_name, param in sig.parameters.items():
-                # 忽略 self/cls 或 *args, **kwargs
                 if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
                     continue
 
-                # 推导类型，未注解时默认为 string
                 param_type = TYPE_MAPPING.get(param.annotation, "string")
                 prop = {
                     "type": param_type,
@@ -57,11 +62,9 @@ class ToolRegistry:
                 }
                 properties[param_name] = prop
 
-                # 如果没有默认值，则是必填项
                 if param.default is inspect.Parameter.empty:
                     required.append(param_name)
 
-            # 生成 OpenAI 兼容的 Function Calling Schema
             schema = {
                 "type": "function",
                 "function": {
@@ -77,9 +80,28 @@ class ToolRegistry:
 
             self._tools[tool_name] = func
             self._schemas[tool_name] = schema
+            if immutable:
+                self._immutable_tools.add(tool_name)
             return func
 
         return decorator
+
+    def lock_tool(self, name: str):
+        """将某个工具名锁定为不可覆盖"""
+        self._immutable_tools.add(name)
+
+    def lock_all(self):
+        """锁定当前注册表中的所有工具为不可覆盖"""
+        self._immutable_tools.update(self._tools.keys())
+
+    def register_mcp_proxy(self, name: str, proxy_func: Callable, schema: dict):
+        """专门供 MCP 桥接器注册外部工具的入口，实施严格的前缀与只读安全检查"""
+        if not name.startswith("mcp__"):
+            raise ValueError(f"MCP 扩展工具必须以 'mcp__' 为命名空间前缀，非法名称: '{name}'")
+        if name in self._immutable_tools:
+            raise PermissionError(f"安全拒绝：工具 '{name}' 与受保护的内置核心工具冲突，禁止覆盖！")
+        self._tools[name] = proxy_func
+        self._schemas[name] = schema
 
     def get_schemas(self) -> List[dict]:
         """获取所有已注册工具的 JSON Schema 清单，供传给大模型 tools=[...]"""
@@ -90,10 +112,7 @@ class ToolRegistry:
         return list(self._tools.keys())
 
     def execute(self, name: str, args: Dict[str, Any]) -> str:
-        """
-        根据工具名称和参数字典安全执行真实函数。
-        如果执行出错，将捕获异常并返回友好错误信息，避免主程序崩溃。
-        """
+        """根据工具名称和参数字典安全执行真实函数"""
         if name not in self._tools:
             return f"【工具执行失败】: 未知工具 '{name}'，当前可用工具有: {', '.join(self._tools.keys())}"
 

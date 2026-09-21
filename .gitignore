@@ -3,3 +3,4 @@
 history/
 __pycache__/
 *.pyc
+.super-harnes/
