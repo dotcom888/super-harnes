@@ -47,6 +47,9 @@ def handle_slash_command(agent, prompt: str) -> Tuple[bool, bool]:
         print(f"当前模型: {agent.model}")
         print(f"当前轮次: {agent.context_manager.turn_count}")
         print(f"当前目标: {wm.current_goal or '（未指定）'}")
+        cm = agent.context_manager
+        print(f"当前 Token 预算: 上限 {cm.budget.total_budget} | 输出预留 {cm.budget.output_reserve}")
+        print(f"累计 API 消耗: 输入 {cm.total_api_prompt_tokens} Tokens | 输出 {cm.total_api_completion_tokens} Tokens")
         print(f"已读文件: {list(wm.inspected_files.keys()) or '（无）'}")
         print(f"已改文件: {wm.modified_files or '（无）'}")
         print(f"已挂载 MCP 服务: {list(agent.mcp_manager.clients.keys())}")

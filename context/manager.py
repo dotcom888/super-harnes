@@ -36,6 +36,7 @@ class WorkingMemory:
         self.current_goal: str = ""
         self._is_manual_goal: bool = False
         self.inspected_files: Dict[str, str] = {}
+        self._file_ranges: Dict[str, List[Tuple[int, int]]] = {}
         self.modified_files: List[str] = []
         self.last_test_status: Optional[str] = None
         self.last_search_context: Optional[str] = None
@@ -46,32 +47,34 @@ class WorkingMemory:
             self._is_manual_goal = is_manual
 
     def _record_file_range(self, filepath: str, start: int, end: int):
-        """记录并智能合并排查文件区间，支持连续/重叠区间合并与去重"""
+        """记录并智能合并排查文件区间，支持连续/重叠区间合并与去重，内部维护精确数值元组"""
         if not filepath:
             return
         fp = str(filepath).strip()
-        new_range = (min(start, end), max(start, end))
+        new_start = min(int(start), int(end))
+        new_end = max(int(start), int(end))
+        new_range = (new_start, new_end)
 
-        existing_desc = self.inspected_files.get(fp)
-        if not existing_desc:
-            self.inspected_files[fp] = f"第 {new_range[0]} 至 {new_range[1]} 行"
-            return
+        ranges = list(self._file_ranges.get(fp, []))
+        if not ranges and fp in self.inspected_files:
+            matches = re.findall(r"第\s*(\d+)\s*至\s*(\d+)\s*行", self.inspected_files[fp])
+            ranges = [(int(s), int(e)) for s, e in matches]
 
-        matches = re.findall(r"第\s*(\d+)\s*至\s*(\d+)\s*行", existing_desc)
-        ranges = [(int(s), int(e)) for s, e in matches]
         ranges.append(new_range)
-
         ranges.sort(key=lambda x: x[0])
-        merged = []
+
+        merged: List[Tuple[int, int]] = []
         for r_start, r_end in ranges:
             if not merged:
-                merged.append([r_start, r_end])
+                merged.append((r_start, r_end))
             else:
-                last = merged[-1]
-                if r_start <= last[1] + 1:
-                    last[1] = max(last[1], r_end)
+                last_start, last_end = merged[-1]
+                if r_start <= last_end + 1:
+                    merged[-1] = (last_start, max(last_end, r_end))
                 else:
-                    merged.append([r_start, r_end])
+                    merged.append((r_start, r_end))
+
+        self._file_ranges[fp] = merged
 
         if len(merged) <= 3:
             desc = "; ".join([f"第 {s[0]} 至 {s[1]} 行" for s in merged])
@@ -176,6 +179,7 @@ class WorkingMemory:
             "current_goal": self.current_goal,
             "_is_manual_goal": self._is_manual_goal,
             "inspected_files": dict(self.inspected_files),
+            "_file_ranges": {fp: [list(r) for r in ranges] for fp, ranges in self._file_ranges.items()},
             "modified_files": list(self.modified_files),
             "last_test_status": self.last_test_status,
             "last_search_context": self.last_search_context
@@ -187,6 +191,21 @@ class WorkingMemory:
         self.current_goal = str(data.get("current_goal", ""))
         self._is_manual_goal = bool(data.get("_is_manual_goal", False))
         self.inspected_files = dict(data.get("inspected_files", {}))
+        self._file_ranges = {}
+        raw_ranges = data.get("_file_ranges")
+        if isinstance(raw_ranges, dict):
+            for fp, r_list in raw_ranges.items():
+                if isinstance(r_list, list):
+                    self._file_ranges[str(fp)] = [
+                        (int(r[0]), int(r[1]))
+                        for r in r_list
+                        if isinstance(r, (list, tuple)) and len(r) >= 2
+                    ]
+        for fp, desc in self.inspected_files.items():
+            if fp not in self._file_ranges and isinstance(desc, str):
+                matches = re.findall(r"第\s*(\d+)\s*至\s*(\d+)\s*行", desc)
+                if matches:
+                    self._file_ranges[fp] = [(int(s), int(e)) for s, e in matches]
         self.modified_files = list(data.get("modified_files", []))
         self.last_test_status = data.get("last_test_status")
         self.last_search_context = data.get("last_search_context")
@@ -195,6 +214,7 @@ class WorkingMemory:
         self.current_goal = ""
         self._is_manual_goal = False
         self.inspected_files.clear()
+        self._file_ranges.clear()
         self.modified_files.clear()
         self.last_test_status = None
         self.last_search_context = None
@@ -678,14 +698,13 @@ class ContextManager:
         evicted_chunks: List[TurnChunk] = []
         did_summarize = False
 
+        # 统一候选轮次：若已有摘要，活跃轮次候选集仅从尚未被摘要吸收的轮次中选取，彻底杜绝绿/黄/红区双重注入
+        candidate_turns = uncompressed_turns if self.summarizer.state.has_summary() else self.completed_turns
+
         # --- 策略 A: 绿区 (< 60%) ---
         if raw_utilization < 0.60:
             zone = WatermarkZone.GREEN
-            # 关键修复（消除双重注入）：若已有摘要，活跃历史仅装入未压缩轮次；无摘要时全量装入
-            if self.summarizer.state.has_summary():
-                active_chunks = list(uncompressed_turns)
-            else:
-                active_chunks = list(self.completed_turns)
+            active_chunks = list(candidate_turns)
             evicted_chunks = []
 
         # --- 策略 B: 黄区 (60% ~ 75%) 正常滑动窗口淘汰 ---
@@ -693,7 +712,7 @@ class ContextManager:
             zone = WatermarkZone.YELLOW
             avail_budget = max(self.budget.min_history_budget, self.budget.history_budget - current_turn_tokens - summary_tokens)
             active_chunks, evicted_chunks = self.window.split_by_budget(
-                self.completed_turns,
+                candidate_turns,
                 avail_budget
             )
             # 消除信息黑洞：黄区淘汰轮次即时触发规则补偿
@@ -711,7 +730,7 @@ class ContextManager:
                 int(self.budget.history_budget * 0.50) - current_turn_tokens - summary_tokens
             )
             active_chunks, evicted_chunks = self.window.split_by_budget(
-                self.completed_turns,
+                candidate_turns,
                 target_history_budget
             )
 

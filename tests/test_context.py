@@ -530,5 +530,112 @@ class TestContextEnhancements(unittest.TestCase):
         if mgr.history_file.exists():
             os.remove(mgr.history_file)
 
+    def test_point_18_yellow_and_red_zone_candidate_deduplication(self):
+        """验证点 18: 黄区与红区切分统一使用未压缩候选轮次，彻底杜绝与已有摘要产生双重注入"""
+        ledger = BudgetLedger(total_budget=1000, output_reserve=100, system_reserve=50, tools_reserve=50, memory_reserve=50)
+        mgr = ContextManager("test_candidate_dedup", budget_ledger=ledger)
+        try:
+            # 轮次 1 (约 50 tokens)
+            mgr.start_new_turn("轮次 1 历史排查内容 " + "a" * 50)
+            mgr.add_assistant_message("轮次 1 执行结果 " + "b" * 50)
+            mgr.finish_current_turn()
+
+            # 标记轮次 1 已被摘要覆盖
+            mgr.summarizer.state.summary_text = "轮次 1 已被摘要覆盖纪要"
+            mgr.summarizer.state.covered_through_turn_id = 1
+            mgr.summarizer.state.start_turn_id = 1
+            mgr.summarizer.state.end_turn_id = 1
+
+            # 轮次 2: 注入较长内容使有效历史利用率落在 60% ~ 75% 之间 (黄区)
+            mgr.start_new_turn("轮次 2 问题 " + "x" * 900)
+            mgr.add_assistant_message("轮次 2 回答 " + "y" * 900)
+            mgr.finish_current_turn()
+
+            # 轮次 3 触发上下文组装
+            mgr.start_new_turn("轮次 3 当前提问")
+            messages, metrics = mgr.build_context_with_watermark("Base System Prompt")
+
+            self.assertEqual(metrics["zone"], WatermarkZone.YELLOW, "应该命中黄区水位")
+            user_messages = [m.get("content", "") for m in messages if m.get("role") == "user"]
+
+            # 核心断言：已被摘要覆盖的轮次 1 绝不能再次出现在活跃 user 消息明文中
+            has_turn_1_dup = any("轮次 1 历史排查内容" in content for content in user_messages)
+            self.assertFalse(has_turn_1_dup, "黄区切分必须使用 uncompressed_turns，杜绝与摘要双重注入！")
+
+            # 但未被摘要的轮次 2 必须被保存在活跃历史中
+            has_turn_2 = any("轮次 2 问题" in content for content in user_messages)
+            self.assertTrue(has_turn_2, "未被摘要覆盖的轮次 2 必须正常保存在活跃上下文中！")
+        finally:
+            if mgr.history_file.exists():
+                try:
+                    os.remove(mgr.history_file)
+                except Exception:
+                    pass
+
+    def test_point_19_working_memory_exact_numerical_tuple_ranges(self):
+        """验证点 19: WorkingMemory 内部采用精确数值元组维护多区间，即使外部折叠省略也不会丢失离散区间"""
+        wm = self.mgr.working_memory
+        # 依次读取 4 个离散区间
+        wm.update_from_tool("read_file", {"file_path": "core/agent.py", "start_line": 1, "max_lines": 10}, "res")
+        wm.update_from_tool("read_file", {"file_path": "core/agent.py", "start_line": 20, "max_lines": 10}, "res")
+        wm.update_from_tool("read_file", {"file_path": "core/agent.py", "start_line": 40, "max_lines": 10}, "res")
+        wm.update_from_tool("read_file", {"file_path": "core/agent.py", "start_line": 60, "max_lines": 10}, "res")
+
+        # 验证内部精确数值列表
+        self.assertEqual(
+            wm._file_ranges["core/agent.py"],
+            [(1, 10), (20, 29), (40, 49), (60, 69)]
+        )
+        # 外部展示应做紧凑省略折叠渲染
+        self.assertIn("...", wm.inspected_files["core/agent.py"])
+        self.assertIn("共 4 个区间", wm.inspected_files["core/agent.py"])
+
+        # 第 5 次读取：读取与第 3 个区间相邻/重叠的 45~55 行
+        wm.update_from_tool("read_file", {"file_path": "core/agent.py", "start_line": 45, "max_lines": 11}, "res")
+
+        # 核心断言：第 3 个区间精确归并为 (40, 55)，全部 4 个区间完全保全，无任何区间被截断丢失
+        self.assertEqual(
+            wm._file_ranges["core/agent.py"],
+            [(1, 10), (20, 29), (40, 55), (60, 69)],
+            "内部数值元组应确保省略号中间的离散区间在后续读取与合并中 100% 精确保留！"
+        )
+
+        # 验证快照序列化与反序列化完整性
+        dumped = wm.to_dict()
+        self.assertIn("_file_ranges", dumped)
+        restored_wm = self.mgr.working_memory.__class__()
+        restored_wm.load_dict(dumped)
+        self.assertEqual(restored_wm._file_ranges["core/agent.py"], [(1, 10), (20, 29), (40, 55), (60, 69)])
+
+    def test_point_20_cli_status_token_usage_display(self):
+        """验证点 20: 控制台 /status 与 /memory 命令正确展示 Token 预算与实际 API 消耗"""
+        from io import StringIO
+        import sys
+        from cli.commands import handle_slash_command
+
+        class DummyAgent:
+            def __init__(self, mgr):
+                self.model = "deepseek-chat"
+                self.context_manager = mgr
+                self.mcp_manager = type("DummyMcp", (), {"clients": {}})()
+                self.executor = type("DummyExec", (), {"registry": type("DummyReg", (), {"get_tool_names": lambda self: ["test_tool"]})()})()
+
+        agent = DummyAgent(self.mgr)
+        self.mgr.record_api_usage(prompt_tokens=2500, completion_tokens=350)
+
+        captured = StringIO()
+        old_stdout = sys.stdout
+        try:
+            sys.stdout = captured
+            handled, should_exit = handle_slash_command(agent, "/status")
+        finally:
+            sys.stdout = old_stdout
+
+        self.assertTrue(handled)
+        self.assertFalse(should_exit)
+        output = captured.getvalue()
+        self.assertIn("当前 Token 预算: 上限 300 | 输出预留 60", output)
+        self.assertIn("累计 API 消耗: 输入 2500 Tokens | 输出 350 Tokens", output)
+
 if __name__ == "__main__":
     unittest.main()
