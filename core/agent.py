@@ -130,6 +130,24 @@ class ReActAgent:
 
         try:
             for step in range(1, self.max_steps + 1):
+                # 轮内步间动态 Token 预算核验与步间熔断（高优先级）
+                current_context_tokens = self.context_manager.token_counter.count_messages(messages)
+                max_context_allowed = self.context_manager.budget.total_budget - output_reserve - tools_tokens
+                if step > 1 and current_context_tokens > max_context_allowed:
+                    circuit_msg = (
+                        f"【系统保护】轮内多步推理消耗已达上下文上限 ({current_context_tokens}/{self.context_manager.budget.total_budget} Tokens)，"
+                        f"为避免触发大模型长度超限异常 (400 context_length_exceeded)，已安全熔断并终止后续工具调用。"
+                    )
+                    logger.warning(
+                        f"轮内多步推理触发动态预算熔断: Step {step} 上下文 Tokens ({current_context_tokens}) > 允许上限 ({max_context_allowed})。"
+                    )
+                    if verbose:
+                        print(f"\n[动态熔断] {circuit_msg}")
+                    self.context_manager.add_assistant_message(circuit_msg)
+                    self.context_manager.finish_current_turn()
+                    turn_finished = True
+                    return circuit_msg
+
                 if verbose:
                     print(f"[Step {step}/{self.max_steps}] Agent 正在思考...")
 
@@ -141,8 +159,17 @@ class ReActAgent:
                     max_tokens=output_reserve
                 )
 
+                # 捕获大模型权威真实 API Usage 反馈并记录校准
+                usage = getattr(response, "usage", None)
+                if usage:
+                    prompt_toks = getattr(usage, "prompt_tokens", 0) or 0
+                    comp_toks = getattr(usage, "completion_tokens", 0) or 0
+                    total_toks = getattr(usage, "total_tokens", prompt_toks + comp_toks) or (prompt_toks + comp_toks)
+                    self.context_manager.record_api_usage(prompt_toks, comp_toks)
+                    if verbose:
+                        print(f"  [API 实际用量] 输入: {prompt_toks} Tokens | 输出: {comp_toks} Tokens | 计费总计: {total_toks} Tokens")
+
                 response_msg = response.choices[0].message
-                # 关键修复：统一转换为纯字典
                 assistant_dict = self._convert_response_to_dict(response_msg)
 
                 if assistant_dict.get("tool_calls"):
@@ -158,7 +185,7 @@ class ReActAgent:
                         verbose=verbose
                     )
 
-                    # 关键修复：单步工具输出保护，防止轮内爆炸
+                    # 单步工具输出保护
                     protected_results = []
                     for tr in tool_results:
                         safe_content = self._protect_tool_result(str(tr.get("content", "")))
@@ -185,13 +212,16 @@ class ReActAgent:
                             matched_res
                         )
 
-                    # 关键修复：轮内即时同步工作记忆注记，让随后的 step 感知最新状态
+                    # 关键修复：轮内即时同步工作记忆，同时匹配头部 system 或当前轮 user 前缀
                     latest_wm = self.context_manager.working_memory.format_prompt_context()
                     for m in messages:
-                        if m.get("role") == "user" and "【系统注记 - 工作区感知状态" in str(m.get("content", "")):
-                            parts = str(m.get("content", "")).split("[用户当前输入]:", 1)
-                            user_suffix = parts[1] if len(parts) > 1 else ""
-                            m["content"] = f"{latest_wm}\n\n[用户当前输入]:{user_suffix}"
+                        if m.get("role") == "system" and "Working Memory" in str(m.get("content", "")):
+                            m["content"] = latest_wm
+                            break
+                        elif m.get("role") == "user" and "【系统注记 - 工作区感知状态" in str(m.get("content", "")):
+                            parts = str(m.get("content", "")).split("[用户当前提问]:", 1)
+                            user_suffix = parts[1] if len(parts) > 1 else str(m.get("content", ""))
+                            m["content"] = f"{latest_wm}\n\n[用户当前提问]:{user_suffix}"
                             break
 
                     self.context_manager.add_tool_results(protected_results)
@@ -214,7 +244,7 @@ class ReActAgent:
             return fallback_msg
 
         finally:
-            # 事务性保障：若异常中断导致未完成，强制安全关闭轮次，杜绝悬挂半截脏轮次
+            # 关键修复：中断或异常时安全撤销，绝不调用 finish_current_turn 打上假完成标记
             if not turn_finished and self.context_manager.current_turn:
-                logger.warning("轮次未正常完成即退出，执行防御性轮次收尾。")
-                self.context_manager.finish_current_turn()
+                logger.warning("轮次未正常完成即退出，安全取消当前悬挂轮次。")
+                self.context_manager.abort_current_turn()

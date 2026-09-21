@@ -197,5 +197,114 @@ class TestSafeSlidingWindowAndSession(unittest.TestCase):
             else:
                 seen_non_system = True
 
+
+    def test_rollback_disk_restoration_alignment(self):
+        """验证点: 回滚操作落盘后，新建实例 restore_from_disk 时能够对齐回滚，工作记忆精准回退至前一轮"""
+        mgr = ContextManager("test_rollback_alignment", budget_ledger=self.ledger)
+        if mgr.history_file.exists():
+            import os
+            os.remove(mgr.history_file)
+
+        # 第 1 轮: 修改 file_a.py
+        mgr.start_new_turn("任务 1: 修改 file_a.py")
+        mgr.working_memory.update_from_tool("write_file", {"file_path": "file_a.py"}, "ok")
+        mgr.add_assistant_message("已完成 file_a.py 修改")
+        mgr.finish_current_turn()
+
+        # 第 2 轮: 修改 file_b.py
+        mgr.start_new_turn("任务 2: 修改 file_b.py")
+        mgr.working_memory.update_from_tool("write_file", {"file_path": "file_b.py"}, "ok")
+        mgr.add_assistant_message("已完成 file_b.py 修改")
+        mgr.finish_current_turn()
+
+        self.assertIn("file_b.py", mgr.working_memory.modified_files)
+
+        # 执行回滚第 2 轮
+        success = mgr.rollback_last_turn()
+        self.assertTrue(success)
+        self.assertNotIn("file_b.py", mgr.working_memory.modified_files)
+        self.assertIn("file_a.py", mgr.working_memory.modified_files)
+
+        # 新实例从磁盘还原
+        restored = ContextManager("test_rollback_alignment", budget_ledger=self.ledger)
+        has_restored = restored.restore_from_disk()
+        self.assertTrue(has_restored)
+
+        # 核心断言: 还原后的实例中，已被回滚的轮次与工作记忆绝不能复活！
+        self.assertEqual(len(restored.completed_turns), 1)
+        self.assertEqual(restored.turn_count, 1)
+        self.assertIn("file_a.py", restored.working_memory.modified_files)
+        self.assertNotIn("file_b.py", restored.working_memory.modified_files, "已被回滚的轮次修改记录绝不能在 restore 后被恢复！")
+
+        if mgr.history_file.exists():
+            import os
+            os.remove(mgr.history_file)
+
+
+    def test_restore_from_disk_rebuilds_snapshot_stack_for_undo(self):
+        """验证点: restore_from_disk 完整重建快照栈，恢复后连续执行多次回滚工作记忆均能精准退栈"""
+        session_id = "test_multi_undo_after_restore"
+        mgr = ContextManager(session_id, budget_ledger=self.ledger)
+        if mgr.history_file.exists():
+            import os
+            os.remove(mgr.history_file)
+
+        # 构造 3 个轮次，每轮修改不同文件
+        for i in range(1, 4):
+            mgr.start_new_turn(f"任务 {i}")
+            mgr.working_memory.update_from_tool("write_file", {"file_path": f"file_{i}.py"}, "ok")
+            mgr.add_assistant_message(f"完成任务 {i}")
+            mgr.finish_current_turn()
+
+        # 新建实例执行 restore
+        restored = ContextManager(session_id, budget_ledger=self.ledger)
+        self.assertTrue(restored.restore_from_disk())
+        self.assertEqual(len(restored._state_snapshots), 3, "恢复后快照栈必须对齐历史完成轮次数！")
+
+        # 连续回滚第 3 轮
+        self.assertTrue(restored.rollback_last_turn())
+        self.assertEqual(restored.turn_count, 2)
+        self.assertNotIn("file_3.py", restored.working_memory.modified_files)
+        self.assertIn("file_2.py", restored.working_memory.modified_files)
+
+        # 再次回滚第 2 轮
+        self.assertTrue(restored.rollback_last_turn())
+        self.assertEqual(restored.turn_count, 1)
+        self.assertNotIn("file_2.py", restored.working_memory.modified_files)
+        self.assertIn("file_1.py", restored.working_memory.modified_files)
+
+        if mgr.history_file.exists():
+            import os
+            os.remove(mgr.history_file)
+
+    def test_init_turn_counter_resets_on_session_cleared(self):
+        """验证点: 日志中存在 session_cleared 标记时，新会话 turn_count 正确归零从 1 开始自增"""
+        session_id = "test_clear_reset_counter"
+        mgr = ContextManager(session_id, budget_ledger=self.ledger)
+        if mgr.history_file.exists():
+            import os
+            os.remove(mgr.history_file)
+
+        # 运行两轮
+        for i in range(1, 3):
+            mgr.start_new_turn(f"旧任务 {i}")
+            mgr.add_assistant_message(f"旧回复 {i}")
+            mgr.finish_current_turn()
+
+        # 用户清空会话
+        mgr.clear()
+
+        # 新实例探测历史 ID
+        new_mgr = ContextManager(session_id, budget_ledger=self.ledger)
+        self.assertEqual(new_mgr.turn_count, 0, "会话清空后，新建实例初始化计数必须归零！")
+
+        # 开启新轮次必须是第 1 轮
+        new_mgr.start_new_turn("新提问")
+        self.assertEqual(new_mgr.turn_count, 1, "清空后的首次提问必须从 turn_id=1 重新开始！")
+
+        if mgr.history_file.exists():
+            import os
+            os.remove(mgr.history_file)
+
 if __name__ == "__main__":
     unittest.main()
