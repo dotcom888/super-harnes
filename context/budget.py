@@ -20,7 +20,7 @@ class BudgetLedger:
         tools_reserve: int = 2000,
         memory_reserve: int = 2000,
         output_reserve: int = 3000,
-        min_history_budget: int = 500
+        min_history_budget: Optional[int] = None
     ):
         # 严格非负整数参数校验
         for name, val in [
@@ -29,7 +29,6 @@ class BudgetLedger:
             ("tools_reserve", tools_reserve),
             ("memory_reserve", memory_reserve),
             ("output_reserve", output_reserve),
-            ("min_history_budget", min_history_budget),
         ]:
             if not isinstance(val, int) or isinstance(val, bool) or val < 0:
                 raise ValueError(f"{name} 必须为非负整数，得到: {val}")
@@ -42,6 +41,12 @@ class BudgetLedger:
             raise ValueError(
                 f"预留预算之和 ({reserved_sum}) 不能大于或等于总预算 ({total_budget})"
             )
+
+        # 自适应默认 min_history_budget
+        if min_history_budget is None:
+            min_history_budget = min(500, max(50, int(total_budget * 0.1)))
+        elif not isinstance(min_history_budget, int) or min_history_budget < 0:
+            raise ValueError(f"min_history_budget 必须为非负整数，得到: {min_history_budget}")
 
         self.total_budget = total_budget
         self.system_reserve = system_reserve

@@ -18,7 +18,8 @@ class TokenCounter:
     高精度 Token 计数与上下文使用率计算器：
     1. 优先使用 tiktoken (cl100k_base / o200k_base) 真实编码；
     2. 无外部库时，采用高精度分词加权估算（区分 CJK 中文、代码标点、空白缩进与英文单词）；
-    3. 严格遵循 OpenAI 消息格式规范计算 role, name, tool_calls, tool_call_id 等开销。
+    3. 严格遵循 OpenAI 消息格式规范计算 role, name, tool_calls, tool_call_id 等开销；
+    4. 健壮兼容字典 (dict) 与 Pydantic 对象 (如 ChatCompletionMessage)。
     """
     def __init__(self, char_per_token: Optional[float] = None):
         self.char_per_token = char_per_token
@@ -41,18 +42,16 @@ class TokenCounter:
             return max(1, int(len(text) / self.char_per_token))
 
         # 高精度加权估算器：
-        # - CJK 中日韩字符: 平均约 1.3 tokens/字符
-        # - 代码标点与符号: 约 0.8 tokens/符号
-        # - 换行与连续空白缩进: 约 0.5 tokens/个
+        # - CJK 中日韩字符: 平均约 1.35 tokens/字符
+        # - 代码标点与符号: 约 0.85 tokens/符号
+        # - 换行与连续空白缩进: 约 0.75 tokens/个
         # - 英文单词与数字: 约 3.8 字符/token
         cjk_count = len(re.findall(r'[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]', text))
         code_punct_count = len(re.findall(r'[{}\[\]();:.,<>=\+\-\*/\\`\'\"_\|\&\!\?\%\^~#@$]', text))
         newline_count = text.count('\n')
         
-        # 移除已统计的 CJK 和标点后剩余的英文/数字/空格
         remaining_text = re.sub(r'[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef{}\[\]();:.,<>=\+\-\*/\\`\'\"_\|\&\!\?\%\^~#@$\n]', ' ', text)
         words = remaining_text.split()
-        # 英文词根估算：单词数 + 长词切分
         word_tokens = sum(max(1, int(len(w) / 3.8 + 0.5)) for w in words)
 
         estimated = (
@@ -63,23 +62,72 @@ class TokenCounter:
         )
         return max(1, estimated)
 
-    def count_message(self, msg: Dict[str, Any]) -> int:
+    def _normalize_message(self, msg: Any) -> Dict[str, Any]:
+        """将各类消息对象（dict, ChatCompletionMessage 等）归一化为安全字典"""
+        if isinstance(msg, dict):
+            return msg
+        if hasattr(msg, "model_dump"):
+            try:
+                return msg.model_dump()
+            except Exception:
+                pass
+        if hasattr(msg, "to_dict"):
+            try:
+                return msg.to_dict()
+            except Exception:
+                pass
+
+        # 通用反射属性提取
+        normalized: Dict[str, Any] = {
+            "role": getattr(msg, "role", ""),
+            "content": getattr(msg, "content", ""),
+        }
+        if hasattr(msg, "tool_calls") and getattr(msg, "tool_calls"):
+            raw_tcs = getattr(msg, "tool_calls")
+            clean_tcs = []
+            for tc in raw_tcs:
+                if isinstance(tc, dict):
+                    clean_tcs.append(tc)
+                elif hasattr(tc, "model_dump"):
+                    clean_tcs.append(tc.model_dump())
+                else:
+                    func = getattr(tc, "function", None)
+                    func_dict = {
+                        "name": getattr(func, "name", "") if func else "",
+                        "arguments": getattr(func, "arguments", "") if func else ""
+                    }
+                    clean_tcs.append({
+                        "id": getattr(tc, "id", ""),
+                        "type": getattr(tc, "type", "function"),
+                        "function": func_dict
+                    })
+            normalized["tool_calls"] = clean_tcs
+
+        if hasattr(msg, "tool_call_id") and getattr(msg, "tool_call_id"):
+            normalized["tool_call_id"] = getattr(msg, "tool_call_id")
+        if hasattr(msg, "name") and getattr(msg, "name"):
+            normalized["name"] = getattr(msg, "name")
+
+        return normalized
+
+    def count_message(self, msg: Any) -> int:
         """
         估算单条 OpenAI 协议消息的 Token 开销：
         遵循 OpenAI 消息结构开销：
         每条消息的基础定界符 (role + boundary) 约 3~4 tokens
         """
+        safe_msg = self._normalize_message(msg)
         tokens = 3  # <|im_start|>{role}\n ... <|im_end|>
 
-        role = msg.get("role", "")
+        role = safe_msg.get("role", "")
         if role:
             tokens += self.count_text(str(role))
 
-        name = msg.get("name")
+        name = safe_msg.get("name")
         if name:
             tokens += self.count_text(str(name)) + 1
 
-        content = msg.get("content")
+        content = safe_msg.get("content")
         if content:
             if isinstance(content, str):
                 tokens += self.count_text(content)
@@ -90,7 +138,6 @@ class TokenCounter:
                         if item.get("type") == "text":
                             tokens += self.count_text(item.get("text", ""))
                         elif item.get("type") == "image_url":
-                            # 基础视觉图像 token 占位 (通常高分辨率约 85~170 tokens)
                             tokens += 85
                     else:
                         tokens += self.count_text(str(item))
@@ -98,12 +145,12 @@ class TokenCounter:
                 tokens += self.count_text(str(content))
 
         # tool_call_id (for role == "tool")
-        tool_call_id = msg.get("tool_call_id")
+        tool_call_id = safe_msg.get("tool_call_id")
         if tool_call_id:
             tokens += self.count_text(str(tool_call_id)) + 2
 
         # assistant 发起的 tool_calls
-        tool_calls = msg.get("tool_calls")
+        tool_calls = safe_msg.get("tool_calls")
         if tool_calls and isinstance(tool_calls, list):
             for tc in tool_calls:
                 tokens += 3  # tool_call item delimiter
@@ -121,7 +168,7 @@ class TokenCounter:
 
         return tokens
 
-    def count_messages(self, messages: List[Dict[str, Any]]) -> int:
+    def count_messages(self, messages: List[Any]) -> int:
         """计算消息列表总 Token，加上会话引导开销"""
         if not messages:
             return 0

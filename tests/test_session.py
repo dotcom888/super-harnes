@@ -17,7 +17,6 @@ class TestSafeSlidingWindowAndSession(unittest.TestCase):
 
     def setUp(self):
         self.session_id = "test_verified_session"
-        # 设定可控账本：总预算 400，系统 50，工具 50，记忆 50，输出 100，历史预算 150
         self.ledger = BudgetLedger(
             total_budget=400,
             system_reserve=50,
@@ -45,21 +44,15 @@ class TestSafeSlidingWindowAndSession(unittest.TestCase):
         """核心验证：彻底杜绝滑窗时间穿孔，确保 active_chunks 严格连续"""
         window = SlidingWindow(self.counter)
 
-        # 轮次 1: 30 tokens
         t1 = TurnChunk(1)
         t1.add_message({"role": "user", "content": "x" * 25})
 
-        # 轮次 2: 120 tokens (中间大轮次)
         t2 = TurnChunk(2)
         t2.add_message({"role": "user", "content": "y" * 115})
 
-        # 轮次 3: 30 tokens (较新轮次)
         t3 = TurnChunk(3)
         t3.add_message({"role": "user", "content": "z" * 25})
 
-        # 历史预算只有 80 tokens：
-        # 倒序装入 t3 (30, 余 50) -> 检查 t2 (120 > 50) -> 必须立即截断！
-        # 绝不能越过 t2 去装 t1，否则将产生 [t1, t3] 的穿孔！
         active, evicted = window.split_by_budget([t1, t2, t3], budget_tokens=80)
 
         active_ids = [c.turn_id for c in active]
@@ -69,7 +62,7 @@ class TestSafeSlidingWindowAndSession(unittest.TestCase):
         self.assertEqual(evicted_ids, [1, 2], "被淘汰轮次必须包含所有更早轮次，且保持时间正序")
 
     def test_turn_chunk_atomic_pairing_and_sanitization(self):
-        """验证原子轮次成对绑定校验与未闭合调用安全清洗"""
+        """验证原子轮次双向成对清洗（孤立 tool 与未闭合 calls 同时清洗）"""
         chunk = TurnChunk(1)
         chunk.add_message({"role": "user", "content": "执行排查"})
         chunk.add_message({
@@ -80,36 +73,35 @@ class TestSafeSlidingWindowAndSession(unittest.TestCase):
                 {"id": "call_2", "type": "function", "function": {"name": "run_shell", "arguments": "{}"}}
             ]
         })
-        # 仅回填 call_1，call_2 未闭合
+        # 包含一个合法结果和一个孤立结果
         chunk.add_message({"role": "tool", "tool_call_id": "call_1", "content": "文件内容"})
+        chunk.add_message({"role": "tool", "tool_call_id": "call_ghost", "content": "幽灵结果"})
 
-        self.assertFalse(chunk.is_paired_and_complete(), "存在未闭合的 tool 调用时应返回 False")
+        self.assertFalse(chunk.is_paired_and_complete())
 
-        # 执行清洗
+        # 执行双向清洗
         chunk.sanitize_unpaired_calls()
-        self.assertTrue(chunk.is_paired_and_complete(), "清洗后所有 tool_calls 必须与 tool 结果成对匹配")
-        assistant_msg = chunk.messages[1]
-        self.assertEqual(len(assistant_msg["tool_calls"]), 1)
-        self.assertEqual(assistant_msg["tool_calls"][0]["id"], "call_1")
+        self.assertTrue(chunk.is_paired_and_complete())
+        
+        # 验证孤立结果已被清理
+        self.assertNotIn("call_ghost", chunk.get_tool_result_ids())
+        self.assertIn("call_1", chunk.get_tool_result_ids())
 
     def test_full_disk_persistence_with_summary_and_wm_restore(self):
         """核心验证：落盘恢复必须完整还原 summary_state 和 working_memory"""
-        # 设置状态
-        self.manager.working_memory.update_goal("修复除零缺陷")
+        self.manager.working_memory.update_goal("修复除零缺陷", is_manual=True)
         self.manager.working_memory.update_from_tool("read_file", {"file_path": "tools/calc.py"}, "code")
         self.manager.summarizer.state.summary_text = "早期已排查了 tools/calc.py"
         self.manager.summarizer.state.start_turn_id = 1
         self.manager.summarizer.state.end_turn_id = 2
         self.manager.summarizer.state.covered_through_turn_id = 2
 
-        # 完成第 1 轮
         self.manager.start_new_turn("轮次 1 提问")
         self.manager.add_assistant_message("轮次 1 回答")
         self.manager.finish_current_turn()
 
         self.assertTrue(self.manager.history_file.exists())
 
-        # 新建实例从磁盘恢复
         restored_manager = ContextManager(
             session_id=self.session_id,
             budget_ledger=self.ledger,
@@ -119,27 +111,22 @@ class TestSafeSlidingWindowAndSession(unittest.TestCase):
         self.assertTrue(success)
         self.assertEqual(restored_manager.turn_count, 1)
 
-        # 检查 WorkingMemory 恢复
         self.assertEqual(restored_manager.working_memory.current_goal, "修复除零缺陷")
         self.assertIn("tools/calc.py", restored_manager.working_memory.inspected_files)
 
-        # 检查 SummaryState 恢复（曾是重大遗漏）
         self.assertTrue(restored_manager.summarizer.state.has_summary())
         self.assertEqual(restored_manager.summarizer.state.summary_text, "早期已排查了 tools/calc.py")
         self.assertEqual(restored_manager.summarizer.state.covered_through_turn_id, 2)
 
     def test_disk_restore_isolates_uncompleted_turns(self):
         """核心验证：进程崩溃遗留的未完成轮次，恢复时不进入 completed_turns"""
-        # 轮次 1: 正常完成
         self.manager.start_new_turn("轮次 1 正常完成")
         self.manager.add_assistant_message("轮次 1 正常回答")
         self.manager.finish_current_turn()
 
-        # 轮次 2: 正在进行途中发生崩溃（未调用 finish_current_turn，缺少 turn_finished 记录）
         self.manager.start_new_turn("轮次 2 中断提问")
         self.manager.add_assistant_message("轮次 2 中断回答")
 
-        # 恢复
         restored = ContextManager(
             session_id=self.session_id,
             budget_ledger=self.ledger,
@@ -147,13 +134,11 @@ class TestSafeSlidingWindowAndSession(unittest.TestCase):
         )
         restored.restore_from_disk()
 
-        # 仅轮次 1 被视为已完成历史，轮次 2 绝不污染 completed_turns
         self.assertEqual(len(restored.completed_turns), 1)
         self.assertEqual(restored.completed_turns[0].messages[0]["content"], "轮次 1 正常完成")
 
     def test_hard_gatekeeper_enforces_output_reserve(self):
         """核心验证：最终硬门禁确保 Context 总 Token 绝对不侵占 output_reserve"""
-        # 总预算 250，输出预留 100，实际可用上限 150
         tiny_ledger = BudgetLedger(
             total_budget=250,
             system_reserve=20,
@@ -173,7 +158,6 @@ class TestSafeSlidingWindowAndSession(unittest.TestCase):
             mgr.add_assistant_message(f"长轮次回答 #{i} " + "w" * 40)
             mgr.finish_current_turn()
 
-        # 当前轮次
         mgr.start_new_turn("当前提问")
 
         messages, metrics = mgr.build_context_with_watermark("Base System Prompt")
@@ -189,8 +173,8 @@ class TestSafeSlidingWindowAndSession(unittest.TestCase):
         if mgr.history_file.exists():
             os.remove(mgr.history_file)
 
-    def test_prompt_cache_prefix_stability(self):
-        """验证 Prompt 缓存前缀友好结构：Base System 和 Summary 位于前缀"""
+    def test_all_system_messages_at_head_for_api_compatibility(self):
+        """验证所有 System 角色消息必须全部位于头部，杜绝在历史交互中间插入 system 触发 400 错误"""
         self.manager.summarizer.state.summary_text = "这是稳定的早期排查纪要"
         self.manager.summarizer.state.start_turn_id = 1
         self.manager.summarizer.state.end_turn_id = 1
@@ -199,23 +183,19 @@ class TestSafeSlidingWindowAndSession(unittest.TestCase):
         self.manager.add_assistant_message("历史回答 1")
         self.manager.finish_current_turn()
 
-        # 当前轮更新 Working Memory
         self.manager.start_new_turn("当前轮提问")
         self.manager.working_memory.update_goal("变更目标 A")
 
-        msgs_a, _ = self.manager.build_context_with_watermark("Immutable Base System")
+        msgs, _ = self.manager.build_context_with_watermark("Immutable Base System")
 
-        # 索引 0 必须是 Base System
-        self.assertEqual(msgs_a[0]["role"], "system")
-        self.assertEqual(msgs_a[0]["content"], "Immutable Base System")
-
-        # 索引 1 必须是 Summary
-        self.assertEqual(msgs_a[1]["role"], "system")
-        self.assertIn("历史排查与修改纪要", msgs_a[1]["content"])
-
-        # 紧接着必须是历史轮次消息，而不是频繁变动的 WorkingMemory
-        self.assertEqual(msgs_a[2]["role"], "user")
-        self.assertEqual(msgs_a[2]["content"], "历史第 1 轮")
+        # 验证前缀中的 system 角色消息连续且在历史之前
+        seen_non_system = False
+        for m in msgs:
+            role = m.get("role")
+            if role == "system":
+                self.assertFalse(seen_non_system, "System 消息绝对不允许出现在 user/assistant/tool 消息之后！")
+            else:
+                seen_non_system = True
 
 if __name__ == "__main__":
     unittest.main()

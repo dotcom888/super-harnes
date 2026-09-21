@@ -80,13 +80,11 @@ class TestContextEnhancements(unittest.TestCase):
         summarizer.min_turn_delta = 3
         summarizer.min_token_delta = 500
 
-        # 仅淘汰 1 轮（未达到 3 轮门槛）
         chunk1 = self.mgr.completed_turns[:1] if self.mgr.completed_turns else []
         self.assertFalse(summarizer.should_summarize(chunk1, current_turn_id=4))
 
     def test_point_5_budget_ledger_validation_and_dynamic_recalc(self):
         """验证点 5: 账本参数校验、超支判定与实际用量动态重算"""
-        # 非法参数（负数或预留超过总预算）必须抛出 ValueError
         with self.assertRaises(ValueError):
             BudgetLedger(total_budget=1000, system_reserve=-100)
 
@@ -96,17 +94,15 @@ class TestContextEnhancements(unittest.TestCase):
                 system_reserve=300,
                 tools_reserve=300,
                 memory_reserve=300,
-                output_reserve=300  # 和为 1200 > 1000
+                output_reserve=300
             )
 
         ledger = BudgetLedger(total_budget=10000, output_reserve=2000)
-        # 动态根据实际 tools (例如 3500 tokens) 和实际 system (例如 800 tokens) 重算
         new_history = ledger.recalculate_history_budget(
             actual_system_tokens=800,
             actual_tools_tokens=3500,
             actual_memory_tokens=1000
         )
-        # 10000 - (800 + 3500 + 1000 + 2000) = 2700
         self.assertEqual(new_history, 2700)
         self.assertEqual(ledger.get_remaining_budget(8000), 2000)
         self.assertTrue(ledger.is_over_budget(10001))
@@ -115,12 +111,10 @@ class TestContextEnhancements(unittest.TestCase):
     def test_point_6_token_counter_precision_and_structures(self):
         """验证点 6: TokenCounter 中英文分级加权与 OpenAI 消息结构开销"""
         counter = TokenCounter()
-        # 中文计费高于 2.8 字符/token
-        text_cn = "排查计算器除零异常并更新单元测试"  # 16 个汉字
+        text_cn = "排查计算器除零异常并更新单元测试"
         tokens_cn = counter.count_text(text_cn)
-        self.assertGreaterEqual(tokens_cn, 16, "每个汉字通常不应低于 1 个 Token")
+        self.assertGreaterEqual(tokens_cn, 16)
 
-        # 包含 tool_calls 与结构开销
         msg = {
             "role": "assistant",
             "content": "正在调用工具",
@@ -137,6 +131,41 @@ class TestContextEnhancements(unittest.TestCase):
         }
         tokens_msg = counter.count_message(msg)
         self.assertGreater(tokens_msg, 20)
+
+    def test_point_7_watermark_dynamic_recovery_from_red_zone(self):
+        """验证点 7: 消除永久红区陷阱，摘要压缩后水位能够动态真实回落"""
+        # 构造一个历史额度为 200 的场景
+        ledger = BudgetLedger(total_budget=500, output_reserve=100, system_reserve=50, tools_reserve=50, memory_reserve=50)
+        mgr = ContextManager("test_watermark_recovery", budget_ledger=ledger)
+
+        # 构造较长历史，使其触发 RED 区
+        for i in range(1, 5):
+            mgr.start_new_turn(f"长轮次 {i} 提问 " + "a" * 80)
+            mgr.add_assistant_message(f"长轮次 {i} 回答 " + "b" * 80)
+            mgr.finish_current_turn()
+
+        # 启动当前轮
+        mgr.start_new_turn("当前提问")
+
+        # 装配前未压缩，水位突破 75% 触发 RED 区并自动执行摘要
+        _, metrics_red = mgr.build_context_with_watermark("System Prompt", force_summary=True)
+        self.assertEqual(metrics_red["zone"], WatermarkZone.RED)
+        self.assertTrue(mgr.summarizer.state.has_summary())
+
+        # 完成当前轮
+        mgr.add_assistant_message("当前回答")
+        mgr.finish_current_turn()
+
+        # 下一轮：历史已被摘要吸收，重新开始简短提问
+        mgr.start_new_turn("简短提问")
+        _, metrics_recovered = mgr.build_context_with_watermark("System Prompt")
+
+        # 核心断言：水位必须成功从 RED 回落（不再被死锁在 RED 区）
+        self.assertIn(metrics_recovered["zone"], [WatermarkZone.GREEN, WatermarkZone.YELLOW])
+        self.assertLess(metrics_recovered["raw_utilization"], 0.75, "已归档轮次不再重复压迫水位，水位必须顺利回落！")
+
+        if mgr.history_file.exists():
+            os.remove(mgr.history_file)
 
 if __name__ == "__main__":
     unittest.main()
