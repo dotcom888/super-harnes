@@ -10,6 +10,7 @@ from tools.executor import ToolExecutor
 from mcp import McpClient, McpToolBridge, McpManager
 from mcp.config import McpServerConfig, TrustLevel
 from mcp.client import get_sanitized_env
+from mcp.bridge import semantic_output_clamp, TMP_OUTPUT_DIR, _cleanup_old_spool_files
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 
@@ -121,7 +122,6 @@ class TestMcpIntegration(unittest.TestCase):
 
     def test_stderr_pipe_deadlock_prevention(self):
         """验证当子进程向 stderr 输出大量数据 (>64KB) 时，不会导致管道死锁挂起"""
-        # 子进程先向 stderr 刷 100KB 数据，然后向 stdout 输出 JSON-RPC 响应
         large_code = (
             "import sys, json\n"
             "sys.stderr.write('W' * 100000 + '\\n')\n"
@@ -139,27 +139,71 @@ class TestMcpIntegration(unittest.TestCase):
         finally:
             client.close()
 
-    def test_semantic_output_clamping(self):
-        """验证输出超限时的语义化截断与本地日志转存"""
-        from mcp.bridge import semantic_output_clamp
-        # 构造包含核心 Traceback 错误的超大输出 (> 5000 字符)
-        filler = "normal log line " * 200 + "\n"
-        error_block = (
+    def test_semantic_output_clamping_with_huge_errors(self):
+        """验证海量递归堆栈报错（>100KB）下，不仅提取堆栈和错误，且绝不突破 max_chars 配额"""
+        huge_err = (
             "Traceback (most recent call last):\n"
-            "  File 'main.py', line 42, in calculate\n"
-            "    raise ValueError('Critical failure in core engine')\n"
-            "ValueError: Critical failure in core engine\n"
+            + ("  File 'core.py', line 99, in recursive_calc\n" * 4000)
+            + "RecursionError: maximum recursion depth exceeded while calling a Python object\n"
         )
-        full_text = filler + error_block + filler
+        max_budget = 1200
+        clamped = semantic_output_clamp(huge_err, max_chars=max_budget, server_id="test_srv", tool_name="test_fn")
 
-        clamped = semantic_output_clamp(full_text, max_chars=1000, server_id="test_srv", tool_name="test_fn")
-        # 1. 验证输出被限制在合理大小附近
-        self.assertLess(len(clamped), 2000)
-        # 2. 验证保留了关键 Traceback 错误信息
+        # 1. 严格预算约束：绝对不能超过给定的 max_chars
+        self.assertLessEqual(len(clamped), max_budget)
+        # 2. 关键错误上下文保留：头部 Traceback 与尾部核心 Exception 均被精准保留
         self.assertIn("Traceback (most recent call last):", clamped)
-        self.assertIn("Critical failure in core engine", clamped)
-        # 3. 验证包含了转存文件的路径指引
+        self.assertIn("RecursionError:", clamped)
+        # 3. 包含中间重复帧省略提示与本地落盘路径提示
+        self.assertIn("堆栈过长已自动精简中间重复帧", clamped)
         self.assertIn("完整原始输出已存至:", clamped)
+
+    def test_spool_file_rotation(self):
+        """验证 .super-harnes/tmp 目录在文件过多时自动执行滚动淘汰，保证磁盘空间有界"""
+        TMP_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        # 创建 105 个模拟旧日志文件
+        test_files = []
+        for i in range(105):
+            p = TMP_OUTPUT_DIR / f"mcp_test_rotation_{i:03d}.log"
+            p.write_text(f"dummy log content {i}", encoding="utf-8")
+            # 制造时间差
+            mtime = time.time() - (105 - i) * 10
+            os.utime(p, (mtime, mtime))
+            test_files.append(p)
+
+        try:
+            # 触发清理，限定最多 100 个，淘汰至 70 个
+            _cleanup_old_spool_files(TMP_OUTPUT_DIR, max_files=100, retain_files=70)
+            remaining_test_files = list(TMP_OUTPUT_DIR.glob("mcp_test_rotation_*.log"))
+            self.assertLessEqual(len(remaining_test_files), 70)
+            # 验证保留的是时间最新的文件（索引较大的文件）
+            self.assertTrue((TMP_OUTPUT_DIR / "mcp_test_rotation_104.log").exists())
+            self.assertFalse((TMP_OUTPUT_DIR / "mcp_test_rotation_000.log").exists())
+        finally:
+            for p in TMP_OUTPUT_DIR.glob("mcp_test_rotation_*.log"):
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+
+    def test_manager_handshake_failure_cleanup(self):
+        """验证当 MCP 服务启动成功但握手失败时，子进程会被立即释放关闭，不成为会话期孤儿僵死进程"""
+        test_reg = ToolRegistry()
+        manager = McpManager(registry=test_reg)
+
+        # 构造一个一启动就报错或不响应 JSON-RPC 的命令
+        failing_code = "import sys, time; time.sleep(0.5); sys.exit(1)"
+        cfg = McpServerConfig(
+            server_id="broken_srv",
+            command=sys.executable,
+            args=["-c", failing_code],
+            timeout_seconds=2
+        )
+        with self.assertRaises(Exception):
+            manager._start_single_server("broken_srv", cfg)
+
+        # 验证 broken_srv 没有残留在 manager.clients 中
+        self.assertNotIn("broken_srv", manager.clients)
 
 if __name__ == "__main__":
     unittest.main()

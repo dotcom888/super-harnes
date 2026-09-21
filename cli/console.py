@@ -36,8 +36,14 @@ def main():
             if is_cmd:
                 continue
 
-            result = agent.run(prompt, verbose=True)
-            print(f"\nAgent 最终答复:\n{result}")
+            # 轮内软中断保护：执行长耗时推理或工具调用时，Ctrl+C 仅打断当前轮次，保留交互上下文与历史
+            try:
+                result = agent.run(prompt, verbose=True)
+                print(f"\nAgent 最终答复:\n{result}")
+            except KeyboardInterrupt:
+                print("\n\n[用户中断] 已安全中止当前轮次推理与工具执行，历史会话状态已保留。")
+            except Exception as err:
+                print(f"\n[运行异常] {type(err).__name__}: {err}")
 
     except Exception as e:
         print(f"初始化失败: {e}")

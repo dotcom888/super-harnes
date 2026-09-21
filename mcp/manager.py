@@ -15,7 +15,8 @@ class McpManager:
     加固型 MCP 服务管理器：
     1. 并行并发握手：使用多线程并行启动多个外部子进程，消除单点慢服务阻塞整个 CLI 启动
     2. 进程树生命周期统一管控与退出清理
-    3. 异常隔离：单个外部服务启动失败或超时不影响其他服务
+    3. 异常即时自愈：握手或加载失败时立即主动销毁失败进程，防止会话期孤儿僵死进程泄漏
+    4. 异常隔离：单个外部服务启动失败或超时不影响其他服务
     """
     def __init__(self, config_path: Optional[str] = None, registry: ToolRegistry = default_registry):
         if config_path:
@@ -63,10 +64,15 @@ class McpManager:
             default_timeout=cfg.timeout_seconds,
             server_name=server_id
         )
-        bridge = McpToolBridge(client=client, config=cfg, registry=self.registry)
-        bridged_tools = bridge.bridge()
-        self.clients[server_id] = client
-        return bridged_tools
+        try:
+            bridge = McpToolBridge(client=client, config=cfg, registry=self.registry)
+            bridged_tools = bridge.bridge()
+            self.clients[server_id] = client
+            return bridged_tools
+        except Exception:
+            # 关键防御：握手或枚举工具失败时，立即就地释放并彻底销毁子进程与管道，严防会话期僵死进程遗留
+            client.close()
+            raise
 
     def start_and_bridge_all(self, progress_callback: Optional[Callable[[str, str], None]] = None) -> Dict[str, list]:
         configs = self.load_configs()

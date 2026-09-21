@@ -16,21 +16,45 @@ TMP_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 # 编译与代码诊断关键错误正则，优先锁定核心错误行与堆栈
 ERROR_PATTERNS = [
     re.compile(r"(Traceback \(most recent call last\):[\s\S]+?)(?=\n\S|\Z)", re.IGNORECASE),
-    re.compile(r"(\b(?:Error|Exception|FAILED|AssertionError|SyntaxError|TypeError|ValueError|IndexError):.*)", re.IGNORECASE),
+    re.compile(r"(\b(?:\w*Error|\w*Exception|FAILED|AssertionError):.*)", re.IGNORECASE),
     re.compile(r"(\b(?:\w+\.py|\w+\.ts|\w+\.rs|\w+\.go|\w+\.cpp|\w+\.c):\d+:\d+:.*error:.*)", re.IGNORECASE)
 ]
+
+def _cleanup_old_spool_files(tmp_dir: Path, max_files: int = 100, retain_files: int = 70):
+    """
+    轻量级滚动淘汰机制：
+    当临时转存目录文件数超过 max_files 时，按修改时间自动淘汰最旧的文件至 retain_files 个，
+    防止长期高频使用下磁盘空间无节制隐性膨胀。
+    """
+    try:
+        if not tmp_dir.exists():
+            return
+        files = [p for p in tmp_dir.glob("mcp_*.log") if p.is_file()]
+        if len(files) > max_files:
+            files.sort(key=lambda p: p.stat().st_mtime)
+            files_to_remove = files[: len(files) - retain_files]
+            for f in files_to_remove:
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 def semantic_output_clamp(raw_text: str, max_chars: int, server_id: str, tool_name: str) -> str:
     """
     语义化输出截断与全量持久化：
     1. 超限时将全量原始输出写入工作区临时文件，防止核心上下文永久丢失
-    2. 优先通过正则捕捉 Traceback、Error、FAILED 等核心错误块，防止盲目比例截断切断报错关键行
-    3. 保留文件路径供模型按需使用 read_file 工具深入排查
+    2. 目录容量上限控制：每次落盘前执行滚动淘汰，确保磁盘有界
+    3. 严格配额控制：即使遇到极大报错堆栈（如无限递归千层 Traceback 或超大编译日志），
+       也对错误提取区进行严格的硬预算二次精简，确保最终返回绝对不超过 max_chars，严防 LLM Token 击穿
+    4. 保留文件路径供模型按需使用 read_file 工具深入排查
     """
     if len(raw_text) <= max_chars:
         return raw_text
 
-    # 1. 全量持久化到临时日志文件
+    # 1. 滚动淘汰老旧日志并落盘当前超限输出
+    _cleanup_old_spool_files(TMP_OUTPUT_DIR)
     timestamp = int(time.time() * 1000)
     spool_file = TMP_OUTPUT_DIR / f"mcp_{server_id}_{tool_name}_{timestamp}.log"
     spool_hint = ""
@@ -40,9 +64,14 @@ def semantic_output_clamp(raw_text: str, max_chars: int, server_id: str, tool_na
             rel_path = spool_file.relative_to(WORKSPACE_ROOT)
         except Exception:
             rel_path = spool_file
-        spool_hint = f"\n\n[提示: 外部 MCP 输出过长已精简。完整原始输出已存至: {rel_path}，如需定位细节请使用 read_file 查看]"
+        spool_hint = f"\n\n[提示: 输出过长已精简。完整原始输出已存至: {rel_path}，如需定位细节请使用 read_file 查看]"
     except Exception:
         pass
+
+    # 计算整体可用字符预算
+    spool_hint_len = len(spool_hint)
+    overhead = 100  # 结构化说明占位预算
+    usable_chars = max(150, max_chars - spool_hint_len - overhead)
 
     # 2. 语义搜索：尝试抓取核心错误块与堆栈
     matched_errors = []
@@ -55,21 +84,44 @@ def semantic_output_clamp(raw_text: str, max_chars: int, server_id: str, tool_na
                     matched_errors.append(clean_m)
 
     if matched_errors:
-        error_summary = "\n--- [核心错误与堆栈提取] ---\n" + "\n".join(matched_errors)
-        allowed_head_len = max(100, max_chars - len(error_summary) - len(spool_hint) - 120)
-        head_part = raw_text[:allowed_head_len]
-        return f"{head_part}\n\n... [已自动省略中间无关日志，保留核心错误诊断如下] ...\n{error_summary}{spool_hint}"
+        raw_error_summary = "\n--- [核心错误与堆栈提取] ---\n" + "\n\n".join(matched_errors)
 
-    # 3. 兜底策略：按行保留首尾（避免破坏单行语法），并附加文件路径提示
+        # 核心防线：对 error_summary 本身施加硬配额，防止海量报错导致截断失效
+        max_error_budget = int(usable_chars * 0.75)
+        if len(raw_error_summary) > max_error_budget:
+            head_err_len = int(max_error_budget * 0.6)
+            tail_err_len = int(max_error_budget * 0.35)
+            head_err = raw_error_summary[:head_err_len]
+            tail_err = raw_error_summary[-tail_err_len:]
+            error_summary = f"{head_err}\n...[堆栈过长已自动精简中间重复帧]...\n{tail_err}"
+        else:
+            error_summary = raw_error_summary
+
+        allowed_head_len = max(0, usable_chars - len(error_summary))
+        head_part = raw_text[:allowed_head_len].rstrip()
+        if head_part:
+            result = f"{head_part}\n\n... [已自动省略中间日志，核心诊断如下] ...\n{error_summary}{spool_hint}"
+        else:
+            result = f"{error_summary}{spool_hint}"
+
+        # 终极硬保险：若因不可控拼接仍微幅超标，执行硬切保底，确保绝不击穿 max_chars
+        if len(result) > max_chars:
+            result = result[:max_chars - 30] + "\n...[超限硬截断]..."
+        return result
+
+    # 3. 兜底策略：按行保留首尾，严格受限于 max_chars
     lines = raw_text.splitlines()
-    line_quota = max(4, int(max_chars / 150))
+    line_quota = max(2, int(usable_chars / 160))
     head_lines = lines[:line_quota]
     tail_lines = lines[-line_quota:] if len(lines) > line_quota else []
     head = "\n".join(head_lines)
     tail = "\n".join(tail_lines)
     omitted_lines = max(0, len(lines) - len(head_lines) - len(tail_lines))
 
-    return f"{head}\n\n... [外部 MCP 输出过长，已自动省略中间 {omitted_lines} 行] ...\n\n{tail}{spool_hint}"
+    result = f"{head}\n\n... [外部 MCP 输出过长，已自动省略中间 {omitted_lines} 行] ...\n\n{tail}{spool_hint}"
+    if len(result) > max_chars:
+        result = result[:max_chars - 30] + "\n...[超限硬截断]..."
+    return result
 
 
 class McpToolBridge:
