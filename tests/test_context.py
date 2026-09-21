@@ -637,5 +637,205 @@ class TestContextEnhancements(unittest.TestCase):
         self.assertIn("当前 Token 预算: 上限 300 | 输出预留 60", output)
         self.assertIn("累计 API 消耗: 输入 2500 Tokens | 输出 350 Tokens", output)
 
+
+    def test_point_21_view_file_outline_ast_and_wm_integration(self):
+        """验证点 21: view_file_outline AST 语法树提取大纲及与 WorkingMemory 联动记录"""
+        from tools.builtin.file_tools import view_file_outline
+        
+        # 提取真实存在的 context/budget.py 大纲
+        outline = view_file_outline("context/budget.py")
+        self.assertIn("class BudgetLedger", outline)
+        self.assertIn("def get_remaining_budget", outline)
+
+        # 验证 WorkingMemory 自动将 outline 识别并沉淀至 inspected_files
+        wm = self.mgr.working_memory
+        wm.update_from_tool("view_file_outline", {"file_path": "context/budget.py"}, outline)
+        self.assertIn("context/budget.py", wm.inspected_files)
+        self.assertIn("代码大纲", wm.inspected_files["context/budget.py"])
+
+    def test_point_22_step_awareness_and_graceful_wrapup(self):
+        """验证点 22: 步数进度倒计时感知与最终步优雅收拢"""
+        from unittest.mock import MagicMock
+        from core.agent import ReActAgent
+        import json
+
+        mgr = ContextManager("test_wrapup_session", budget_ledger=self.ledger)
+        if mgr.history_file.exists():
+            os.remove(mgr.history_file)
+
+        agent = ReActAgent.__new__(ReActAgent)
+        agent.system_prompt = "You are a test agent."
+        agent.max_steps = 2
+        agent.model = "test-model"
+        agent.context_manager = mgr
+        agent.executor = MagicMock()
+        agent.mcp_manager = MagicMock()
+        agent.mcp_manager.get_all_tool_schemas.return_value = []
+        agent.executor.registry.get_tool_names.return_value = ["dummy_tool"]
+        agent.executor.registry.get_schemas.return_value = [{"type": "function", "function": {"name": "dummy_tool"}}]
+        agent.executor.execute.return_value = "dummy result"
+
+        # Step 1: 返回 tool call
+        mock_tc = MagicMock()
+        mock_tc.id = "call_step1"
+        mock_tc.type = "function"
+        mock_tc.function.name = "dummy_tool"
+        mock_tc.function.arguments = "{}"
+        
+        msg_step1 = MagicMock()
+        msg_step1.content = "I need to call dummy_tool."
+        msg_step1.tool_calls = [mock_tc]
+        resp_step1 = MagicMock()
+        resp_step1.choices = [MagicMock(message=msg_step1)]
+        resp_step1.usage = None
+
+        # Step 2: 最终步，此时 call_tools 应为 None，返回最终文本
+        msg_step2 = MagicMock()
+        msg_step2.content = "经过排查，这是最终结论报告。"
+        msg_step2.tool_calls = None
+        resp_step2 = MagicMock()
+        resp_step2.choices = [MagicMock(message=msg_step2)]
+        resp_step2.usage = None
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [resp_step1, resp_step2]
+        agent.client = mock_client
+
+        final_res = agent.run("请分析当前系统", verbose=False)
+        self.assertIn("最终结论报告", final_res)
+
+        # 检查 Step 2 调用时的参数: tools 必须为 None (工具已被关闭以强制模型收口)
+        call_args_list = mock_client.chat.completions.create.call_args_list
+        self.assertEqual(len(call_args_list), 2)
+        self.assertIsNotNone(call_args_list[0][1].get("tools"))
+        self.assertIsNone(call_args_list[1][1].get("tools"))
+
+        # 检查发给模型的 messages 中是否注入了步数倒计时 Banner
+        step2_messages = call_args_list[1][1]["messages"]
+        user_msgs = [m["content"] for m in step2_messages if m.get("role") == "user"]
+        self.assertTrue(any("当前执行进度: 第 2/2 步" in c for c in user_msgs))
+        self.assertTrue(any("本轮已达最终步" in c for c in user_msgs))
+
+    def test_point_23_dynamic_budget_ledger_64k_default(self):
+        """验证点 23: 默认 64K 硬预算账本与动态环境变量缩放"""
+        default_ledger = BudgetLedger()
+        self.assertEqual(default_ledger.total_budget, 64000)
+        self.assertEqual(default_ledger.system_reserve, 3000)
+        self.assertEqual(default_ledger.tools_reserve, 3000)
+        self.assertEqual(default_ledger.memory_reserve, 3000)
+        self.assertEqual(default_ledger.output_reserve, 4000)
+        self.assertEqual(default_ledger.history_budget, 51000)
+
+        old_env = os.environ.get("AGENT_TOTAL_BUDGET")
+        try:
+            os.environ["AGENT_TOTAL_BUDGET"] = "128000"
+            big_ledger = BudgetLedger()
+            self.assertEqual(big_ledger.total_budget, 128000)
+            self.assertEqual(big_ledger.history_budget, 115000)
+        finally:
+            if old_env is not None:
+                os.environ["AGENT_TOTAL_BUDGET"] = old_env
+            else:
+                os.environ.pop("AGENT_TOTAL_BUDGET", None)
+
+
+    def test_point_24_write_file_and_fuzzy_patch_tolerance(self):
+        """验证点 24: write_file 覆盖写入及 apply_patch 行尾空白模糊容错"""
+        from tools.builtin.file_tools import write_file
+        from tools.builtin.patch_tool import apply_patch
+        from pathlib import Path
+
+        test_file = "test_fuzzy_patch_demo.txt"
+        test_path = Path(test_file)
+        if test_path.exists():
+            test_path.unlink()
+
+        try:
+            # 1. 验证 write_file 成功写入
+            w_res = write_file(test_file, "line 1  \nline 2    \nline 3\n")
+            self.assertIn("【写入成功】", w_res)
+            self.assertTrue(test_path.exists())
+
+            # 验证 WorkingMemory 自动沉淀至 modified_files
+            wm = self.mgr.working_memory
+            wm.update_from_tool("write_file", {"file_path": test_file}, w_res)
+            self.assertIn(test_file, wm.modified_files)
+
+            # 2. 验证 write_file 拦截核心自身保护文件
+            block_res = write_file("tools/file_tools.py", "corrupted")
+            self.assertIn("【安全拦截】", block_res)
+
+            # 3. 验证 apply_patch 行尾空白模糊容错 (原文件有末尾空格，SEARCH 块去除了末尾空格)
+            patch_content = f"""*** Update File: {test_file}
+<<<<<<< SEARCH
+line 1
+line 2
+line 3
+=======
+line 1
+line 2 modified
+line 3
+>>>>>>> REPLACE
+"""
+            p_res = apply_patch(patch_content)
+            self.assertIn("【补丁成功】", p_res)
+            updated_text = test_path.read_text(encoding="utf-8")
+            self.assertIn("line 2 modified", updated_text)
+
+        finally:
+            if test_path.exists():
+                test_path.unlink()
+
+    def test_point_25_inturn_observation_pruning(self):
+        """验证点 25: 轮内陈旧工具观察结果折叠 (In-turn Observation Pruning)"""
+        from core.agent import ReActAgent
+
+        agent = ReActAgent.__new__(ReActAgent)
+        agent.context_manager = self.mgr
+        self.mgr.start_new_turn("用户排查大文件")
+
+        # 模拟 4 步工具返回 (前 2 步返回超大内容，后 2 步为最新内容)
+        big_content_1 = "HEADER_LINE_1\n" + ("x" * 800) + "\nTAIL_LINE_1"
+        big_content_2 = "HEADER_LINE_2\n" + ("y" * 800) + "\nTAIL_LINE_2"
+        short_content_3 = "Step 3 tool result"
+        short_content_4 = "Step 4 tool result"
+
+        messages = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "排查目标"},
+            {"role": "assistant", "content": "call 1", "tool_calls": [{"id": "c1"}]},
+            {"role": "tool", "tool_call_id": "c1", "content": big_content_1},
+            {"role": "assistant", "content": "call 2", "tool_calls": [{"id": "c2"}]},
+            {"role": "tool", "tool_call_id": "c2", "content": big_content_2},
+            {"role": "assistant", "content": "call 3", "tool_calls": [{"id": "c3"}]},
+            {"role": "tool", "tool_call_id": "c3", "content": short_content_3},
+            {"role": "assistant", "content": "call 4", "tool_calls": [{"id": "c4"}]},
+            {"role": "tool", "tool_call_id": "c4", "content": short_content_4},
+        ]
+
+        # 阈值设为很小 (10 Tokens) 强制触发裁剪
+        pruned_count = agent._prune_inturn_observations(messages, threshold_tokens=10)
+        self.assertEqual(pruned_count, 2, "应只折叠倒数前 2 条超长 tool 消息")
+
+        # 验证前两条消息被折叠，保留首尾，注入折叠提示
+        self.assertIn("[历史观察结果已由 Agent 消化，正文已折叠", messages[3]["content"])
+        self.assertIn("HEADER_LINE_1", messages[3]["content"])
+        self.assertIn("TAIL_LINE_1", messages[3]["content"])
+
+        self.assertIn("[历史观察结果已由 Agent 消化，正文已折叠", messages[5]["content"])
+        self.assertIn("HEADER_LINE_2", messages[5]["content"])
+        self.assertIn("TAIL_LINE_2", messages[5]["content"])
+
+        # 验证最近的 2 条 tool 消息保持原样，绝不折叠
+        self.assertEqual(messages[7]["content"], short_content_3)
+        self.assertEqual(messages[9]["content"], short_content_4)
+
+    def test_point_26_console_inherits_agent_max_steps(self):
+        """验证点 26: 控制台启动项解除硬编码，正确继承配置最大步数"""
+        with open("cli/console.py", "r", encoding="utf-8") as f:
+            console_code = f.read()
+        self.assertNotIn("agent = ReActAgent(max_steps=10)", console_code)
+        self.assertIn("agent = ReActAgent()", console_code)
+
 if __name__ == "__main__":
     unittest.main()

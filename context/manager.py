@@ -91,9 +91,9 @@ class WorkingMemory:
         res_str = str(result) if result else ""
         tool_lower = tool_name.lower()
 
-        # 1. 读文件排查 (read_file, view_file, mcp 文件读取)
+        # 1. 读文件与大纲排查 (read_file, view_file, mcp 文件读取, outline)
         # 精准判断读取工具的错误前缀，绝不将代码正文中出现的 Error/Exception 误判为读取失败！
-        if any(w in tool_lower for w in ["read_file", "view_file", "cat_file", "read"]):
+        if any(w in tool_lower for w in ["read_file", "view_file", "cat_file", "read", "outline"]):
             filepath = args.get("file_path") or args.get("path") or args.get("filepath") or ""
             start = args.get("start_line", 1)
             max_lines = args.get("max_lines", 100)
@@ -102,13 +102,20 @@ class WorkingMemory:
             is_read_failed = (
                 res_str.startswith("读取文件失败")
                 or res_str.startswith("读取失败")
+                or res_str.startswith("查看大纲失败")
+                or res_str.startswith("生成大纲失败")
                 or res_str.startswith("【安全拦截】")
                 or res_str.startswith("Error:")
                 or (len(res_str) < 120 and any(w in res_str for w in ["文件不存在", "未找到文件", "Permission denied", "NoSuchFile"]))
             )
             if filepath and not is_read_failed:
-                end_line = int(start) + int(max_lines) - 1
-                self._record_file_range(str(filepath), int(start), end_line)
+                if "outline" in tool_lower:
+                    fp = str(filepath).strip()
+                    if fp not in self.inspected_files:
+                        self.inspected_files[fp] = "已查看代码大纲结构"
+                else:
+                    end_line = int(start) + int(max_lines) - 1
+                    self._record_file_range(str(filepath), int(start), end_line)
 
         # 2. 修改文件感知 (apply_patch, write_file, edit_file)
         elif any(w in tool_lower for w in ["patch", "write_file", "create_file", "edit_file", "modify_file"]):

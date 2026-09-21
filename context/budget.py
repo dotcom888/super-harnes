@@ -1,27 +1,39 @@
 # -*- coding: utf-8 -*-
 from typing import Dict, Any, Optional
 
+import os
+
 class BudgetLedger:
     """
     上下文硬预算账本 (Budget Ledger):
     显式分账总预算，杜绝历史滑窗侵占系统、工具与输出保留区。
     分账明细：
-      - 总预算 (Total):           默认 24,000 Tokens
-      - 系统提示词 (System):        默认 2,000 Tokens (不可变，保障 Prompt 缓存)
-      - 工具定义 (Tools):          默认 2,000 Tokens (工具 Schema 空间)
-      - 状态与摘要 (Memory):       默认 2,000 Tokens (WorkingMemory + 历史纪要)
-      - 输出预留区 (Output Reserve): 默认 3,000 Tokens (确保模型输出大 Patch / 完整回复不截断)
+      - 总预算 (Total):           默认 64,000 Tokens (对齐现代大模型长上下文，支持 AGENT_TOTAL_BUDGET 配置)
+      - 系统提示词 (System):        默认 2,000~3,000 Tokens (不可变，保障 Prompt 缓存)
+      - 工具定义 (Tools):          默认 2,000~3,000 Tokens (工具 Schema 空间)
+      - 状态与摘要 (Memory):       默认 2,000~3,000 Tokens (WorkingMemory + 历史纪要)
+      - 输出预留区 (Output Reserve): 默认 3,000~4,000 Tokens (确保模型输出大 Patch / 完整回复不截断)
       - 历史滑动窗口 (History):    动态计算 (total - 各预留)
     """
     def __init__(
         self,
-        total_budget: int = 24000,
-        system_reserve: int = 2000,
-        tools_reserve: int = 2000,
-        memory_reserve: int = 2000,
-        output_reserve: int = 3000,
+        total_budget: Optional[int] = None,
+        system_reserve: Optional[int] = None,
+        tools_reserve: Optional[int] = None,
+        memory_reserve: Optional[int] = None,
+        output_reserve: Optional[int] = None,
         min_history_budget: Optional[int] = None
     ):
+        if total_budget is None:
+            total_budget = int(os.getenv("AGENT_TOTAL_BUDGET", "64000"))
+        if system_reserve is None:
+            system_reserve = 3000 if total_budget >= 64000 else (2000 if total_budget >= 8000 else max(10, int(total_budget * 0.05)))
+        if tools_reserve is None:
+            tools_reserve = 3000 if total_budget >= 64000 else (2000 if total_budget >= 8000 else max(10, int(total_budget * 0.05)))
+        if memory_reserve is None:
+            memory_reserve = 3000 if total_budget >= 64000 else (2000 if total_budget >= 8000 else max(10, int(total_budget * 0.05)))
+        if output_reserve is None:
+            output_reserve = 4000 if total_budget >= 64000 else (3000 if total_budget >= 8000 else max(20, int(total_budget * 0.1)))
         # 严格非负整数参数校验
         for name, val in [
             ("total_budget", total_budget),

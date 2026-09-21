@@ -103,6 +103,32 @@ def _apply_update_blocks(file_path_str: str, blocks: List[Tuple[str, str]]) -> s
                 norm_replace = replace_block.replace("\r\n", "\n")
                 modified_content = norm_mod.replace(norm_search, norm_replace, 1)
                 continue
+
+            # 进一步宽容处理：忽略行尾空白差异与换行空行（Trailing Whitespace Fuzzy Match）
+            mod_lines = norm_mod.split("\n")
+            search_lines = norm_search.split("\n")
+            mod_lines_rstrip = [l.rstrip() for l in mod_lines]
+            search_lines_rstrip = [l.rstrip() for l in search_lines]
+            search_len = len(search_lines_rstrip)
+
+            match_indices = []
+            if search_len > 0 and len(mod_lines_rstrip) >= search_len:
+                for i in range(len(mod_lines_rstrip) - search_len + 1):
+                    if mod_lines_rstrip[i : i + search_len] == search_lines_rstrip:
+                        match_indices.append(i)
+
+            if len(match_indices) == 1:
+                start_i = match_indices[0]
+                replace_lines = replace_block.replace("\r\n", "\n").split("\n")
+                new_lines = mod_lines[:start_i] + replace_lines + mod_lines[start_i + search_len:]
+                modified_content = "\n".join(new_lines)
+                continue
+            elif len(match_indices) > 1:
+                return (
+                    f"【补丁失败】：在文件中找到了 {len(match_indices)} 处近似的 SEARCH 锚点代码（行尾空格模糊匹配），"
+                    f"定位不唯一！请在 SEARCH 块中增加上下文（前后几行代码）以准确定位。"
+                )
+
             return (
                 f"【补丁失败】：在文件第 {idx} 个修改块中未找到匹配的 SEARCH 锚点代码。\n"
                 f"请确保 SEARCH 中的代码与原文件完全一致（包含缩进和空行）。"

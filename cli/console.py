@@ -9,7 +9,7 @@ from cli.commands import handle_slash_command, print_help
 def main():
     print("正在启动 ReAct Agent 交互控制台 (本地核心 + MCP 扩展双轨版)...")
     try:
-        agent = ReActAgent(max_steps=10)
+        agent = ReActAgent()
         print(f"Agent 就绪！激活模型: 【{agent.model}】")
 
         all_tools = agent.executor.registry.get_tool_names()
