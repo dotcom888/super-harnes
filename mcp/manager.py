@@ -2,7 +2,8 @@
 import json
 import concurrent.futures
 from pathlib import Path
-from typing import Dict, Any, Optional, Callable, List
+from tools.framework.workspace import default_workspace
+from typing import Dict, Any, Optional, Callable, List, Union
 from mcp.client import McpClient
 from mcp.config import McpServerConfig, TrustLevel
 from mcp.bridge import McpToolBridge
@@ -19,15 +20,23 @@ class McpManager:
     4. 异常隔离：单个外部服务启动失败或超时不影响其他服务
     """
     def __init__(self, config_path: Optional[str] = None, registry: ToolRegistry = default_registry):
-        if config_path:
-            self.config_path = Path(config_path)
-        else:
-            preferred = WORKSPACE_ROOT / "config" / "mcp_servers.json"
-            self.config_path = preferred if preferred.exists() else (WORKSPACE_ROOT / "mcp_servers.json")
+        self._custom_config_path = Path(config_path) if config_path else None
 
         self.registry = registry
         self.clients: Dict[str, McpClient] = {}
         self.configs: Dict[str, McpServerConfig] = {}
+
+
+    @property
+    def config_path(self) -> Path:
+        if self._custom_config_path:
+            return self._custom_config_path
+        preferred = default_workspace.root / "config" / "mcp_servers.json"
+        return preferred if preferred.exists() else (default_workspace.root / "mcp_servers.json")
+
+    @config_path.setter
+    def config_path(self, path: Union[str, Path, None]):
+        self._custom_config_path = Path(path) if path else None
 
     def load_configs(self) -> Dict[str, McpServerConfig]:
         if not self.config_path.exists():
@@ -44,7 +53,7 @@ class McpManager:
                 command=raw_cfg.get("command", ""),
                 args=raw_cfg.get("args", []),
                 env=raw_cfg.get("env"),
-                cwd=raw_cfg.get("cwd") or str(WORKSPACE_ROOT),
+                cwd=raw_cfg.get("cwd") or str(default_workspace.root),
                 trust_level=raw_cfg.get("trust_level", TrustLevel.TRUSTED),
                 timeout_seconds=raw_cfg.get("timeout_seconds", 20),
                 max_output_chars=raw_cfg.get("max_output_chars", 4000)
@@ -110,3 +119,10 @@ class McpManager:
         self.clients.clear()
 
 default_mcp_manager = McpManager()
+
+
+def __getattr__(name: str):
+    if name == "WORKSPACE_ROOT":
+        return default_workspace.root
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+

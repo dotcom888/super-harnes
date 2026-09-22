@@ -3,14 +3,27 @@
 cli/console.py: 交互式控制台运行循环
 """
 import sys
+import argparse
 from core.agent import ReActAgent
 from cli.commands import handle_slash_command, print_help
+from tools.framework.workspace import default_workspace
 
 def main():
+    parser = argparse.ArgumentParser(description="ReAct Agent 本地终端代码助手")
+    parser.add_argument("-C", "--cwd", help="指定 Agent 操作的目标工程工作区根目录", default=None)
+    args, _ = parser.parse_known_args()
+    if args.cwd:
+        try:
+            default_workspace.set_root(args.cwd)
+        except Exception as err:
+            print(f"初始化工作区失败: {err}")
+            sys.exit(1)
+
     print("正在启动 ReAct Agent 交互控制台 (本地核心 + MCP 扩展双轨版)...")
     try:
         agent = ReActAgent()
         print(f"Agent 就绪！激活模型: 【{agent.model}】")
+        print(f"当前工作区根目录: 【{default_workspace.root}】")
 
         all_tools = agent.executor.registry.get_tool_names()
         mcp_tools = [name for name in all_tools if name.startswith("mcp__")]

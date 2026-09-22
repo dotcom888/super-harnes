@@ -59,7 +59,13 @@ def handle_slash_command(agent, prompt: str) -> Tuple[bool, bool]:
 
     if cmd_lower == "/undo":
         if agent.context_manager.rollback_last_turn():
-            print("【回滚成功】已撤销上一轮对话交互。")
+            restored = getattr(agent.context_manager, "last_rolled_back_files", [])
+            if restored:
+                print("【回滚成功】已撤销上一轮对话，并已将以下文件还原至改动前状态：")
+                for f_info in restored:
+                    print(f"  • {f_info}")
+            else:
+                print("【回滚成功】已撤销上一轮对话交互（本轮未改动物理磁盘代码）。")
         else:
             print("【回滚失败】当前会话没有可回滚的轮次。")
         return True, False

@@ -5,6 +5,17 @@ from pathlib import Path
 from tools.framework.registry import default_registry, register_tool, ToolRegistry
 from tools.framework.executor import ToolExecutor, default_executor
 from tools.framework.policies import CommandPolicy, PolicyDecision, default_policy
+from tools.framework.workspace import (
+    WorkspaceContext,
+    default_workspace,
+    get_workspace_root,
+    set_workspace_root,
+)
+from tools.framework.snapshot import (
+    SnapshotManager,
+    PatchTransaction,
+    default_snapshot_manager,
+)
 
 def _auto_discover_builtin_tools():
     builtin_dir = Path(__file__).parent / "builtin"
@@ -26,5 +37,12 @@ __all__ = [
     "default_executor",
     "CommandPolicy",
     "PolicyDecision",
-    "default_policy"
+    "default_policy",
+    "WorkspaceContext",
+    "default_workspace",
+    "get_workspace_root",
+    "set_workspace_root",
+    "SnapshotManager",
+    "PatchTransaction",
+    "default_snapshot_manager",
 ]

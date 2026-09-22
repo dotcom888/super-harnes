@@ -17,8 +17,18 @@ from context.budget import BudgetLedger, default_budget_ledger
 
 logger = logging.getLogger(__name__)
 
-WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
-HISTORY_DIR = WORKSPACE_ROOT / "history"
+from tools.framework.workspace import default_workspace
+from context.snapshot import default_snapshot_manager, SnapshotManager
+
+def __getattr__(name: str):
+    """动态获取工作区根路径或历史目录，杜绝 import 时静态绑定"""
+    if name == "WORKSPACE_ROOT":
+        return default_workspace.root
+    if name == "HISTORY_DIR":
+        d = default_workspace.root / "history"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 class WatermarkZone:
     GREEN = "GREEN"    # < 60%: 全量直通
@@ -242,7 +252,8 @@ class ContextManager:
         session_id: str = "default",
         budget_ledger: Optional[BudgetLedger] = None,
         token_counter: Optional[TokenCounter] = None,
-        summarizer: Optional[ContextSummarizer] = None
+        summarizer: Optional[ContextSummarizer] = None,
+        base_dir: Optional[Path] = None
     ):
         self.session_id = session_id
         self.budget = budget_ledger.copy() if budget_ledger else default_budget_ledger.copy()
@@ -262,11 +273,31 @@ class ContextManager:
         self.total_api_prompt_tokens: int = 0
         self.total_api_completion_tokens: int = 0
 
-        HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-        self.history_file = HISTORY_DIR / f"{self.session_id}.jsonl"
+        self.workspace = default_workspace
+        self._base_dir = Path(base_dir).resolve() if base_dir else None
+        self.snapshot_manager = default_snapshot_manager
+        self.last_rolled_back_files = []
+
+        # 确保动态历史归档目录就绪
+        self.history_dir.mkdir(parents=True, exist_ok=True)
 
         # 跨会话隔离：探测磁盘上已有历史的最大 turn_id，避免新会话从 1 开始导致 ID 碰撞
         self._init_turn_counter_from_disk()
+
+    @property
+    def history_dir(self) -> Path:
+        """动态解析历史归档目录，随时随工作区根路径切换而重定向"""
+        if self._base_dir:
+            d = self._base_dir
+        else:
+            d = self.workspace.root / "history"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    @property
+    def history_file(self) -> Path:
+        """动态生成当前会话的持久化 JSONL 文件路径"""
+        return self.history_dir / f"{self.session_id}.jsonl"
 
     def _init_turn_counter_from_disk(self):
         if not self.history_file.exists():
@@ -354,6 +385,8 @@ class ContextManager:
     def start_new_turn(self, user_content: str):
         self.turn_count += 1
         self.current_turn = TurnChunk(turn_id=self.turn_count)
+        if hasattr(self, "snapshot_manager") and self.snapshot_manager:
+            self.snapshot_manager.set_active_turn(self.session_id, self.turn_count)
         user_msg = {"role": "user", "content": user_content}
         self.current_turn.add_message(user_msg)
         self._append_to_disk("user_message", user_msg)
@@ -432,10 +465,11 @@ class ContextManager:
             self.current_turn = None
             self.turn_count = max(0, self.turn_count - 1)
 
-    def rollback_last_turn(self) -> bool:
-        """回滚最近一轮：同步恢复 completed_turns、WorkingMemory 与 SummaryState"""
+    def rollback_last_turn(self, restore_disk: bool = True) -> bool:
+        """回滚最近一轮：同步恢复 completed_turns、WorkingMemory 与 SummaryState，并联动还原物理磁盘文件"""
         if self.completed_turns:
             rolled = self.completed_turns.pop()
+            rolled_turn_id = rolled.turn_id
             if self._state_snapshots:
                 self._state_snapshots.pop()
                 if self._state_snapshots:
@@ -447,8 +481,20 @@ class ContextManager:
                     self.summarizer.clear()
 
             self.turn_count = max(0, self.turn_count - 1)
-            self._append_to_disk("rollback", {"turn_id": rolled.turn_id})
+            self._append_to_disk("rollback", {"turn_id": rolled_turn_id})
+
+            self.last_rolled_back_files = []
+            if restore_disk and hasattr(self, "snapshot_manager") and self.snapshot_manager:
+                try:
+                    self.last_rolled_back_files = self.snapshot_manager.rollback_turn(
+                        turn_id=rolled_turn_id,
+                        session_id=self.session_id
+                    )
+                except Exception as e:
+                    logger.error(f"物理磁盘回滚异常: {e}")
+
             return True
+        self.last_rolled_back_files = []
         return False
 
     def vacuum(self) -> bool:
@@ -547,6 +593,8 @@ class ContextManager:
         self.last_api_completion_tokens = 0
         self.total_api_prompt_tokens = 0
         self.total_api_completion_tokens = 0
+        if hasattr(self, "snapshot_manager") and self.snapshot_manager:
+            self.snapshot_manager.clear_session_snapshots(self.session_id)
         self.vacuum()
 
     def restore_from_disk(self) -> bool:

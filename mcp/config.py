@@ -2,6 +2,7 @@
 import sys
 import shutil
 from pathlib import Path
+from tools.framework.workspace import default_workspace
 from typing import Dict, List, Optional, Any
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
@@ -47,13 +48,13 @@ class McpServerConfig:
             resolved = shutil.which(self.command)
             if resolved:
                 self.command = resolved
-            elif (WORKSPACE_ROOT / self.command).exists():
-                self.command = str((WORKSPACE_ROOT / self.command).resolve())
+            elif (default_workspace.root / self.command).exists():
+                self.command = str((default_workspace.root / self.command).resolve())
 
         # 2. 规范化参数列表中的脚本路径，避免工作区 cwd 变化导致找不到文件
         resolved_args = []
         for arg in self.args:
-            path_in_root = WORKSPACE_ROOT / arg
+            path_in_root = default_workspace.root / arg
             path_in_cwd = Path(self.cwd) / arg if self.cwd else None
             if path_in_root.exists() and path_in_root.is_file():
                 resolved_args.append(str(path_in_root.resolve()))
@@ -77,3 +78,9 @@ class McpServerConfig:
         )
         cfg.validate()
         return cfg
+
+
+def __getattr__(name: str):
+    if name == "WORKSPACE_ROOT":
+        return default_workspace.root
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

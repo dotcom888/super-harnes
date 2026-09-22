@@ -92,8 +92,8 @@ class ReActAgent:
                     })
         return msg_dict
 
-    def _protect_tool_result(self, raw_content: str, max_chars: int = 2500) -> str:
-        """单步工具输出保护：防止超大工具返回在轮内引发 Token 爆炸"""
+    def _protect_tool_result(self, raw_content: str, max_chars: int = 35000) -> str:
+        """单步工具输出保护：防止超大工具返回在轮内引发 Token 爆炸（默认放宽至 35000 字符，可完整保留数百行代码读取结果）"""
         if len(raw_content) <= max_chars:
             return raw_content
         head_len = int(max_chars * 0.7)

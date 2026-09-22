@@ -3,6 +3,7 @@ import re
 import json
 import time
 from pathlib import Path
+from tools.framework.workspace import default_workspace
 from typing import List, Dict, Any, Callable, Optional
 from mcp.client import McpClient
 from mcp.config import McpServerConfig, TrustLevel
@@ -10,8 +11,12 @@ from tools.registry import ToolRegistry, default_registry
 from tools.policies import default_policy
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
-TMP_OUTPUT_DIR = WORKSPACE_ROOT / ".super-harnes" / "tmp"
-TMP_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+def get_tmp_output_dir() -> Path:
+    p = default_workspace.root / ".super-harnes" / "tmp"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
 
 # 编译与代码诊断关键错误正则，优先锁定核心错误行与堆栈
 ERROR_PATTERNS = [
@@ -54,14 +59,14 @@ def semantic_output_clamp(raw_text: str, max_chars: int, server_id: str, tool_na
         return raw_text
 
     # 1. 滚动淘汰老旧日志并落盘当前超限输出
-    _cleanup_old_spool_files(TMP_OUTPUT_DIR)
+    _cleanup_old_spool_files(get_tmp_output_dir())
     timestamp = int(time.time() * 1000)
-    spool_file = TMP_OUTPUT_DIR / f"mcp_{server_id}_{tool_name}_{timestamp}.log"
+    spool_file = get_tmp_output_dir() / f"mcp_{server_id}_{tool_name}_{timestamp}.log"
     spool_hint = ""
     try:
         spool_file.write_text(raw_text, encoding="utf-8", errors="replace")
         try:
-            rel_path = spool_file.relative_to(WORKSPACE_ROOT)
+            rel_path = spool_file.relative_to(default_workspace.root)
         except Exception:
             rel_path = spool_file
         spool_hint = f"\n\n[提示: 输出过长已精简。完整原始输出已存至: {rel_path}，如需定位细节请使用 read_file 查看]"
@@ -219,3 +224,11 @@ class McpToolBridge:
             self.bridged_tool_names.append(namespaced_name)
 
         return self.bridged_tool_names
+
+
+def __getattr__(name: str):
+    if name == "WORKSPACE_ROOT":
+        return default_workspace.root
+    if name == "TMP_OUTPUT_DIR":
+        return get_tmp_output_dir()
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

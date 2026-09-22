@@ -6,6 +6,7 @@ import collections
 import threading
 import subprocess
 from pathlib import Path
+from tools.framework.workspace import default_workspace
 from typing import Dict, Any, Optional, List
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
@@ -150,7 +151,7 @@ class McpClient:
             encoding="utf-8",
             errors="replace",
             env=run_env,
-            cwd=cwd or str(WORKSPACE_ROOT),
+            cwd=cwd or str(default_workspace.root),
             creationflags=creation_flags
         )
 
@@ -261,3 +262,9 @@ class McpClient:
                     pass
 
         self.job_object.close()
+
+
+def __getattr__(name: str):
+    if name == "WORKSPACE_ROOT":
+        return default_workspace.root
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
