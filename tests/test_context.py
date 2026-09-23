@@ -837,5 +837,38 @@ line 3
         self.assertNotIn("agent = ReActAgent(max_steps=10)", console_code)
         self.assertIn("agent = ReActAgent()", console_code)
 
+
+    def test_point_27_working_memory_turn_id_and_expanded_file_display(self):
+        """验证点 27: 工作记忆记录修改轮次及放宽至 15 个文件展示带总量提示"""
+        wm = self.mgr.working_memory
+        wm.clear()
+
+        # 模拟在第 1 轮修改了 calc.py，在第 3 轮修改了 agent.py
+        wm.update_from_tool("write_file", {"file_path": "tools/calc.py"}, "【写入成功】", turn_id=1)
+        wm.update_from_tool("write_file", {"file_path": "core/agent.py"}, "【写入成功】", turn_id=3)
+
+        self.assertEqual(wm._modified_file_turns["tools/calc.py"], 1)
+        self.assertEqual(wm._modified_file_turns["core/agent.py"], 3)
+
+        prompt_text = wm.format_prompt_context()
+        self.assertIn("`tools/calc.py` (轮次 #1)", prompt_text)
+        self.assertIn("`core/agent.py` (轮次 #3)", prompt_text)
+
+        # 模拟大量修改 (共 18 个文件)，验证上限放宽至 15 且带有总量统计提示
+        for i in range(1, 19):
+            wm.update_from_tool("write_file", {"file_path": f"mod_{i}.py"}, "【写入成功】", turn_id=i)
+
+        rendered = wm.format_prompt_context()
+        self.assertIn("累计已改 20 个文件", rendered)
+        self.assertIn("早期前序省略 5 个", rendered)
+
+        # 验证序列化与反序列化
+        d = wm.to_dict()
+        self.assertIn("_modified_file_turns", d)
+        new_wm = wm.__class__()
+        new_wm.load_dict(d)
+        self.assertEqual(new_wm._modified_file_turns["tools/calc.py"], 1)
+        self.assertEqual(new_wm._modified_file_turns["mod_18.py"], 18)
+
 if __name__ == "__main__":
     unittest.main()

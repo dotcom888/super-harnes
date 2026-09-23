@@ -48,6 +48,7 @@ class WorkingMemory:
         self.inspected_files: Dict[str, str] = {}
         self._file_ranges: Dict[str, List[Tuple[int, int]]] = {}
         self.modified_files: List[str] = []
+        self._modified_file_turns: Dict[str, int] = {}
         self.last_test_status: Optional[str] = None
         self.last_search_context: Optional[str] = None
 
@@ -93,7 +94,7 @@ class WorkingMemory:
 
         self.inspected_files[fp] = desc
 
-    def update_from_tool(self, tool_name: str, args: Dict[str, Any], result: str):
+    def update_from_tool(self, tool_name: str, args: Dict[str, Any], result: str, turn_id: Optional[int] = None):
         """解析并记录工具对工作区状态的改变，精准判定失败前缀，泛化支持 MCP 与检索工具"""
         if not isinstance(args, dict):
             return
@@ -146,13 +147,20 @@ class WorkingMemory:
                     diff_files = re.findall(r"diff --git a/[^\s]+ b/([^\s]+)", patch_content)
                     for f in created + updated + diff_files:
                         f_clean = f.strip()
-                        if f_clean and f_clean not in self.modified_files:
-                            self.modified_files.append(f_clean)
+                        if f_clean:
+                            if f_clean not in self.modified_files:
+                                self.modified_files.append(f_clean)
+                            if turn_id is not None:
+                                self._modified_file_turns[f_clean] = int(turn_id)
             else:
                 filepath = args.get("file_path") or args.get("path")
                 is_write_failed = res_str.startswith("写入失败") or res_str.startswith("【安全拦截】") or res_str.startswith("Error:")
-                if filepath and not is_write_failed and str(filepath) not in self.modified_files:
-                    self.modified_files.append(str(filepath).strip())
+                if filepath and not is_write_failed:
+                    clean_fp = str(filepath).strip()
+                    if clean_fp not in self.modified_files:
+                        self.modified_files.append(clean_fp)
+                    if turn_id is not None:
+                        self._modified_file_turns[clean_fp] = int(turn_id)
 
         # 3. 检索工具感知 (grep_text, find_by_name, list_files, search)
         elif any(w in tool_lower for w in ["grep", "find", "list_files", "search"]):
@@ -179,8 +187,18 @@ class WorkingMemory:
             files_desc = ", ".join([f"`{f}` ({info})" for f, info in list(self.inspected_files.items())[-file_limit:]])
             sections.append(f"- **已排查代码**: {files_desc}")
         if self.modified_files:
-            mod_limit = 3 if compact else 8
-            mod_desc = ", ".join([f"`{f}`" for f in self.modified_files[-mod_limit:]])
+            mod_limit = 5 if compact else 15
+            total_count = len(self.modified_files)
+            selected = self.modified_files[-mod_limit:]
+            parts = []
+            for f in selected:
+                t_id = self._modified_file_turns.get(f)
+                turn_tag = f" (轮次 #{t_id})" if t_id else ""
+                parts.append(f"`{f}`{turn_tag}")
+            mod_desc = ", ".join(parts)
+            if total_count > mod_limit:
+                omitted = total_count - mod_limit
+                mod_desc = f"... [早期前序省略 {omitted} 个] " + mod_desc + f" (累计已改 {total_count} 个文件)"
             sections.append(f"- **已修改文件**: {mod_desc}")
         if self.last_search_context:
             sections.append(f"- **最近检索**: {self.last_search_context}")
@@ -198,6 +216,7 @@ class WorkingMemory:
             "inspected_files": dict(self.inspected_files),
             "_file_ranges": {fp: [list(r) for r in ranges] for fp, ranges in self._file_ranges.items()},
             "modified_files": list(self.modified_files),
+            "_modified_file_turns": dict(self._modified_file_turns),
             "last_test_status": self.last_test_status,
             "last_search_context": self.last_search_context
         }
@@ -224,6 +243,11 @@ class WorkingMemory:
                 if matches:
                     self._file_ranges[fp] = [(int(s), int(e)) for s, e in matches]
         self.modified_files = list(data.get("modified_files", []))
+        self._modified_file_turns = {
+            str(k): int(v)
+            for k, v in data.get("_modified_file_turns", {}).items()
+            if isinstance(v, (int, float, str)) and str(v).isdigit()
+        }
         self.last_test_status = data.get("last_test_status")
         self.last_search_context = data.get("last_search_context")
 
@@ -233,6 +257,7 @@ class WorkingMemory:
         self.inspected_files.clear()
         self._file_ranges.clear()
         self.modified_files.clear()
+        self._modified_file_turns.clear()
         self.last_test_status = None
         self.last_search_context = None
 

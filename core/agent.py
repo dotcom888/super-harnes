@@ -299,7 +299,8 @@ class ReActAgent:
                         self.context_manager.working_memory.update_from_tool(
                             fname,
                             args_dict,
-                            matched_res
+                            matched_res,
+                            turn_id=self.context_manager.turn_count
                         )
 
                     # 关键修复：轮内即时同步工作记忆，同时匹配头部 system 或当前轮 user 前缀
