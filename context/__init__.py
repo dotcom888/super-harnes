@@ -4,6 +4,7 @@ from context.window import TurnChunk, SlidingWindow
 from context.summarizer import ContextSummarizer, SummaryState
 from context.budget import BudgetLedger, default_budget_ledger
 from context.manager import ContextManager, WatermarkZone, WorkingMemory
+from context.project_state import ProjectState
 
 __all__ = [
     "TokenCounter",
@@ -16,5 +17,6 @@ __all__ = [
     "default_budget_ledger",
     "ContextManager",
     "WatermarkZone",
-    "WorkingMemory"
+    "WorkingMemory",
+    "ProjectState"
 ]

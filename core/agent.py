@@ -81,6 +81,11 @@ class ReActAgent:
         self.session_manager.active_session_id = mgr.session_id
 
     @property
+    def project_name(self) -> str:
+        """获取当前操作的目标项目名称"""
+        return getattr(self.session_manager, "project_name", getattr(self.context_manager, "project_name", "default_project"))
+
+    @property
     def session(self):
         """向后兼容属性"""
         return self.context_manager
@@ -345,7 +350,7 @@ class ReActAgent:
                             args_dict = json.loads(raw_args) if raw_args else {}
                         except Exception:
                             args_dict = {}
-                        self.context_manager.working_memory.update_from_tool(
+                        self.context_manager.update_from_tool(
                             fname,
                             args_dict,
                             matched_res,

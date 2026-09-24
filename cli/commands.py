@@ -69,7 +69,9 @@ def handle_slash_command(agent, prompt: str) -> Tuple[bool, bool]:
     if cmd_lower in ["/status", "/memory"]:
         wm = agent.context_manager.working_memory
         print("\n" + "="*20 + " 当前工作区感知与工具状态 " + "="*20)
+        proj_name = getattr(agent, "project_name", getattr(getattr(agent, "session_manager", None), "project_name", "default_project"))
         active_id = getattr(getattr(agent, "session_manager", None), "active_session_id", getattr(agent.context_manager, "session_id", "default"))
+        print(f"当前项目: 【{proj_name}】")
         print(f"当前会话: 【{active_id}】")
         print(f"当前模型: {agent.model}")
         print(f"当前轮次: {agent.context_manager.turn_count}")
@@ -118,7 +120,8 @@ def handle_slash_command(agent, prompt: str) -> Tuple[bool, bool]:
         else:
             sessions = []
 
-        print("\n" + "="*20 + f" 会话列表 (共 {len(sessions)} 个) " + "="*20)
+        proj_name = getattr(agent, "project_name", getattr(getattr(agent, "session_manager", None), "project_name", "default_project"))
+        print("\n" + "="*20 + f" 项目 【{proj_name}】 会话列表 (共 {len(sessions)} 个) " + "="*20)
         for s in sessions:
             prefix = " * " if s.get("is_active") else "   "
             active_tag = "【当前激活】" if s.get("is_active") else ""

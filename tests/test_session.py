@@ -571,3 +571,103 @@ class TestMultiSessionManagement(unittest.TestCase):
         new_msgs, _ = mgr.build_context_with_watermark("You are a coding assistant.")
         next_user_msg = next(m for m in new_msgs if m.get("role") == "user" and "下一步任务" in m.get("content", ""))
         self.assertIn("src/module.py", next_user_msg["content"], "新一轮的 Working Memory 注记中必须包含上一轮修改的文件！")
+
+class TestProjectLevelStateAndFusionWorkingMemory(unittest.TestCase):
+    """核心验证：项目级目录分箱、跨会话工作记忆协同融合与长期摘要严格隔离"""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="test_proj_hub_")
+        self.root_path = Path(self.temp_dir).resolve()
+        self.sm = SessionManager(
+            default_session_id="default",
+            base_dir=self.root_path,
+            project_name="ecommerce_platform"
+        )
+
+    def tearDown(self):
+        if Path(self.temp_dir).exists():
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_project_physical_directory_isolation(self):
+        """验证点 1: 项目级物理目录分箱，各个会话与 project_state.json 均收敛于 history/<project>/"""
+        self.assertEqual(self.sm.project_name, "ecommerce_platform")
+        self.assertEqual(self.sm.history_dir, self.root_path / "ecommerce_platform")
+
+        mgr_cart = self.sm.switch_session("cart_service")
+        mgr_cart.start_new_turn("重构购物车")
+        mgr_cart.update_from_tool("write_file", {"file_path": "services/cart.py"}, "ok", turn_id=1)
+        mgr_cart.finish_current_turn()
+
+        # 检查物理目录中生成了对应的会话 jsonl 与项目状态 json
+        cart_file = self.sm.history_dir / "cart_service.jsonl"
+        state_file = self.sm.history_dir / "project_state.json"
+        self.assertTrue(cart_file.exists(), "会话日志必须落在项目专有子目录内")
+        self.assertTrue(state_file.exists(), "项目状态总线文件必须落盘在项目专有子目录内")
+
+    def test_cross_session_fusion_working_memory_no_duplication(self):
+        """验证点 2: 跨会话工作记忆看板融合 (Fusion View)，本会话与外部会话改动清晰区分，0 冗余"""
+        # 会话 A (用户模块): 修改 user.py
+        mgr_user = self.sm.switch_session("user_service")
+        mgr_user.working_memory.update_goal("开发用户认证", is_manual=True)
+        mgr_user.start_new_turn("任务 1: 用户模块")
+        mgr_user.update_from_tool("write_file", {"file_path": "services/user.py"}, "ok", turn_id=1)
+        mgr_user.finish_current_turn()
+
+        # 切换到会话 B (订单模块): 修改 order.py
+        mgr_order = self.sm.switch_session("order_service")
+        mgr_order.working_memory.update_goal("优化下单链路", is_manual=True)
+        mgr_order.start_new_turn("任务 2: 订单模块")
+        mgr_order.update_from_tool("write_file", {"file_path": "services/order.py"}, "ok", turn_id=1)
+
+        # 构造会话 B 的请求上下文
+        messages, _ = mgr_order.build_context_with_watermark("System Prompt")
+        user_msg = next(m["content"] for m in messages if m.get("role") == "user" and "任务 2" in m.get("content", ""))
+
+        # 核心断言 1: 包含会话 B 专属私有目标，不包含会话 A 的私有目标
+        self.assertIn("**当前会话协同目标**: 优化下单链路", user_msg)
+        self.assertNotIn("开发用户认证", user_msg)
+
+        # 核心断言 2: 【本会话已改代码】只展示 order.py
+        self.assertIn("- **本会话已改代码**: `services/order.py`", user_msg)
+
+        # 核心断言 3: 【项目其他会话协同改动】精准标出会话 A 改动的 user.py 及所属会话名
+        self.assertIn("- **项目其他会话协同改动**", user_msg)
+        self.assertIn("`services/user.py` (由会话 #user_service 在轮次 #1 修改)", user_msg)
+
+        # 核心断言 4: 绝无重复注入
+        self.assertEqual(user_msg.count("services/order.py"), 1, "本会话修改的文件绝不能在其他会话协同改动中重复出现")
+        self.assertEqual(user_msg.count("services/user.py"), 1)
+
+    def test_long_term_summary_strict_isolation_between_sessions(self):
+        """验证点 3: 长期摘要保持会话级严格隔离，绝不跨对话框污染"""
+        # 会话 A 注入专有历史摘要
+        mgr_a = self.sm.switch_session("task_database")
+        mgr_a.summarizer.state.summary_text = "数据库连接池排查结论: 最大连接数耗尽引发死锁。"
+        mgr_a.summarizer.state.covered_through_turn_id = 2
+
+        # 切换到会话 B
+        mgr_b = self.sm.switch_session("task_frontend")
+        mgr_b.start_new_turn("调整前端组件样式")
+        messages_b, _ = mgr_b.build_context_with_watermark("Base System Prompt")
+
+        # 核心断言: 会话 B 绝对看不到会话 A 的数据库死锁摘要
+        all_content_b = " ".join([str(m.get("content", "")) for m in messages_b])
+        self.assertNotIn("数据库连接池排查结论", all_content_b, "长期摘要必须严格归属当前对话框，绝不能跨会话污染！")
+        self.assertFalse(mgr_b.summarizer.state.has_summary(), "新会话初始长期摘要必须为空")
+
+    def test_project_state_rollback_synchronization(self):
+        """验证点 4: 会话 /undo 回滚时，项目级状态总线精准联动撤销本会话该轮登记的改动"""
+        mgr = self.sm.switch_session("rollback_test")
+        mgr.start_new_turn("轮次 1: 写入 temp_tool.py")
+        mgr.update_from_tool("write_file", {"file_path": "temp_tool.py"}, "ok", turn_id=1)
+        mgr.finish_current_turn()
+
+        # 验证已写入全局状态
+        self.assertIn("temp_tool.py", self.sm.project_state.global_modified_files)
+
+        # 执行回滚
+        success = mgr.rollback_last_turn()
+        self.assertTrue(success)
+
+        # 核心断言: 项目全局状态中已同步清除该条修改记录
+        self.assertNotIn("temp_tool.py", self.sm.project_state.global_modified_files, "回滚后全局状态总线中必须清除该轮改动！")

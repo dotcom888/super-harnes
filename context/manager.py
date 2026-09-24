@@ -278,7 +278,9 @@ class ContextManager:
         budget_ledger: Optional[BudgetLedger] = None,
         token_counter: Optional[TokenCounter] = None,
         summarizer: Optional[ContextSummarizer] = None,
-        base_dir: Optional[Path] = None
+        base_dir: Optional[Path] = None,
+        project_state: Optional[Any] = None,
+        project_name: Optional[str] = None
     ):
         self.session_id = session_id
         self.budget = budget_ledger.copy() if budget_ledger else default_budget_ledger.copy()
@@ -300,14 +302,33 @@ class ContextManager:
 
         self.workspace = default_workspace
         self._base_dir = Path(base_dir).resolve() if base_dir else None
+        self.project_name = project_name
         self.snapshot_manager = default_snapshot_manager
         self.last_rolled_back_files = []
 
         # 确保动态历史归档目录就绪
         self.history_dir.mkdir(parents=True, exist_ok=True)
 
+        # 项目全局共享状态总线 (Project State Bus)
+        if project_state is not None:
+            self.project_state = project_state
+        elif self.history_dir:
+            from context.project_state import ProjectState
+            self.project_state = ProjectState(
+                project_dir=self.history_dir,
+                project_name=self.project_name or self.workspace.root.name
+            )
+        else:
+            self.project_state = None
+
         # 跨会话隔离：探测磁盘上已有历史的最大 turn_id，避免新会话从 1 开始导致 ID 碰撞
         self._init_turn_counter_from_disk()
+
+    def update_from_tool(self, tool_name: str, args: Dict[str, Any], result: str, turn_id: Optional[int] = None):
+        """解析工具输出并同步更新会话工作记忆与项目共享状态总线"""
+        self.working_memory.update_from_tool(tool_name, args, result, turn_id=turn_id)
+        if self.project_state:
+            self.project_state.record_tool_effect(tool_name, args, result, self.session_id, turn_id=turn_id)
 
     @property
     def history_dir(self) -> Path:
@@ -495,6 +516,8 @@ class ContextManager:
         if self.completed_turns:
             rolled = self.completed_turns.pop()
             rolled_turn_id = rolled.turn_id
+            if self.project_state:
+                self.project_state.rollback_session_turn(self.session_id, rolled_turn_id)
             if self._state_snapshots:
                 self._state_snapshots.pop()
                 if self._state_snapshots:
@@ -849,9 +872,12 @@ class ContextManager:
             final_messages.extend(chunk.messages)
 
         # 动态尾部：当前轮次消息
-        # 消除 Prompt Cache 破坏：将高频动态变化的 WorkingMemory 注入到当前轮次首条 user 消息头部
+        # 消除 Prompt Cache 破坏：将高频动态变化的 WorkingMemory (融合项目全局与会话私有) 注入到当前轮次首条 user 消息头部
         # 既避免了放在头部导致后续数千历史 Token 缓存失效，又避免了在历史中间插入独立 system 角色引发的 API 400
-        wm_context = self.working_memory.format_prompt_context(compact=False)
+        if self.project_state:
+            wm_context = self.project_state.get_fusion_view(self.working_memory, self.session_id, compact=False)
+        else:
+            wm_context = self.working_memory.format_prompt_context(compact=False)
         if current_turn_msgs:
             first_user_msg = current_turn_msgs[0]
             if wm_context and first_user_msg.get("role") == "user":
@@ -875,7 +901,10 @@ class ContextManager:
                 f"触发硬门禁截断: 实际 Tokens ({actual_tokens}) 超过允许上限 ({max_context_allowed})，执行降级截断保护。"
             )
             # 级别 1: 压缩 WorkingMemory（兼顾当前轮 user 注入与测试 system 注入）
-            compact_wm = self.working_memory.format_prompt_context(compact=True)
+            if self.project_state:
+                compact_wm = self.project_state.get_fusion_view(self.working_memory, self.session_id, compact=True)
+            else:
+                compact_wm = self.working_memory.format_prompt_context(compact=True)
             for m in final_messages:
                 if m.get("role") == "user" and "Working Memory" in str(m.get("content", "")):
                     parts = str(m.get("content", "")).split("[用户当前提问]:", 1)
