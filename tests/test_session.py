@@ -308,3 +308,266 @@ class TestSafeSlidingWindowAndSession(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+import tempfile
+from pathlib import Path
+from io import StringIO
+import sys
+from core.session import SessionManager
+from core.agent import ReActAgent
+from cli.commands import handle_slash_command
+
+class TestMultiSessionManagement(unittest.TestCase):
+    """验证多会话隔离、会话切换、自动唤醒与斜杠命令交互"""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="test_sessions_dir_")
+        self.history_dir = Path(self.temp_dir).resolve()
+        self.sm = SessionManager(default_session_id="default", history_dir=self.history_dir)
+
+    def tearDown(self):
+        if Path(self.temp_dir).exists():
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_multi_session_strict_isolation(self):
+        """核心验证：不同会话间的短期滑窗、工作记忆与文件修改记录严格隔离，互不污染"""
+        # 会话 A: 操作任务 A
+        mgr_a = self.sm.switch_session("session_alpha")
+        mgr_a.start_new_turn("任务 A: 修复 agent 模块")
+        mgr_a.working_memory.update_from_tool("write_file", {"file_path": "core/agent.py"}, "ok")
+        mgr_a.working_memory.update_goal("重构 agent", is_manual=True)
+        mgr_a.add_assistant_message("已完成 agent 修复")
+        mgr_a.finish_current_turn()
+
+        # 切换到会话 B: 必须是空白会话
+        mgr_b = self.sm.switch_session("session_beta")
+        self.assertEqual(len(mgr_b.completed_turns), 0, "会话 B 必须无历史轮次")
+        self.assertEqual(mgr_b.turn_count, 0)
+        self.assertNotIn("core/agent.py", mgr_b.working_memory.modified_files)
+        self.assertNotEqual(mgr_b.working_memory.current_goal, "重构 agent")
+
+        # 会话 B 执行任务 B
+        mgr_b.start_new_turn("任务 B: 优化 session 模块")
+        mgr_b.working_memory.update_from_tool("write_file", {"file_path": "core/session.py"}, "ok")
+        mgr_b.working_memory.update_goal("开发 session", is_manual=True)
+        mgr_b.add_assistant_message("已完成 session 优化")
+        mgr_b.finish_current_turn()
+
+        # 切回会话 A: 任务 A 状态必须完好无损，且无会话 B 的任何记录
+        mgr_a_again = self.sm.switch_session("session_alpha")
+        self.assertEqual(len(mgr_a_again.completed_turns), 1)
+        self.assertIn("core/agent.py", mgr_a_again.working_memory.modified_files)
+        self.assertNotIn("core/session.py", mgr_a_again.working_memory.modified_files, "会话 A 绝不能被会话 B 污染")
+        self.assertEqual(mgr_a_again.working_memory.current_goal, "重构 agent")
+
+    def test_multi_session_auto_restore_on_switch(self):
+        """核心验证：切换至未加载的已有磁盘会话时，无需输入 /restore，自动反序列化唤醒"""
+        mgr = self.sm.switch_session("task_disk")
+        mgr.start_new_turn("排查历史")
+        mgr.working_memory.update_from_tool("read_file", {"file_path": "calc.py"}, "code")
+        mgr.add_assistant_message("排查完成")
+        mgr.finish_current_turn()
+
+        self.assertTrue((self.history_dir / "task_disk.jsonl").exists())
+
+        # 模拟重启：新建全新的 SessionManager 实例
+        new_sm = SessionManager(default_session_id="default", history_dir=self.history_dir)
+        self.assertEqual(new_sm.active_session_id, "default")
+
+        # 切换到 task_disk: 自动触发 restore_from_disk
+        restored_mgr = new_sm.switch_session("task_disk")
+        self.assertEqual(restored_mgr.turn_count, 1)
+        self.assertEqual(len(restored_mgr.completed_turns), 1)
+        self.assertIn("calc.py", restored_mgr.working_memory.inspected_files)
+
+    def test_create_and_delete_session(self):
+        """验证会话创建、列表感知与安全删除（自动切回 default）"""
+        mgr_new = self.sm.create_session("temp_session")
+        self.assertEqual(self.sm.active_session_id, "temp_session")
+        mgr_new.start_new_turn("临时记录")
+        mgr_new.add_assistant_message("临时回复")
+        mgr_new.finish_current_turn()
+
+        self.assertTrue((self.history_dir / "temp_session.jsonl").exists())
+
+        # 删除活动会话
+        success = self.sm.delete_session("temp_session")
+        self.assertTrue(success)
+        self.assertFalse((self.history_dir / "temp_session.jsonl").exists(), "磁盘日志文件应被清理")
+        self.assertEqual(self.sm.active_session_id, "default", "删除当前活动会话后必须自动切回 default")
+
+    def test_rename_session_and_disk_migration(self):
+        """验证会话重命名：内存及磁盘日志原子重命名，历史对齐"""
+        mgr = self.sm.switch_session("old_name")
+        mgr.start_new_turn("重命名测试")
+        mgr.working_memory.update_from_tool("write_file", {"file_path": "test.txt"}, "ok")
+        mgr.add_assistant_message("已写入")
+        mgr.finish_current_turn()
+
+        self.assertTrue((self.history_dir / "old_name.jsonl").exists())
+
+        renamed = self.sm.rename_session("old_name", "new_name")
+        self.assertTrue(renamed)
+        self.assertFalse((self.history_dir / "old_name.jsonl").exists())
+        self.assertTrue((self.history_dir / "new_name.jsonl").exists())
+        self.assertEqual(self.sm.active_session_id, "new_name")
+
+        active_mgr = self.sm.active_session
+        self.assertEqual(active_mgr.session_id, "new_name")
+        self.assertEqual(active_mgr.turn_count, 1)
+        self.assertIn("test.txt", active_mgr.working_memory.modified_files)
+
+    def test_get_session_preview_formatting(self):
+        """验证会话快照与历史预览生成格式"""
+        mgr = self.sm.switch_session("preview_session")
+        mgr.working_memory.update_goal("实现预览功能", is_manual=True)
+        mgr.start_new_turn("用户提问测试")
+        mgr.add_assistant_message("助手答复测试")
+        mgr.finish_current_turn()
+
+        preview = self.sm.get_session_preview("preview_session")
+        self.assertIn("会话 【preview_session】 上下文快照", preview)
+        self.assertIn("实现预览功能", preview)
+        self.assertIn("用户: 用户提问测试", preview)
+        self.assertIn("助手: 助手答复测试", preview)
+
+    def test_agent_session_delegation_and_setter(self):
+        """验证 ReActAgent 与 SessionManager 的联动属性及代理方法"""
+        agent = ReActAgent.__new__(ReActAgent)
+        agent.session_manager = self.sm
+
+        self.assertEqual(agent.context_manager.session_id, "default")
+        agent.switch_session("session_via_agent")
+        self.assertEqual(agent.context_manager.session_id, "session_via_agent")
+
+        # 测试 setter 赋值
+        custom_mgr = ContextManager("custom_session", base_dir=self.history_dir)
+        agent.context_manager = custom_mgr
+        self.assertEqual(agent.context_manager.session_id, "custom_session")
+        self.assertEqual(agent.session_manager.active_session_id, "custom_session")
+
+    def test_cli_slash_commands_multi_session(self):
+        """验证命令行斜杠指令：/sessions, /switch, /session new, /status 等交互"""
+        agent = ReActAgent.__new__(ReActAgent)
+        agent.session_manager = self.sm
+        agent.model = "deepseek-chat"
+        agent.mcp_manager = type("DummyMcp", (), {"clients": {}})()
+        agent.executor = type("DummyExec", (), {"registry": type("DummyReg", (), {"get_tool_names": lambda self: ["test_tool"]})()})()
+
+        # 捕获 /sessions
+        captured = StringIO()
+        old_stdout = sys.stdout
+        try:
+            sys.stdout = captured
+            handled, should_exit = handle_slash_command(agent, "/sessions")
+        finally:
+            sys.stdout = old_stdout
+
+        self.assertTrue(handled)
+        self.assertFalse(should_exit)
+        self.assertIn("会话列表", captured.getvalue())
+
+        # 快捷切换 /switch task_feature
+        captured = StringIO()
+        try:
+            sys.stdout = captured
+            handled, should_exit = handle_slash_command(agent, "/switch task_feature")
+        finally:
+            sys.stdout = old_stdout
+
+        self.assertTrue(handled)
+        self.assertEqual(agent.session_manager.active_session_id, "task_feature")
+        self.assertIn("当前激活会话: 【task_feature】", captured.getvalue())
+
+        # 检查 /status 中的当前会话字段
+        captured = StringIO()
+        try:
+            sys.stdout = captured
+            handled, should_exit = handle_slash_command(agent, "/status")
+        finally:
+            sys.stdout = old_stdout
+
+        self.assertIn("当前会话: 【task_feature】", captured.getvalue())
+
+        # /session new 创建会话
+        captured = StringIO()
+        try:
+            sys.stdout = captured
+            handled, should_exit = handle_slash_command(agent, "/session new bug_fix_box")
+        finally:
+            sys.stdout = old_stdout
+
+        self.assertEqual(agent.session_manager.active_session_id, "bug_fix_box")
+        self.assertIn("新建会话成功", captured.getvalue())
+    def test_react_inturn_prompt_cache_strict_append_only(self):
+        """核心验证：ReAct 循环轮内严格单调追加 (Strict Append-Only)，User 消息前缀绝不回溯篡改，确保 100% KV Cache 命中"""
+        from unittest.mock import MagicMock
+        import json
+
+        mgr = ContextManager("test_cache_append_only", base_dir=self.history_dir)
+        agent = ReActAgent.__new__(ReActAgent)
+        agent.system_prompt = "You are a coding assistant."
+        agent.max_steps = 5
+        agent.model = "deepseek-chat"
+        agent.context_manager = mgr
+        agent.client = MagicMock()
+        agent.executor = MagicMock()
+        agent.executor.registry.get_schemas.return_value = []
+
+        # Step 1: 触发 write_file
+        call_1 = MagicMock()
+        call_1.id = "call_write"
+        call_1.type = "function"
+        call_1.function.name = "write_file"
+        call_1.function.arguments = json.dumps({"file_path": "src/module.py", "content": "print('ok')"})
+
+        msg_1 = MagicMock()
+        msg_1.content = "I will write the file."
+        msg_1.tool_calls = [call_1]
+        resp_1 = MagicMock()
+        resp_1.choices = [MagicMock(message=msg_1)]
+
+        # Step 2: 最终解答
+        msg_2 = MagicMock()
+        msg_2.content = "File written successfully."
+        msg_2.tool_calls = None
+        resp_2 = MagicMock()
+        resp_2.choices = [MagicMock(message=msg_2)]
+
+        agent.client.chat.completions.create.side_effect = [resp_1, resp_2]
+        agent.executor.execute_tool_calls.return_value = [
+            {"tool_call_id": "call_write", "content": "【写入成功】文件 src/module.py 已更新"}
+        ]
+
+        # 记录调用前初始 User 提问（提问本身不包含 src/module.py 字眼）
+        user_prompt = "请修复计算逻辑"
+        recorded_user_msg_in_step2 = []
+
+        def spy_create(*args, **kwargs):
+            msgs = kwargs.get("messages", [])
+            for m in msgs:
+                if m.get("role") == "user" and user_prompt in m.get("content", ""):
+                    recorded_user_msg_in_step2.append(m["content"])
+            if len(recorded_user_msg_in_step2) == 1:
+                return resp_1
+            return resp_2
+
+        agent.client.chat.completions.create.side_effect = spy_create
+
+        result = agent.run(user_prompt, verbose=False)
+        self.assertEqual(result, "File written successfully.")
+
+        # 断言 1: 轮内 Working Memory 注记保持不可变（严禁轮内回写篡改 Working Memory）
+        self.assertEqual(len(recorded_user_msg_in_step2), 2, "应执行两步大模型调用")
+        wm_part_step1 = recorded_user_msg_in_step2[0].split("[用户当前提问]:")[0]
+        wm_part_step2 = recorded_user_msg_in_step2[1].split("[用户当前提问]:")[0]
+        # 轮内即使修改了文件，当前轮 User 消息的 Working Memory 也绝不回写追加 src/module.py
+        self.assertNotIn("src/module.py", wm_part_step2, "轮内严禁回写 Working Memory 破坏前缀缓存！")
+
+        # 断言 2: Python 内存中精确记录了修改
+        self.assertIn("src/module.py", mgr.working_memory.modified_files)
+
+        # 断言 3: 跨轮生效——开启下一轮后，新用户提问头部自动注入了上一轮修改的成果
+        mgr.start_new_turn("下一步任务")
+        new_msgs, _ = mgr.build_context_with_watermark("You are a coding assistant.")
+        next_user_msg = next(m for m in new_msgs if m.get("role") == "user" and "下一步任务" in m.get("content", ""))
+        self.assertIn("src/module.py", next_user_msg["content"], "新一轮的 Working Memory 注记中必须包含上一轮修改的文件！")

@@ -15,6 +15,7 @@ from openai.types.chat import ChatCompletionMessage
 from tools import registry
 from tools.executor import ToolExecutor, default_executor
 from context import ContextManager, WorkingMemory
+from core.session import SessionManager
 from mcp import McpManager, default_mcp_manager
 from core.prompt import DEFAULT_SYSTEM_PROMPT
 
@@ -34,7 +35,8 @@ class ReActAgent:
         max_steps: Optional[int] = None,
         executor: Optional[ToolExecutor] = None,
         context_manager: Optional[ContextManager] = None,
-        mcp_manager: Optional[McpManager] = None
+        mcp_manager: Optional[McpManager] = None,
+        session_manager: Optional[SessionManager] = None
     ):
         self.api_key = api_key or os.getenv("LLM_API_KEY")
         self.base_url = base_url or os.getenv("LLM_BASE_URL", "https://api.deepseek.com")
@@ -43,7 +45,16 @@ class ReActAgent:
         env_max_steps = int(os.getenv("AGENT_MAX_STEPS", "30"))
         self.max_steps = max_steps if max_steps is not None else env_max_steps
         self.executor = executor or default_executor
-        self.context_manager = context_manager or ContextManager("default")
+        if session_manager is not None:
+            self.session_manager = session_manager
+            if context_manager is not None:
+                self.session_manager._sessions[context_manager.session_id] = context_manager
+                self.session_manager.active_session_id = context_manager.session_id
+        elif context_manager is not None:
+            self.session_manager = SessionManager(default_session_id=context_manager.session_id)
+            self.session_manager._sessions[context_manager.session_id] = context_manager
+        else:
+            self.session_manager = SessionManager(default_session_id="default")
         self.mcp_manager = mcp_manager or default_mcp_manager
 
         if not self.api_key or self.api_key == "your_api_key_here":
@@ -57,9 +68,47 @@ class ReActAgent:
         atexit.register(self.mcp_manager.close_all)
 
     @property
+    def context_manager(self) -> ContextManager:
+        """获取当前激活会话的上下文管理器"""
+        return self.session_manager.active_session
+
+    @context_manager.setter
+    def context_manager(self, mgr: ContextManager):
+        """设置并注册激活会话"""
+        if not hasattr(self, "session_manager") or self.session_manager is None:
+            self.session_manager = SessionManager(default_session_id=mgr.session_id)
+        self.session_manager._sessions[mgr.session_id] = mgr
+        self.session_manager.active_session_id = mgr.session_id
+
+    @property
     def session(self):
         """向后兼容属性"""
         return self.context_manager
+
+    def switch_session(self, session_id: str, auto_restore: bool = True) -> ContextManager:
+        """切换当前激活会话"""
+        return self.session_manager.switch_session(session_id, auto_restore=auto_restore)
+
+    def list_sessions(self) -> List[Dict[str, Any]]:
+        """获取所有可用会话列表及元数据"""
+        return self.session_manager.list_sessions()
+
+    def create_session(self, session_id: Optional[str] = None) -> ContextManager:
+        """创建新会话并自动切换激活"""
+        return self.session_manager.create_session(session_id)
+
+    def delete_session(self, session_id: str) -> bool:
+        """删除指定会话及持久化文件"""
+        return self.session_manager.delete_session(session_id)
+
+    def rename_session(self, old_id: str, new_id: str) -> bool:
+        """重命名会话"""
+        return self.session_manager.rename_session(old_id, new_id)
+
+    def get_session_preview(self, session_id: Optional[str] = None) -> str:
+        """获取会话上下文快照与历史预览"""
+        sid = session_id or self.session_manager.active_session_id
+        return self.session_manager.get_session_preview(sid)
 
     def reset_session(self):
         """重置当前内存会话"""
@@ -303,18 +352,10 @@ class ReActAgent:
                             turn_id=self.context_manager.turn_count
                         )
 
-                    # 关键修复：轮内即时同步工作记忆，同时匹配头部 system 或当前轮 user 前缀
-                    latest_wm = self.context_manager.working_memory.format_prompt_context()
-                    for m in messages:
-                        if m.get("role") == "system" and "Working Memory" in str(m.get("content", "")):
-                            m["content"] = latest_wm
-                            break
-                        elif m.get("role") == "user" and "【系统注记 - 工作区感知状态" in str(m.get("content", "")):
-                            parts = str(m.get("content", "")).split("[用户当前提问]:", 1)
-                            user_suffix = parts[1] if len(parts) > 1 else str(m.get("content", ""))
-                            m["content"] = f"{latest_wm}\n\n[用户当前提问]:{user_suffix}"
-                            break
-
+                    # 轮内严格单调追加 (Strict Append-Only) 与 Prompt Cache 保障：
+                    # 轮内已包含最新 Tool Call 与 Tool Result 明文，无需也不得回溯篡改前序 User 消息，
+                    # 确保 Step 1 -> Step N 全程前缀逐字一致，100% 稳态命中大模型 KV Cache！
+                    # 工作记忆状态已在 Python 内存中精确维护，将在 finish_current_turn 时原子落盘并在下一轮生效。
                     self.context_manager.add_tool_results(protected_results)
                 else:
                     if verbose:

@@ -24,6 +24,8 @@ def main():
         agent = ReActAgent()
         print(f"Agent 就绪！激活模型: 【{agent.model}】")
         print(f"当前工作区根目录: 【{default_workspace.root}】")
+        active_sid = getattr(getattr(agent, "session_manager", None), "active_session_id", "default")
+        print(f"当前激活会话: 【{active_sid}】")
 
         all_tools = agent.executor.registry.get_tool_names()
         mcp_tools = [name for name in all_tools if name.startswith("mcp__")]
@@ -31,11 +33,12 @@ def main():
 
         print(f"  [本地内置工具]: {', '.join(native_tools)}")
         print(f"  [MCP 外部工具]: {', '.join(mcp_tools) if mcp_tools else '（无）'}")
-        print("💡 提示：输入 /help 查看控制指令。")
+        print("💡 提示：输入 /help 查看控制指令，输入 /sessions 查看或切换会话。")
 
         while True:
+            active_sid = getattr(getattr(agent, "session_manager", None), "active_session_id", "default")
             try:
-                prompt = input("\n你: ").strip()
+                prompt = input(f"\n[{active_sid}] 你: ").strip()
             except (KeyboardInterrupt, EOFError):
                 print("\n操作已取消，退出控制台。")
                 break
