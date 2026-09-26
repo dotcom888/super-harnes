@@ -19,6 +19,7 @@ from tools.framework.output_clamp import clamp_generic_output, get_dynamic_max_c
 from context import ContextManager, WorkingMemory
 from core.session import SessionManager
 from core.loop_detector import LoopDetector, LoopState
+from core.stage_manager import StageManager, TaskStage
 from mcp import McpManager, default_mcp_manager
 from core.prompt import DEFAULT_SYSTEM_PROMPT
 
@@ -48,6 +49,7 @@ class ReActAgent:
         env_max_steps = int(os.getenv("AGENT_MAX_STEPS", "0"))
         self.max_steps = max_steps if max_steps is not None else env_max_steps
         self.loop_detector = LoopDetector()
+        self.stage_manager = StageManager(enable_stage_masking=False)
         self.executor = executor or default_executor
         if session_manager is not None:
             self.session_manager = session_manager
@@ -285,6 +287,9 @@ class ReActAgent:
         if not hasattr(self, "loop_detector") or self.loop_detector is None:
             self.loop_detector = LoopDetector()
         self.loop_detector.reset()
+        if not hasattr(self, "stage_manager") or self.stage_manager is None:
+            self.stage_manager = StageManager(enable_stage_masking=False)
+        self.stage_manager.reset()
 
         if not hasattr(self, "max_steps"):
             self.max_steps = 0
@@ -332,6 +337,8 @@ class ReActAgent:
                 # 若到达最终步或死循环红牌强制收尾，关闭工具接口，迫使模型汇总事实输出最终解答
                 loop_state = self.loop_detector.current_state
                 call_tools = tools_schema if (tools_schema and not is_last_step and not force_wrapup_active and loop_state != LoopState.FORCE_WRAPUP) else None
+                if call_tools:
+                    call_tools = self.stage_manager.reorder_or_mask_schemas(call_tools)
                 call_tool_choice = "auto" if call_tools else None
 
                 if force_wrapup_active:
@@ -363,6 +370,9 @@ class ReActAgent:
                         step_banner += " [重要提醒: 本轮已达最终步，工具调用已关闭。请基于上述已排查掌握的全部代码与事实，向用户输出详尽完整的最终分析答复或改动说明]"
                     elif is_near_end:
                         step_banner += " [提示: 步数即将耗尽，请尽快收拢排查，准备输出结论]"
+
+                if not force_wrapup_active and loop_state != LoopState.FORCE_WRAPUP and not is_last_step:
+                    step_banner += f"\n[{self.stage_manager.get_stage_banner()}]"
 
                 updated_banner = False
                 for m in messages:
@@ -462,6 +472,11 @@ class ReActAgent:
                             args_dict,
                             matched_res,
                             turn_id=self.context_manager.turn_count
+                        )
+                        self.stage_manager.update_from_tool_call(
+                            fname,
+                            args_dict,
+                            matched_res
                         )
 
                     # 轮内严格单调追加 (Strict Append-Only) 与 Prompt Cache 保障：

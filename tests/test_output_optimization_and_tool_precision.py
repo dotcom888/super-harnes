@@ -249,5 +249,90 @@ class TestSpoolingAndOutputOptimization(unittest.TestCase):
         self.assertIn("系统提示: 完整原始输出", red_res)
 
 
+
+    def test_anchor_indexed_lens_generation(self):
+        """方案 1 测试：验证超大日志截断时，透镜提示附带确切报错行号锚点与直接调阅指引"""
+        lines = ['log normal ok info\n' for _ in range(800)]
+        error_part = (
+            "Traceback (most recent call last):\n"
+            "  File 'core/engine.py', line 99, in compute\n"
+            "ZeroDivisionError: division by zero\n"
+        )
+        lines.insert(400, error_part)
+        huge_log = "".join(lines)
+
+        clamped = clamp_shell_output(huge_log, max_chars=4000, tool_name="run_shell")
+
+        self.assertIn("系统提示: 完整原始输出", clamped)
+        self.assertIn("核心报错位于该文件第 401 ~", clamped)
+        self.assertIn("read_file(file_path=", clamped)
+        self.assertIn("ZeroDivisionError: division by zero", clamped)
+
+    def test_read_file_outline_augmented_fallback(self):
+        """方案 2 测试：验证长文件首段读取自动附带符号大纲导航，后续翻页不重复附加"""
+        large_code_lines = [
+            '"""模块文档注释"""',
+            "class EngineManager:",
+            "    def __init__(self):",
+            "        self.status = 'ready'",
+            "    def start_engine(self):",
+            "        return True",
+            "    def stop_engine(self):",
+            "        return False",
+            "def global_helper_calc(x, y):",
+            "    return x + y",
+        ]
+        for i in range(210):
+            large_code_lines.append(f"# line padding comment {i}")
+
+        test_py = self.temp_path / "large_service.py"
+        test_py.write_text("\n".join(large_code_lines), encoding="utf-8")
+
+        # 1. 首次读取（start_line=1, max_lines=40）：应触发半读半纲
+        res_first = read_file("large_service.py", start_line=1, max_lines=40)
+        self.assertIn("大文件全貌导航·符号大纲", res_first)
+        self.assertIn("EngineManager", res_first)
+        self.assertIn("global_helper_calc", res_first)
+        self.assertIn("定向阅读建议", res_first)
+
+        # 2. 后续翻页读取（start_line=41, max_lines=40）：不应重复附加符号大纲
+        res_next = read_file("large_service.py", start_line=41, max_lines=40)
+        self.assertNotIn("大文件全貌导航·符号大纲", res_next)
+
+    def test_stage_manager_lifecycle_and_reordering(self):
+        """方案 3 测试：验证任务状态机自动驱动、Schema 优先级重排与严格掩码"""
+        from core.stage_manager import StageManager, TaskStage
+
+        schemas = default_registry.get_schemas()
+        stage_mgr = StageManager(enable_stage_masking=False)
+
+        # 1. 初始为 EXPLORE 阶段，探索工具置顶
+        self.assertEqual(stage_mgr.current_stage, TaskStage.EXPLORE)
+        ordered_1 = stage_mgr.reorder_or_mask_schemas(schemas)
+        first_names_1 = [s["function"]["name"] for s in ordered_1[:4]]
+        self.assertTrue(any(name in first_names_1 for name in ["read_file", "find_by_name", "grep_text"]))
+        self.assertIn("探索排查态", stage_mgr.get_stage_banner())
+
+        # 2. 模拟 apply_patch 成功修改代码 -> 自动迁移至 VERIFY
+        stage_mgr.update_from_tool_call("apply_patch", {}, "成功应用补丁: 替换了 1 个文件。")
+        self.assertEqual(stage_mgr.current_stage, TaskStage.VERIFY)
+        ordered_2 = stage_mgr.reorder_or_mask_schemas(schemas)
+        self.assertEqual(ordered_2[0]["function"]["name"], "run_shell")
+        self.assertIn("验证闭环态", stage_mgr.get_stage_banner())
+
+        # 3. 模拟 run_shell 测试失败 -> 自动返回 EXPLORE 阶段
+        stage_mgr.update_from_tool_call("run_shell", {"command": "pytest"}, "FAILED test_core.py - AssertionError")
+        self.assertEqual(stage_mgr.current_stage, TaskStage.EXPLORE)
+
+        # 4. 验证严格掩码模式 (enable_stage_masking=True)
+        stage_mgr.enable_stage_masking = True
+        stage_mgr.current_stage = TaskStage.VERIFY
+        masked = stage_mgr.reorder_or_mask_schemas(schemas)
+        masked_names = [s["function"]["name"] for s in masked]
+        self.assertIn("run_shell", masked_names)
+        self.assertIn("read_file", masked_names)
+        self.assertNotIn("write_file", masked_names)
+
+
 if __name__ == "__main__":
     unittest.main()

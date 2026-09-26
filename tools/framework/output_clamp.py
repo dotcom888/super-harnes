@@ -63,9 +63,13 @@ def cleanup_old_spool_files(tmp_dir: Optional[Path] = None, max_files: int = 100
     except Exception as e:
         logger.debug(f"清理临时转存文件异常: {e}")
 
-def spool_to_disk(raw_text: str, tool_name: str = "tool") -> Tuple[Optional[Path], str]:
+def spool_to_disk(
+    raw_text: str,
+    tool_name: str = "tool",
+    error_anchor: Optional[Tuple[int, int]] = None
+) -> Tuple[Optional[Path], str]:
     """
-    将海量原始文本安全全量落盘，并生成追查透镜提示字符串。
+    将海量原始文本安全全量落盘，并生成追查透镜提示字符串（支持报错行号锚点一键直达）。
     返回: (spool_file_path, lens_hint_string)
     """
     cleanup_old_spool_files()
@@ -81,8 +85,20 @@ def spool_to_disk(raw_text: str, tool_name: str = "tool") -> Tuple[Optional[Path
         
         line_count = len(raw_text.splitlines())
         size_kb = len(raw_text.encode("utf-8", errors="replace")) / 1024.0
+
+        anchor_desc = ""
+        if error_anchor and isinstance(error_anchor, (tuple, list)) and len(error_anchor) >= 2:
+            err_start, err_end = error_anchor[0], error_anchor[1]
+            suggest_start = max(1, err_start - 3)
+            suggest_lines = min(150, max(20, err_end - err_start + 10))
+            anchor_desc = (
+                f"核心报错位于该文件第 {err_start} ~ {err_end} 行。"
+                f"如需查看完整堆栈上下文，推荐直接执行: read_file(file_path='{rel_path}', start_line={suggest_start}, max_lines={suggest_lines})。"
+            )
+
         lens_hint = (
             f"\n\n[系统提示: 完整原始输出 (共 {line_count} 行，{size_kb:.1f} KB) 已持久化至: {rel_path}。"
+            f"{anchor_desc}"
             f"如需检索未展示细节，请使用 grep_text 检索该文件，或通过 read_file 分页查看]"
         )
         return spool_file, lens_hint
@@ -107,23 +123,30 @@ def clamp_shell_output(
     if len(raw_text) <= max_chars:
         return raw_text
 
-    _, lens_hint = spool_to_disk(raw_text, tool_name=tool_name)
-    lens_hint_len = len(lens_hint)
-    overhead = 120
-    usable_chars = max(200, max_chars - lens_hint_len - overhead)
-
     lines = raw_text.splitlines()
     total_lines = len(lines)
 
-    # 1. 尝试抓取核心错误块与堆栈
+    # 1. 尝试抓取核心错误块与堆栈，并定位报错在原始输出中的确切行号锚点 (Anchor-Indexed Lens)
     matched_errors: List[str] = []
+    first_anchor: Optional[Tuple[int, int]] = None
     for pattern in ERROR_PATTERNS:
-        matches = pattern.findall(raw_text)
-        if matches:
-            for m in matches[:4]:
-                clean_m = m.strip()
-                if clean_m and clean_m not in matched_errors:
-                    matched_errors.append(clean_m)
+        for m in pattern.finditer(raw_text):
+            clean_m = m.group(0).strip()
+            if clean_m and clean_m not in matched_errors:
+                matched_errors.append(clean_m)
+                if first_anchor is None:
+                    err_start_line = raw_text[:m.start()].count('\n') + 1
+                    err_end_line = err_start_line + clean_m.count('\n')
+                    first_anchor = (err_start_line, err_end_line)
+            if len(matched_errors) >= 4:
+                break
+        if len(matched_errors) >= 4:
+            break
+
+    _, lens_hint = spool_to_disk(raw_text, tool_name=tool_name, error_anchor=first_anchor)
+    lens_hint_len = len(lens_hint)
+    overhead = 120
+    usable_chars = max(200, max_chars - lens_hint_len - overhead)
 
     # 2. 如果存在核心报错
     if matched_errors:

@@ -105,21 +105,25 @@ def read_file(file_path: str, start_line: int = 1, max_lines: int = 300) -> str:
 
         encoding = detect_file_encoding(safe_path)
         with open(safe_path, "r", encoding=encoding, errors="replace") as f:
-            for idx, line in enumerate(f, start=1):
-                if idx < start_line:
-                    continue
-                if len(lines_output) >= max_lines:
-                    is_truncated = True
-                    break
+            all_lines = f.readlines()
 
-                if total_chars + len(line) > MAX_READ_CHARS:
-                    lines_output.append(f"--- [提示: 达到单次字符上限 {MAX_READ_CHARS}，已自动截断] ---")
-                    is_truncated = True
-                    break
+        total_file_lines = len(all_lines)
 
-                stripped_line = line.rstrip("\r\n")
-                lines_output.append(f"{idx:4d} | {stripped_line}")
-                total_chars += len(line)
+        for idx, line in enumerate(all_lines, start=1):
+            if idx < start_line:
+                continue
+            if len(lines_output) >= max_lines:
+                is_truncated = True
+                break
+
+            if total_chars + len(line) > MAX_READ_CHARS:
+                lines_output.append(f"--- [提示: 达到单次字符上限 {MAX_READ_CHARS}，已自动截断] ---")
+                is_truncated = True
+                break
+
+            stripped_line = line.rstrip("\r\n")
+            lines_output.append(f"{idx:4d} | {stripped_line}")
+            total_chars += len(line)
 
         if not lines_output:
             return f"文件 '{file_path}' 从第 {start_line} 行开始无内容（已到达文件末尾或为空文件）。"
@@ -127,6 +131,20 @@ def read_file(file_path: str, start_line: int = 1, max_lines: int = 300) -> str:
         result_text = "\n".join(lines_output)
         if is_truncated:
             result_text += f"\n\n[提示: 当前文件未完全读完，若需后续内容，可指定 start_line={start_line + len(lines_output)} 继续分段读取]"
+            # 方案 2：大文件读取的“半读半纲”自动降级 (Outline-Augmented Fallback)
+            # 当首次阅读超过 150 行的大代码文件且被截断时，主动附加符号大纲导航，避免无脑分段通读
+            if start_line == 1 and total_file_lines > 150:
+                try:
+                    outline = view_file_outline(file_path)
+                    if outline and not outline.startswith("查看大纲失败") and not outline.startswith("【查看大纲拒绝】"):
+                        result_text += (
+                            f"\n\n--- [大文件全貌导航·符号大纲 (全文件共 {total_file_lines} 行)] ---\n"
+                            f"{outline}\n\n"
+                            f"【定向阅读建议】：大文件请勿盲目分段通读！请参考上方大纲中函数/类所在的起始行号，"
+                            f"通过传入 start_line 与 max_lines 定向切片查阅具体实现。"
+                        )
+                except Exception:
+                    pass
 
         return result_text
 
