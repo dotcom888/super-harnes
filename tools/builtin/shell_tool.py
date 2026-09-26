@@ -14,9 +14,11 @@ from tools.registry import register_tool
 from tools.framework.policies import default_policy, PolicyDecision, _split_shell_commands
 from tools.framework.workspace import default_workspace
 
+from tools.framework.output_clamp import clamp_shell_output
+
 # 安全限制参数
 DEFAULT_TIMEOUT_SECONDS = 30   # 默认命令超时时间（秒）
-MAX_OUTPUT_CHARS = 4000        # 单次最大捕获字符数，避免爆大模型上下文
+MAX_OUTPUT_CHARS = 12000       # 语义保护截断阈值，兼顾单步信息充盈与安全
 
 # 正则：匹配终端 ANSI 颜色与控制转义字符
 ANSI_ESCAPE_RE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
@@ -92,6 +94,50 @@ def _decode_bytes(raw_bytes: bytes) -> str:
     # 4. 保底容错解码
     return raw_bytes.decode("utf-8", errors="replace")
 
+def _check_shell_misuse(cmd_clean: str) -> Optional[str]:
+    """
+    识别终端 Shell 中误用管道/系统命令代替专用 Agent 工具的操作，
+    并即时返回结构化重定向引导，避免由于跨平台差异报错或无节制消耗 Token。
+    """
+    sub_cmds = _split_shell_commands(cmd_clean)
+    if len(sub_cmds) != 1:
+        return None
+
+    first = sub_cmds[0].strip()
+    # 纯原子文件查看拦截: cat, type, head, tail, more, less (未包含管道和输出重定向)
+    if not any(token in first for token in ["|", ">", "<", "$"]):
+        m_read = re.match(r"^(cat|type|head|tail|more|less)\s+(?:-n\s+\d+\s+)?([^\s;]+)$", first, re.IGNORECASE)
+        if m_read:
+            target_file = m_read.group(2)
+            return (
+                f"【工具选型重定向建议】：检测到你在尝试使用终端命令 '{first}' 读取文件。\n"
+                f"请直接改用专用工具 read_file(file_path='{target_file}')。\n"
+                f"专用工具优势：自动遵守沙箱权限、跨平台稳定、支持按行范围分页且具备字符安全防线。"
+            )
+
+        # 纯原子文本搜索拦截: grep, rg, findstr
+        m_grep = re.match(r"^(grep|rg|findstr)\s+(?:-[a-zA-Z0-9]+\s+)*(?:['\"]([^'\"]+)['\"]|([^\s;]+))\s+([^\s;]+)$", first, re.IGNORECASE)
+        if m_grep:
+            kw = m_grep.group(2) or m_grep.group(3) or ""
+            target_path = m_grep.group(4) or "."
+            return (
+                f"【工具选型重定向建议】：检测到你在尝试使用终端命令 '{first}' 搜索代码文本。\n"
+                f"请直接改用专用工具 grep_text(keyword='{kw}', directory='{target_path}')。\n"
+                f"专用工具优势：原生优先调用 git grep 毫秒级响应、自动过滤 .gitignore 和构建缓存、且自动进行行截断保护。"
+            )
+
+        # 纯原子文件查找拦截: find . -name xxx, dir /s xxx
+        m_find = re.match(r"^(?:find\s+[\.\w/\\\*]+\s+-name|dir\s+/[sS])\s+([^\s;]+)$", first, re.IGNORECASE)
+        if m_find:
+            pat = m_find.group(1).strip("'\"")
+            return (
+                f"【工具选型重定向建议】：检测到你在尝试使用终端命令 '{first}' 检索文件路径。\n"
+                f"请直接改用专用工具 find_by_name(pattern='{pat}')。\n"
+                f"专用工具优势：优先借助 git ls-files 极速检索、自动遵守 .gitignore、避免递归扫盘产生海量噪音。"
+            )
+
+    return None
+
 def __getattr__(name: str):
     """向后兼容对 WORKSPACE_ROOT 的属性读取"""
     if name == "WORKSPACE_ROOT":
@@ -100,7 +146,8 @@ def __getattr__(name: str):
 
 @register_tool(
     name="run_shell",
-    description="""在工作区沙箱中执行终端 Shell 命令（如运行测试、git 查询、运行 python 脚本等）。
+    description="""在工作区沙箱中执行终端 Shell 命令（如运行测试 pytest/unittest、git 查询、运行构建与 python 脚本等）。
+【重要约束与反向指引】：严禁使用此工具查看文件内容（改用 read_file 工具，自带分页防溢出）、全局搜索文本（改用 grep_text 工具，极速且遵守 .gitignore）或查找文件（改用 find_by_name 工具）。在本地环境中，专用工具比终端 Shell 管道执行更快、跨平台更稳定且受沙箱保护。
 支持指定子工作目录 cwd；高危破坏性命令将被永久拦截；环境修改或高危操作需用户手动审批。""",
     param_descriptions={
         "command": "要在终端执行的 Shell 命令字符串，例如 'pytest' 或 'git status'",
@@ -114,13 +161,13 @@ def run_shell(
     cwd: Optional[str] = None
 ) -> str:
     """
-    带安全审批、动态工作区、环境隔离与编码自适应的 Shell 执行工具
+    带安全审批、动态工作区、环境隔离、编码自适应与语义截断落盘的 Shell 执行工具
     """
     cmd_clean = command.strip()
     if not cmd_clean:
         return "执行失败: 命令不能为空。"
 
-    # 0. 裸 cd 命令快速拦截与智能引导（仅拦截纯原子 cd，放行如 cd frontend && npm test 等复合命令）
+    # 0.1 裸 cd 命令快速拦截与智能引导（仅拦截纯原子 cd，放行如 cd frontend && npm test 等复合命令）
     sub_cmds = _split_shell_commands(cmd_clean)
     if len(sub_cmds) == 1 and re.match(r"^\s*cd(\s+.*)?$", sub_cmds[0], re.IGNORECASE):
         parts = sub_cmds[0].split(None, 1)
@@ -131,6 +178,11 @@ def run_shell(
             f"如需在子目录执行命令，请在调用 run_shell 时直接传入 cwd 参数（例如：run_shell(command='...', {example_cwd})）；"
             f"或使用复合命令：'{cmd_clean} && <your_command>'。"
         )
+
+    # 0.2 误用专用工具的智能重定向拦截 (Smart Misuse Redirector)
+    misuse_hint = _check_shell_misuse(cmd_clean)
+    if misuse_hint:
+        return misuse_hint
 
     # 1. 策略前置评估 (Command Policy)
     decision, reason = default_policy.evaluate(cmd_clean)
@@ -177,7 +229,7 @@ def run_shell(
         stderr = _strip_ansi(_decode_bytes(process.stderr))
         return_code = process.returncode
 
-        # 4. 组装输出并做输出截断（避免撑爆 Token）
+        # 4. 组装输出并做语义输出截断与全量持久化
         combined_output = ""
         if stdout:
             combined_output += f"[标准输出 (stdout)]:\n{stdout}\n"
@@ -186,18 +238,11 @@ def run_shell(
         if not combined_output:
             combined_output = "（命令执行完毕，终端无文本输出）\n"
 
-
-
-        if len(combined_output) > MAX_OUTPUT_CHARS:
-            half = MAX_OUTPUT_CHARS // 2
-            combined_output = (
-                combined_output[:half]
-                + f"\n\n... [中间输出已截断，共省略 {len(combined_output) - MAX_OUTPUT_CHARS} 字符] ...\n\n"
-                + combined_output[-half:]
-            )
-
         status_tag = "成功" if return_code == 0 else f"退出码 {return_code}"
-        return f"【执行状态: {status_tag}】\n{combined_output}".strip()
+        raw_result = f"【执行状态: {status_tag}】\n{combined_output}".strip()
+
+        # 引入通用语义优化与溢出落盘
+        return clamp_shell_output(raw_result, max_chars=MAX_OUTPUT_CHARS, tool_name="run_shell")
 
     except subprocess.TimeoutExpired:
         return f"【执行超时】：命令执行超过 {safe_timeout} 秒上限，已被系统强制终止以防挂起死锁！"

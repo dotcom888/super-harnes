@@ -15,6 +15,7 @@ from openai.types.chat import ChatCompletionMessage
 
 from tools import registry
 from tools.executor import ToolExecutor, default_executor
+from tools.framework.output_clamp import clamp_generic_output, get_dynamic_max_chars
 from context import ContextManager, WorkingMemory
 from core.session import SessionManager
 from core.loop_detector import LoopDetector, LoopState
@@ -174,14 +175,31 @@ class ReActAgent:
                     })
         return msg_dict
 
-    def _protect_tool_result(self, raw_content: str, max_chars: int = 35000) -> str:
-        """单步工具输出保护：防止超大工具返回在轮内引发 Token 爆炸（默认放宽至 35000 字符，可完整保留数百行代码读取结果）"""
-        if len(raw_content) <= max_chars:
+    def _protect_tool_result(
+        self,
+        raw_content: str,
+        max_chars: Optional[int] = None,
+        zone: Optional[str] = None,
+        tool_name: str = "tool"
+    ) -> str:
+        """
+        单步工具输出保护：防止超大工具返回在轮内引发 Token 爆炸。
+        具备多级语义提取、动态上下文水位联动与全量溢出落盘追查透镜。
+        """
+        effective_limit = max_chars if max_chars is not None else (
+            get_dynamic_max_chars(zone) if zone else 35000
+        )
+        if len(raw_content) <= effective_limit:
             return raw_content
-        head_len = int(max_chars * 0.7)
-        tail_len = int(max_chars * 0.3)
-        omitted = len(raw_content) - head_len - tail_len
-        return f"{raw_content[:head_len]}\n\n...[输出过长，已保护性省略中间 {omitted} 字符]...\n\n{raw_content[-tail_len:]}"
+
+        # 如果输出已经由具体工具做过落盘处理，仅做边界保护，避免二次落盘
+        if "[系统提示: 完整原始输出" in raw_content or "[提示: 输出过长已精简" in raw_content:
+            head_len = int(effective_limit * 0.7)
+            tail_len = int(effective_limit * 0.3)
+            omitted = len(raw_content) - head_len - tail_len
+            return f"{raw_content[:head_len]}\n\n...[输出过长，已保护性省略中间 {omitted} 字符]...\n\n{raw_content[-tail_len:]}"
+
+        return clamp_generic_output(raw_content, max_chars=effective_limit, tool_name=tool_name)
 
     def _prune_inturn_observations(
         self,
@@ -249,7 +267,13 @@ class ReActAgent:
             tools_tokens=tools_tokens
         )
 
-        if verbose:
+        try:
+            from cli.ui import default_ui
+            is_ui = default_ui.is_active
+        except Exception:
+            is_ui = False
+
+        if not is_ui and verbose:
             zone_desc = f"{metrics['zone']} ({metrics['raw_utilization']*100:.1f}%)"
             gate_desc = " [已触发硬门禁截断]" if metrics.get("hard_gatekeeper_triggered") else ""
             print(f"\n{'='*20} 轮次 #{self.context_manager.turn_count} [水位: {zone_desc}{gate_desc}] | 引擎: {self.model} {'='*20}")
@@ -310,15 +334,18 @@ class ReActAgent:
                 call_tools = tools_schema if (tools_schema and not is_last_step and not force_wrapup_active and loop_state != LoopState.FORCE_WRAPUP) else None
                 call_tool_choice = "auto" if call_tools else None
 
-                if verbose:
-                    if force_wrapup_active:
-                        step_status = " [死循环熔断·强制收尾]"
-                    elif is_unbounded:
-                        step_status = f" (第 {step} 步·自主排查)"
-                    elif is_last_step:
-                        step_status = " (最终步收尾)"
-                    else:
-                        step_status = f" (第 {step}/{self.max_steps} 步 | 剩余 {remaining_steps} 步)"
+                if force_wrapup_active:
+                    step_status = " [死循环熔断·强制收尾]"
+                elif is_unbounded:
+                    step_status = f" (第 {step} 步·自主排查)"
+                elif is_last_step:
+                    step_status = " (最终步收尾)"
+                else:
+                    step_status = f" (第 {step}/{self.max_steps} 步 | 剩余 {remaining_steps} 步)"
+
+                if is_ui:
+                    default_ui.render_step_status(step, self.max_steps, step_status)
+                elif verbose:
                     print(f"[Step {step}] Agent 正在思考{step_status}...")
 
                 # 3. 动态注入进度/倒计时/停滞干预 Banner (注入在当前轮 User 消息动态尾部，保全前缀缓存)
@@ -371,7 +398,9 @@ class ReActAgent:
                     comp_toks = getattr(usage, "completion_tokens", 0) or 0
                     total_toks = getattr(usage, "total_tokens", prompt_toks + comp_toks) or (prompt_toks + comp_toks)
                     self.context_manager.record_api_usage(prompt_toks, comp_toks)
-                    if verbose:
+                    if is_ui:
+                        default_ui.render_token_usage(prompt_toks, comp_toks, total_toks, self.model)
+                    elif verbose:
                         print(f"  [API 实际用量] 输入: {prompt_toks} Tokens | 输出: {comp_toks} Tokens | 计费总计: {total_toks} Tokens")
 
                 response_msg = response.choices[0].message
@@ -381,8 +410,11 @@ class ReActAgent:
                     messages.append(assistant_dict)
                     self.context_manager.add_assistant_message(assistant_dict)
 
-                    if assistant_dict.get("content") and verbose:
-                        print(f"  [Thought] {assistant_dict['content']}")
+                    if assistant_dict.get("content"):
+                        if is_ui:
+                            default_ui.render_thinking(assistant_dict["content"])
+                        elif verbose:
+                            print(f"  [Thought] {assistant_dict['content']}")
 
                     # 调度执行工具
                     tool_results = self.executor.execute_tool_calls(
@@ -390,13 +422,27 @@ class ReActAgent:
                         verbose=verbose
                     )
 
-                    # 单步工具输出保护
+                    # 单步工具输出保护与动态水位联动
+                    current_zone = metrics.get("zone", "GREEN") if ("metrics" in locals() and isinstance(metrics, dict)) else "GREEN"
                     protected_results = []
                     for tr in tool_results:
-                        safe_content = self._protect_tool_result(str(tr.get("content", "")))
+                        call_id = tr.get("tool_call_id", "")
+                        fname = "tool"
+                        for tc in assistant_dict.get("tool_calls", []):
+                            tc_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
+                            if tc_id == call_id:
+                                fn = tc.get("function", {}) if isinstance(tc, dict) else getattr(tc, "function", None)
+                                fname = fn.get("name", "tool") if isinstance(fn, dict) else getattr(fn, "name", "tool")
+                                break
+
+                        safe_content = self._protect_tool_result(
+                            str(tr.get("content", "")),
+                            zone=current_zone,
+                            tool_name=fname
+                        )
                         protected_results.append({
                             "role": "tool",
-                            "tool_call_id": tr.get("tool_call_id", ""),
+                            "tool_call_id": call_id,
                             "content": safe_content
                         })
 
@@ -437,7 +483,7 @@ class ReActAgent:
                         if verbose:
                             print(f"  [停滞预警] {self.loop_detector.diagnosis_reason}")
                 else:
-                    if verbose:
+                    if not is_ui and verbose:
                         if force_wrapup_active:
                             print(f"\n[安全收拢] Agent 响应死循环熔断，已向用户交付最终汇报。")
                         elif is_last_step:

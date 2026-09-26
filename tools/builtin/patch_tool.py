@@ -300,15 +300,10 @@ def _apply_update_blocks(
 
 @register_tool(
     name="apply_patch",
-    description="""用于精准修改现有文件或创建新文件的补丁工具。
-具备多文件事务原子性：任一文件失败自动回滚所有修改；支持行号剥离与 AST 语法自检。
+    description="""专用于对已有文件进行局部精准修改与代码替换（基于 SEARCH/REPLACE 锚点块）。
+【反向约束与选型互斥】：本工具专用于已有代码的最小侵入式修改（具备事务原子性：任一文件失败全自动回滚；支持行号剥离与 AST 语法自检）。若全新创建空白文件，请改用 write_file 工具。
 格式说明：
-1. 创建新文件：
-*** Create File: 相对路径
-新文件全部内容
-*** End File
-
-2. 修改现有文件（使用精准 SEARCH/REPLACE 块）：
+修改现有文件（使用精准 SEARCH/REPLACE 块）：
 *** Update File: 相对路径
 <<<<<<< SEARCH
 要被替换的原始代码（必须与原文件中的字符、缩进完全一致）
@@ -317,7 +312,7 @@ def _apply_update_blocks(
 >>>>>>> REPLACE
 """,
     param_descriptions={
-        "patch_content": "补丁指令字符串，包含 *** Create File 或 *** Update File 块"
+        "patch_content": "补丁指令字符串，包含 *** Update File 块与 SEARCH/REPLACE 内容"
     }
 )
 def apply_patch(patch_content: str) -> str:

@@ -259,6 +259,13 @@ class CommandPolicy:
         """
         终端交互卡片：Human-in-the-Loop 人工审核
         """
+        try:
+            from cli.ui import default_ui
+            if default_ui.is_active:
+                return default_ui.render_approval_prompt(command, reason)
+        except Exception:
+            pass
+
         print("\n" + "!" * 55)
         print("【安全提示】Agent 申请执行终端 Shell 命令：")
         print(f"  待执行命令:  {command}")

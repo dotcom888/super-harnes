@@ -45,6 +45,12 @@ class ToolExecutor:
         }
 
     def _execute_and_log(self, tc: Any, verbose: bool = True) -> Dict[str, Any]:
+        try:
+            from cli.ui import default_ui
+            is_ui = default_ui.is_active
+        except Exception:
+            is_ui = False
+
         if isinstance(tc, dict):
             func_name = tc.get("function", {}).get("name", "")
             raw_args = tc.get("function", {}).get("arguments", "")
@@ -53,7 +59,7 @@ class ToolExecutor:
             func_name = getattr(func, "name", "") if func else ""
             raw_args = getattr(func, "arguments", "") if func else ""
 
-        if verbose:
+        if not is_ui and verbose:
             print(f"  [Action] 正在执行工具 -> 【{func_name}】")
             try:
                 parsed_args = json.loads(raw_args) if raw_args else {}
@@ -61,10 +67,20 @@ class ToolExecutor:
             except Exception:
                 print(f"           输入参数: {raw_args}")
 
+        import time
+        start_t = time.time()
         func_name, args_str, msg = self._execute_single(tc)
+        elapsed = time.time() - start_t
 
-        if verbose:
-            content = msg.get("content", "")
+        content = msg.get("content", "")
+        if is_ui:
+            try:
+                parsed_args = json.loads(raw_args) if raw_args else {}
+            except Exception:
+                parsed_args = {"raw": raw_args}
+            is_err = any(k in content for k in ["【执行超时】", "【并发执行异常】", "【安全拦截拒绝】", "【用户拒绝】", "执行失败:"])
+            default_ui.render_tool_card(func_name, parsed_args, result=content, is_error=is_err, elapsed=elapsed)
+        elif verbose:
             preview = content[:200] + "..." if len(content) > 200 else content
             print(f"  [Observation] 工具返回结果 -> {preview}")
 
@@ -79,6 +95,12 @@ class ToolExecutor:
         """
         if not tool_calls:
             return []
+
+        try:
+            from cli.ui import default_ui
+            is_ui = default_ui.is_active
+        except Exception:
+            is_ui = False
 
         results: List[Optional[Dict[str, Any]]] = [None] * len(tool_calls)
 
@@ -101,13 +123,15 @@ class ToolExecutor:
                         break
 
                 if len(read_chunk) > 1:
-                    if verbose:
+                    if not is_ui and verbose:
                         chunk_names = ", ".join(
                             f"【{t[1].get('function', {}).get('name', '') if isinstance(t[1], dict) else getattr(getattr(t[1], 'function', None), 'name', '')}】"
                             for t in read_chunk
                         )
                         print(f"  [Action] 并发并行执行 {len(read_chunk)} 个只读工具 -> {chunk_names}")
 
+                    import time
+                    start_t = time.time()
                     workers = min(self.max_workers, len(read_chunk))
                     pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
                     future_map = {
@@ -135,8 +159,21 @@ class ToolExecutor:
                                 }
                     finally:
                         pool.shutdown(wait=False)
+                    chunk_elapsed = time.time() - start_t
 
-                    if verbose:
+                    if is_ui:
+                        for item_idx, item_tc in read_chunk:
+                            msg = results[item_idx]
+                            c = msg.get("content", "") if msg else ""
+                            fn = item_tc.get("function", {}).get("name", "") if isinstance(item_tc, dict) else getattr(getattr(item_tc, "function", None), "name", "")
+                            ra = item_tc.get("function", {}).get("arguments", "") if isinstance(item_tc, dict) else getattr(getattr(item_tc, "function", None), "arguments", "")
+                            try:
+                                pa = json.loads(ra) if ra else {}
+                            except Exception:
+                                pa = {"raw": ra}
+                            is_err = any(k in c for k in ["【执行超时】", "【并发执行异常】", "执行失败:"])
+                            default_ui.render_tool_card(fn, pa, result=c, is_error=is_err, elapsed=chunk_elapsed)
+                    elif verbose:
                         for item_idx, item_tc in read_chunk:
                             msg = results[item_idx]
                             content = msg.get("content", "") if msg else ""

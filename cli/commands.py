@@ -28,6 +28,13 @@ HELP_TEXT = """
 """
 
 def print_help():
+    try:
+        from cli.ui import default_ui
+        if default_ui.is_active:
+            default_ui.render_help()
+            return
+    except Exception:
+        pass
     print(HELP_TEXT)
 
 def handle_slash_command(agent, prompt: str) -> Tuple[bool, bool]:
@@ -127,6 +134,13 @@ def handle_slash_command(agent, prompt: str) -> Tuple[bool, bool]:
     if cmd_lower in ["/projects", "/project list", "/projects list"]:
         from context.global_memory import default_global_memory
         projs = default_global_memory.list_projects()
+        try:
+            from cli.ui import default_ui
+            if default_ui.is_active:
+                default_ui.render_projects_table(projs)
+                return True, False
+        except Exception:
+            pass
         print("\n" + "="*20 + f" 已登记工程工作区地图 (共 {len(projs)} 个) " + "="*20)
         for p in projs:
             print(f"  • 【{p['name']}】: {p['path']}")
@@ -166,6 +180,14 @@ def handle_slash_command(agent, prompt: str) -> Tuple[bool, bool]:
         return True, False
 
     if cmd_lower in ["/status", "/memory"]:
+        try:
+            from cli.ui import default_ui
+            if default_ui.is_active:
+                default_ui.render_status_table(agent)
+                return True, False
+        except Exception:
+            pass
+
         wm = agent.context_manager.working_memory
         print("\n" + "="*20 + " 当前工作区感知与工具状态 " + "="*20)
         proj_name = getattr(agent, "project_name", getattr(getattr(agent, "session_manager", None), "project_name", "default_project"))
@@ -220,6 +242,13 @@ def handle_slash_command(agent, prompt: str) -> Tuple[bool, bool]:
             sessions = []
 
         proj_name = getattr(agent, "project_name", getattr(getattr(agent, "session_manager", None), "project_name", "default_project"))
+        try:
+            from cli.ui import default_ui
+            if default_ui.is_active:
+                default_ui.render_sessions_table(sessions, proj_name)
+                return True, False
+        except Exception:
+            pass
         print("\n" + "="*20 + f" 项目 【{proj_name}】 会话列表 (共 {len(sessions)} 个) " + "="*20)
         for s in sessions:
             prefix = " * " if s.get("is_active") else "   "

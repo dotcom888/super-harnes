@@ -74,7 +74,9 @@ def _validate_safe_path(target_path_str: str) -> Path:
 @register_tool(
     name="read_file",
     is_read_only=True,
-    description="安全读取工作区内的指定文本文件。支持按行范围分页读取，防止大文件溢出。禁止访问工作区外部路径及 .env 等敏感文件。",
+    description="""安全读取工作区内的指定文本文件。支持按行范围分页读取，防止大文件溢出。
+【反向约束与最佳实践】：面对超过 150 行的未知代码文件，严禁盲目直接从第 1 行读取全文！必须先调用 view_file_outline 提取类与函数大纲及行号，再通过 start_line/max_lines 定向切片读取。
+禁止访问工作区外部路径及 .env 等敏感文件。""",
     param_descriptions={
         "file_path": "工作区内的相对或绝对文件路径，例如 'requirements.txt' 或 'tools/calculator.py'",
         "start_line": "起始行号（从 1 开始计，默认为 1）",
@@ -277,7 +279,8 @@ def _check_python_syntax(file_path: Path, content: str) -> str:
 
 @register_tool(
     name="write_file",
-    description="安全创建或覆盖写入指定文件。当全新创建文件或使用 apply_patch 屡次因锚点匹配受挫时，可直接使用此工具进行文件全量写入。禁止覆盖核心安全模块。",
+    description="""专用于全新创建文件或大面积重写文件。
+【反向约束与选型互斥】：严禁为了微调几行现有代码而调用此工具整盘覆写！修改现有文件请优先使用最小侵入性的 apply_patch 工具；仅当全新创建文件或 apply_patch 因冲突无法解决时才使用此工具。禁止覆盖核心安全模块。""",
     param_descriptions={
         "file_path": "工作区内的目标文件路径，例如 'tools/helper.py'",
         "content": "写入文件的完整文本内容"

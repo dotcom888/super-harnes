@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import List, Optional
 from tools.registry import register_tool
 from tools.framework.workspace import default_workspace, is_binary_file
+from tools.framework.output_clamp import clamp_search_output
 
 # 敏感与需要忽略的目录及文件黑名单（覆盖通用前端、Python、Rust 与构建产物）
 IGNORE_PATTERNS = {
@@ -40,7 +41,7 @@ IGNORE_PATTERNS = {
 }
 
 # 限制上限，防止大模型 Token 爆满
-MAX_SEARCH_RESULTS = 100
+MAX_SEARCH_RESULTS = 150
 MAX_OUTPUT_CHARS = 12000
 MAX_LINE_LENGTH = 300
 
@@ -128,7 +129,8 @@ def _is_ignored(rel_path_str: str, gitignore_patterns: List[str]) -> bool:
 @register_tool(
     name="find_by_name",
     is_read_only=True,
-    description="按文件名通配符（如 '*.py'、'*test*'、'agent.py'）在工作区内快速检索文件与目录。优先借助 git ls-files 毫秒级检索并自动遵守 .gitignore。",
+    description="""按文件名或目录名通配符（如 '*.py'、'*test*'、'agent.py'）在工作区内快速检索文件与目录。优先借助 git ls-files 毫秒级检索并自动遵守 .gitignore。
+【场景指南】：专用于定位未知文件路径。若已知具体文件相对路径，请直接调用 read_file 查看；若需搜索文件内容而非文件名，请改用 grep_text。""",
     param_descriptions={
         "pattern": "文件名或路径通配符匹配规则，例如 '*.py'、'*.json'、'*test*' 或 'tools/*'",
         "directory": "搜索起始相对目录，默认为 '.'（即项目根目录）"
@@ -299,7 +301,9 @@ def find_by_name(pattern: str, directory: str = ".") -> str:
 @register_tool(
     name="grep_text",
     is_read_only=True,
-    description="在工作区代码文件中快速搜索包含指定关键字的代码行及行号。原生优先调用 git grep，毫秒级响应并自动忽略构建产物与第三方包。",
+    description="""在工作区代码文件中快速搜索包含指定关键字的代码行及行号。原生优先调用 git grep，毫秒级响应并自动忽略构建产物与第三方包。
+【场景指南】：专用于定位变量、函数定义、类名或报错文本在哪些源码中出现。
+【反向约束】：若已知确切文件行号，请直接使用 read_file；若匹配结果过多，请通过 directory 指定子目录或使用 file_pattern 过滤。""",
     param_descriptions={
         "keyword": "要在代码中检索的关键字、函数名或文本片段",
         "file_pattern": "限定搜索的文件名模式，默认为 '*'（检索所有代码文件），例如 '*.py' 或 '*.json'",
@@ -378,10 +382,14 @@ def grep_text(keyword: str, file_pattern: str = "*", directory: str = ".") -> st
                                 break
 
                     if matches:
-                        result_text = f"找到 {len(matches)} 处匹配（关键字: '{keyword}', 文件模式: '{file_pattern}'）：\n" + "\n".join(matches)
-                        if is_truncated:
-                            result_text += f"\n\n[提示: 匹配结果过多，已达到单次显示上限（最多 {MAX_SEARCH_RESULTS} 条 / {MAX_OUTPUT_CHARS} 字符）]"
-                        return result_text
+                        raw_result = f"找到 {len(matches)} 处匹配（关键字: '{keyword}', 文件模式: '{file_pattern}'）：\n" + "\n".join(matches)
+                        return clamp_search_output(
+                            raw_result,
+                            matches=matches,
+                            max_chars=MAX_OUTPUT_CHARS,
+                            keyword=keyword,
+                            file_pattern=file_pattern
+                        )
                 elif proc.returncode == 1:
                     # git grep 返回 1 表示未找到任何匹配
                     return f"未在符合 '{file_pattern}' 的文件中找到包含关键字 '{keyword}' 的内容。"
@@ -443,11 +451,14 @@ def grep_text(keyword: str, file_pattern: str = "*", directory: str = ".") -> st
         if not matches:
             return f"未在符合 '{file_pattern}' 的文件中找到包含关键字 '{keyword}' 的内容。"
 
-        result_text = f"找到 {len(matches)} 处匹配（关键字: '{keyword}', 文件模式: '{file_pattern}'）：\n" + "\n".join(matches)
-        if is_truncated:
-            result_text += f"\n\n[提示: 匹配结果过多，已达到单次显示上限（最多 {MAX_SEARCH_RESULTS} 条 / {MAX_OUTPUT_CHARS} 字符）]"
-
-        return result_text
+        raw_result = f"找到 {len(matches)} 处匹配（关键字: '{keyword}', 文件模式: '{file_pattern}'）：\n" + "\n".join(matches)
+        return clamp_search_output(
+            raw_result,
+            matches=matches,
+            max_chars=MAX_OUTPUT_CHARS,
+            keyword=keyword,
+            file_pattern=file_pattern
+        )
 
     except PermissionError as pe:
         return str(pe)
