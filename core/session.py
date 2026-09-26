@@ -70,6 +70,17 @@ class SessionManager:
         # 初始化激活默认会话（若磁盘存在历史则自动加载）
         self.get_session(default_session_id, auto_restore=True)
 
+        # 登记当前工作区工程至用户全局记忆索引
+        try:
+            from context.global_memory import default_global_memory
+            default_global_memory.register_project(
+                name=self.project_name,
+                path=ws.root,
+                description=f"本地工程 {self.project_name}"
+            )
+        except Exception:
+            pass
+
     @property
     def active_session(self) -> ContextManager:
         """获取当前激活会话的 ContextManager"""

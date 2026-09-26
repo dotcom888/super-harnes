@@ -7,7 +7,8 @@ import re
 import json
 import atexit
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
+from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
 from openai.types.chat import ChatCompletionMessage
@@ -16,6 +17,7 @@ from tools import registry
 from tools.executor import ToolExecutor, default_executor
 from context import ContextManager, WorkingMemory
 from core.session import SessionManager
+from core.loop_detector import LoopDetector, LoopState
 from mcp import McpManager, default_mcp_manager
 from core.prompt import DEFAULT_SYSTEM_PROMPT
 
@@ -41,9 +43,10 @@ class ReActAgent:
         self.api_key = api_key or os.getenv("LLM_API_KEY")
         self.base_url = base_url or os.getenv("LLM_BASE_URL", "https://api.deepseek.com")
         self.model = model or os.getenv("LLM_MODEL", "deepseek-chat")
-        self.system_prompt = system_prompt
-        env_max_steps = int(os.getenv("AGENT_MAX_STEPS", "30"))
+        self._custom_system_prompt: Optional[str] = system_prompt if system_prompt != DEFAULT_SYSTEM_PROMPT else None
+        env_max_steps = int(os.getenv("AGENT_MAX_STEPS", "0"))
         self.max_steps = max_steps if max_steps is not None else env_max_steps
+        self.loop_detector = LoopDetector()
         self.executor = executor or default_executor
         if session_manager is not None:
             self.session_manager = session_manager
@@ -81,6 +84,20 @@ class ReActAgent:
         self.session_manager.active_session_id = mgr.session_id
 
     @property
+    def system_prompt(self) -> str:
+        if self._custom_system_prompt is not None:
+            return self._custom_system_prompt
+        from core.prompt import build_system_prompt
+        return build_system_prompt()
+
+    @system_prompt.setter
+    def system_prompt(self, val: Optional[str]):
+        if val == DEFAULT_SYSTEM_PROMPT:
+            self._custom_system_prompt = None
+        else:
+            self._custom_system_prompt = val
+
+    @property
     def project_name(self) -> str:
         """获取当前操作的目标项目名称"""
         return getattr(self.session_manager, "project_name", getattr(self.context_manager, "project_name", "default_project"))
@@ -109,6 +126,17 @@ class ReActAgent:
     def rename_session(self, old_id: str, new_id: str) -> bool:
         """重命名会话"""
         return self.session_manager.rename_session(old_id, new_id)
+
+    def switch_workspace(self, workspace_path: Union[str, Path]) -> Path:
+        """动态切换目标工程工作区根目录并重载项目级会话管理器"""
+        from tools.framework.workspace import default_workspace
+        new_root = default_workspace.set_root(workspace_path)
+        self.session_manager = SessionManager(
+            default_session_id="default",
+            workspace=default_workspace,
+            project_name=new_root.name
+        )
+        return new_root
 
     def get_session_preview(self, session_id: Optional[str] = None) -> str:
         """获取会话上下文快照与历史预览"""
@@ -230,11 +258,27 @@ class ReActAgent:
         output_reserve = self.context_manager.budget.output_reserve
         turn_finished = False
 
+        if not hasattr(self, "loop_detector") or self.loop_detector is None:
+            self.loop_detector = LoopDetector()
+        self.loop_detector.reset()
+
+        if not hasattr(self, "max_steps"):
+            self.max_steps = 0
+        step = 0
+        force_wrapup_active = False
+
         try:
-            for step in range(1, self.max_steps + 1):
-                remaining_steps = self.max_steps - step
-                is_last_step = (step == self.max_steps)
-                is_near_end = (remaining_steps <= 2 and self.max_steps > 3)
+            while True:
+                step += 1
+                is_unbounded = (self.max_steps is None or self.max_steps <= 0)
+
+                # 若设置了固定步数上限，且当前步数超过上限，终止循环
+                if not is_unbounded and step > self.max_steps:
+                    break
+
+                remaining_steps = None if is_unbounded else (self.max_steps - step)
+                is_last_step = (not is_unbounded and step == self.max_steps)
+                is_near_end = (not is_unbounded and remaining_steps is not None and remaining_steps <= 2 and self.max_steps > 3)
 
                 # 0. 轮内陈旧工具观察结果折叠 (In-turn Observation Pruning)
                 if step > 2:
@@ -260,27 +304,44 @@ class ReActAgent:
                     turn_finished = True
                     return circuit_msg
 
-                if verbose:
-                    step_status = f" (剩余 {remaining_steps} 步)" if not is_last_step else " (最终步收尾)"
-                    print(f"[Step {step}/{self.max_steps}] Agent 正在思考{step_status}...")
-
-                # 2. 最终步平滑收拢机制 (Graceful Wrap-up):
-                # 到达最后一步时，关闭工具调用强制模型基于已收集的所有事实向用户输出最终答复，绝不机械崩溃
-                call_tools = tools_schema if (tools_schema and not is_last_step) else None
+                # 2. 状态判定与工具闭合控制 (Graceful Wrap-up):
+                # 若到达最终步或死循环红牌强制收尾，关闭工具接口，迫使模型汇总事实输出最终解答
+                loop_state = self.loop_detector.current_state
+                call_tools = tools_schema if (tools_schema and not is_last_step and not force_wrapup_active and loop_state != LoopState.FORCE_WRAPUP) else None
                 call_tool_choice = "auto" if call_tools else None
 
-                # 3. 动态注入步数进度与倒计时警示 (注入在当前轮 User 消息动态尾部，保全头部缓存)
-                step_banner = f"[当前执行进度: 第 {step}/{self.max_steps} 步 | 剩余 {remaining_steps} 步]"
-                if is_last_step:
-                    step_banner += " [重要提醒: 本轮已达最终步，工具调用已关闭。请基于上述已排查掌握的全部代码与事实，向用户输出详尽完整的最终分析答复或改动说明]"
-                elif is_near_end:
-                    step_banner += " [提示: 步数即将耗尽，请尽快收拢排查，准备输出结论]"
+                if verbose:
+                    if force_wrapup_active:
+                        step_status = " [死循环熔断·强制收尾]"
+                    elif is_unbounded:
+                        step_status = f" (第 {step} 步·自主排查)"
+                    elif is_last_step:
+                        step_status = " (最终步收尾)"
+                    else:
+                        step_status = f" (第 {step}/{self.max_steps} 步 | 剩余 {remaining_steps} 步)"
+                    print(f"[Step {step}] Agent 正在思考{step_status}...")
+
+                # 3. 动态注入进度/倒计时/停滞干预 Banner (注入在当前轮 User 消息动态尾部，保全前缀缓存)
+                if force_wrapup_active or loop_state == LoopState.FORCE_WRAPUP:
+                    step_banner = self.loop_detector.get_wrapup_prompt_banner()
+                elif is_unbounded:
+                    step_banner = f"[当前执行进度: 第 {step} 步 (自主无上限模式)]"
+                    if loop_state == LoopState.WARNING:
+                        step_banner += "\n" + self.loop_detector.get_warning_prompt_banner()
+                else:
+                    step_banner = f"[当前执行进度: 第 {step}/{self.max_steps} 步 | 剩余 {remaining_steps} 步]"
+                    if loop_state == LoopState.WARNING:
+                        step_banner += "\n" + self.loop_detector.get_warning_prompt_banner()
+                    elif is_last_step:
+                        step_banner += " [重要提醒: 本轮已达最终步，工具调用已关闭。请基于上述已排查掌握的全部代码与事实，向用户输出详尽完整的最终分析答复或改动说明]"
+                    elif is_near_end:
+                        step_banner += " [提示: 步数即将耗尽，请尽快收拢排查，准备输出结论]"
 
                 updated_banner = False
                 for m in messages:
                     if m.get("role") == "user" and "[用户当前提问]:" in str(m.get("content", "")):
                         c_text = str(m.get("content", ""))
-                        c_clean = re.sub(r"\n*\[当前执行进度:.*?\]\n*", "\n", c_text).strip()
+                        c_clean = re.sub(r"\n*\[(当前执行进度|系统警示|系统安全熔断).*?\]\n*", "\n", c_text, flags=re.DOTALL).strip()
                         parts = c_clean.split("[用户当前提问]:", 1)
                         u_pre = parts[0].strip()
                         u_suf = parts[1].strip() if len(parts) > 1 else ""
@@ -291,7 +352,7 @@ class ReActAgent:
                     for m in reversed(messages):
                         if m.get("role") == "user":
                             old_c = str(m.get("content", ""))
-                            old_c = re.sub(r"\n*\[当前执行进度:.*?\]\n*", "\n", old_c).strip()
+                            old_c = re.sub(r"\n*\[(当前执行进度|系统警示|系统安全熔断).*?\]\n*", "\n", old_c, flags=re.DOTALL).strip()
                             m["content"] = f"{step_banner}\n\n{old_c}"
                             break
 
@@ -362,12 +423,27 @@ class ReActAgent:
                     # 确保 Step 1 -> Step N 全程前缀逐字一致，100% 稳态命中大模型 KV Cache！
                     # 工作记忆状态已在 Python 内存中精确维护，将在 finish_current_turn 时原子落盘并在下一轮生效。
                     self.context_manager.add_tool_results(protected_results)
+
+                    # 记录并检测工具调用指纹与执行结果 (Loop & Stall Detection)
+                    new_loop_state = self.loop_detector.record_step(
+                        assistant_dict["tool_calls"],
+                        protected_results
+                    )
+                    if new_loop_state == LoopState.FORCE_WRAPUP:
+                        force_wrapup_active = True
+                        if verbose:
+                            print(f"\n  [死循环熔断] {self.loop_detector.diagnosis_reason} -> 下一步强制关闭工具收拢答复。")
+                    elif new_loop_state == LoopState.WARNING:
+                        if verbose:
+                            print(f"  [停滞预警] {self.loop_detector.diagnosis_reason}")
                 else:
                     if verbose:
-                        if is_last_step:
+                        if force_wrapup_active:
+                            print(f"\n[安全收拢] Agent 响应死循环熔断，已向用户交付最终汇报。")
+                        elif is_last_step:
                             print(f"\n[平滑收尾] Agent 在最终步 (第 {step} 步) 成功汇总事实并完成解答。")
                         else:
-                            print(f"\n[任务达成] Agent 在第 {step} 步完成了本轮推理。")
+                            print(f"\n[任务达成] Agent 在第 {step} 步完成了本轮推理（无需继续调用工具，自然结束）。")
 
                     final_text = assistant_dict.get("content") or "（无返回内容）"
                     self.context_manager.add_assistant_message(assistant_dict)

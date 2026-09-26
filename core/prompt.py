@@ -5,7 +5,7 @@ core/prompt.py: 系统级角色设定与提示词编排 (面向本地终端 Codi
 """
 import platform
 import sys
-from typing import Optional
+from typing import Optional, Any
 from tools.framework.workspace import default_workspace
 
 BASE_SYSTEM_PROMPT = """你是一个运行在本地终端、具备高阶多步推理与代码排查修改能力的工程 AI Agent (Coding Agent)。
@@ -56,10 +56,19 @@ def get_os_environment_context() -> str:
 {guidance_str}
 """
 
-def build_system_prompt(base_prompt: Optional[str] = None) -> str:
-    """构建包含动态操作系统感知的系统提示词"""
+def build_system_prompt(base_prompt: Optional[str] = None, global_memory: Optional[Any] = None) -> str:
+    """构建包含动态操作系统感知与用户全局记忆的系统提示词"""
     base = base_prompt or BASE_SYSTEM_PROMPT
     env_info = get_os_environment_context()
-    return f"{base.strip()}\n\n{env_info}"
+    parts = [base.strip(), env_info.strip()]
+
+    from context.global_memory import default_global_memory
+    gm = global_memory or default_global_memory
+    if gm:
+        gm_text = gm.format_prompt_context()
+        if gm_text:
+            parts.append(gm_text.strip())
+
+    return "\n\n".join(parts)
 
 DEFAULT_SYSTEM_PROMPT = build_system_prompt()

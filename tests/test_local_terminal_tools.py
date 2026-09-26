@@ -35,6 +35,10 @@ class TestDynamicWorkspace(unittest.TestCase):
 
     def tearDown(self):
         set_workspace_root(self.orig_root)
+        from config.settings import HISTORY_DIR
+        test_hist = HISTORY_DIR / self.temp_path.name
+        if test_hist.exists():
+            shutil.rmtree(test_hist, ignore_errors=True)
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_workspace_switch_and_isolation(self):
@@ -81,6 +85,10 @@ class TestDiskSnapshotAndUndo(unittest.TestCase):
 
     def tearDown(self):
         set_workspace_root(self.orig_root)
+        from config.settings import HISTORY_DIR
+        test_hist = HISTORY_DIR / self.temp_path.name
+        if test_hist.exists():
+            shutil.rmtree(test_hist, ignore_errors=True)
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_undo_restores_modified_file(self):
@@ -447,6 +455,10 @@ class TestProductionGradeToolHardening(unittest.TestCase):
 
     def tearDown(self):
         set_workspace_root(self.orig_root)
+        from config.settings import HISTORY_DIR
+        test_hist = HISTORY_DIR / self.temp_path.name
+        if test_hist.exists():
+            shutil.rmtree(test_hist, ignore_errors=True)
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_tool_result_large_file_not_truncated(self):

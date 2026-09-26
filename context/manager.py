@@ -310,13 +310,20 @@ class ContextManager:
         self.history_dir.mkdir(parents=True, exist_ok=True)
 
         # 项目全局共享状态总线 (Project State Bus)
+        # 仅在明确绑定了项目子目录时才实例化，杜绝在顶层 history/ 根目录下误写 project_state.json
         if project_state is not None:
             self.project_state = project_state
-        elif self.history_dir:
+        elif self.project_name and self.history_dir:
             from context.project_state import ProjectState
             self.project_state = ProjectState(
                 project_dir=self.history_dir,
-                project_name=self.project_name or self.workspace.root.name
+                project_name=self.project_name
+            )
+        elif self._base_dir and self._base_dir.name != "history":
+            from context.project_state import ProjectState
+            self.project_state = ProjectState(
+                project_dir=self.history_dir,
+                project_name=self._base_dir.name
             )
         else:
             self.project_state = None

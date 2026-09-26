@@ -12,6 +12,11 @@ HELP_TEXT = """
   /undo                    - 回滚上一轮对话历史
   /new, /reset             - 清空当前内存会话记忆，开启全新排查任务
   /history                 - 查看当前会话历史简报
+  /cd <路径>, /workspace   - 切换或查看目标工程工作区根目录
+  /profile                 - 查看用户全局共享记忆（开发规范与偏好画像）
+  /remember <偏好>         - 永久记入一条全局编码偏好或开发习惯
+  /forget <关键字>         - 从全局记忆中移除匹配的偏好
+  /projects                - 查看所有已登记的工程工作区索引地图
   /sessions, /session list - 查看所有会话列表及当前激活会话
   /switch <name>           - 切换到指定会话（自动载入历史并显示上下文快照）
   /session new <名>        - 创建并激活全新会话
@@ -36,6 +41,100 @@ def handle_slash_command(agent, prompt: str) -> Tuple[bool, bool]:
     if cmd_lower in ["quit", "exit"]:
         print("再见！")
         return True, True
+
+    # 动态切换或查看工作区：/cd <path> 或 /workspace [path]
+    if cmd_lower in ["/workspace", "/cd"]:
+        from tools.framework.workspace import default_workspace
+        proj_name = getattr(agent, "project_name", default_workspace.root.name)
+        active_id = getattr(getattr(agent, "session_manager", None), "active_session_id", "default")
+        print(f"当前工作区根目录: 【{default_workspace.root}】 | 当前项目: 【{proj_name}】 | 当前会话: 【{active_id}】")
+        print("💡 提示: 输入 /cd <目标路径> 或 /workspace <目标路径> 可直接切换到其他项目工程。")
+        return True, False
+
+    if cmd_lower.startswith("/cd ") or cmd_lower.startswith("/workspace "):
+        parts = raw_prompt.split(None, 1)
+        if len(parts) < 2 or not parts[1].strip():
+            from tools.framework.workspace import default_workspace
+            print(f"当前工作区根目录: 【{default_workspace.root}】")
+            return True, False
+        raw_target = parts[1].strip()
+        from context.global_memory import default_global_memory
+        from pathlib import Path
+        # 智能项目名解析：若输入的不是现有路径，支持直接通过已登记工程名快速跳转
+        reg_info = default_global_memory.get_project(raw_target)
+        if reg_info and not Path(raw_target).exists():
+            target_path = reg_info["path"]
+            print(f"💡 匹配到已登记项目 【{reg_info['name']}】，目标路径: {target_path}")
+        else:
+            target_path = raw_target
+
+        try:
+            if hasattr(agent, "switch_workspace"):
+                new_root = agent.switch_workspace(target_path)
+            else:
+                from tools.framework.workspace import default_workspace
+                new_root = default_workspace.set_root(target_path)
+            proj_name = getattr(agent, "project_name", new_root.name)
+            active_id = getattr(getattr(agent, "session_manager", None), "active_session_id", "default")
+            print("【工作区切换成功】")
+            print(f"  • 目标工作区根目录: 【{new_root}】")
+            print(f"  • 激活项目名称: 【{proj_name}】")
+            print(f"  • 激活默认会话: 【{active_id}】（历史日志独立归档于 history/{proj_name}/）")
+        except Exception as e:
+            print(f"【切换工作区失败】{e}")
+        return True, False
+
+    # 用户全局记忆查看指令：/profile, /user
+    if cmd_lower in ["/profile", "/user", "/profile show"]:
+        from context.global_memory import default_global_memory
+        print(default_global_memory.format_profile_view())
+        return True, False
+
+    # 永久记入全局习惯：/remember <习惯内容>
+    if cmd_lower.startswith("/remember"):
+        parts = raw_prompt.split(None, 1)
+        if len(parts) < 2 or not parts[1].strip():
+            from context.global_memory import default_global_memory
+            print(default_global_memory.format_profile_view())
+            return True, False
+        habit_text = parts[1].strip()
+        from context.global_memory import default_global_memory
+        if default_global_memory.add_habit(habit_text):
+            print(f"【全局记忆已更新】已成功记入偏好规范：\n  • {habit_text}")
+            print("💡 该偏好已永久保存至 ~/.super-harnes/global_memory.json，跨所有工程与会话生效。")
+        else:
+            print("【提示】该偏好此前已登记，无需重复添加。")
+        return True, False
+
+    # 移除全局习惯：/forget <关键字>
+    if cmd_lower.startswith("/forget"):
+        parts = raw_prompt.split(None, 1)
+        if len(parts) < 2 or not parts[1].strip():
+            print("【参数缺失】请指定要遗忘的偏好关键字，例如: /forget 类型注解")
+            return True, False
+        kw = parts[1].strip()
+        from context.global_memory import default_global_memory
+        removed = default_global_memory.remove_habit(kw)
+        if removed:
+            print(f"【全局记忆已更新】已移除以下 {len(removed)} 条偏好：")
+            for r in removed:
+                print(f"  • {r}")
+        else:
+            print(f"【提示】未找到匹配关键字 '{kw}' 的偏好。")
+        return True, False
+
+    # 查看所有已登记工程：/projects
+    if cmd_lower in ["/projects", "/project list", "/projects list"]:
+        from context.global_memory import default_global_memory
+        projs = default_global_memory.list_projects()
+        print("\n" + "="*20 + f" 已登记工程工作区地图 (共 {len(projs)} 个) " + "="*20)
+        for p in projs:
+            print(f"  • 【{p['name']}】: {p['path']}")
+            if p.get("description"):
+                print(f"      简介: {p['description']}")
+        print("="*66)
+        print("💡 提示: 输入 /cd <工程名> 可直接根据名称秒级跳转目标工程。")
+        return True, False
 
     if cmd_lower in ["/new", "/clear", "/reset"]:
         if hasattr(agent, "reset_session"):

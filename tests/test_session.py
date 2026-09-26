@@ -498,6 +498,36 @@ class TestMultiSessionManagement(unittest.TestCase):
 
         self.assertEqual(agent.session_manager.active_session_id, "bug_fix_box")
         self.assertIn("新建会话成功", captured.getvalue())
+
+    def test_switch_workspace_and_cd_command(self):
+        """验证 /cd 与 /workspace 动态切换工作区根目录"""
+        from tools.framework.workspace import default_workspace
+        agent = ReActAgent.__new__(ReActAgent)
+        agent.session_manager = self.sm
+        agent.model = "deepseek-chat"
+        agent.mcp_manager = type("DummyMcp", (), {"clients": {}})()
+        agent.executor = type("DummyExec", (), {"registry": type("DummyReg", (), {"get_tool_names": lambda self: ["test_tool"]})()})()
+
+        sub_proj = Path(self.temp_dir) / "sub_project_demo"
+        sub_proj.mkdir(parents=True, exist_ok=True)
+
+        captured = StringIO()
+        old_stdout = sys.stdout
+        try:
+            sys.stdout = captured
+            handled, should_exit = handle_slash_command(agent, f"/cd {sub_proj}")
+        finally:
+            sys.stdout = old_stdout
+
+        self.assertTrue(handled)
+        self.assertIn("工作区切换成功", captured.getvalue())
+        self.assertEqual(default_workspace.root, sub_proj.resolve())
+        self.assertEqual(agent.project_name, "sub_project_demo")
+        self.assertEqual(agent.context_manager.session_id, "default")
+        from config.settings import HISTORY_DIR
+        sub_hist = HISTORY_DIR / "sub_project_demo"
+        if sub_hist.exists():
+            shutil.rmtree(sub_hist, ignore_errors=True)
     def test_react_inturn_prompt_cache_strict_append_only(self):
         """核心验证：ReAct 循环轮内严格单调追加 (Strict Append-Only)，User 消息前缀绝不回溯篡改，确保 100% KV Cache 命中"""
         from unittest.mock import MagicMock
@@ -671,3 +701,172 @@ class TestProjectLevelStateAndFusionWorkingMemory(unittest.TestCase):
 
         # 核心断言: 项目全局状态中已同步清除该条修改记录
         self.assertNotIn("temp_tool.py", self.sm.project_state.global_modified_files, "回滚后全局状态总线中必须清除该轮改动！")
+
+
+class TestGlobalUserMemory(unittest.TestCase):
+    """验证用户级全局共享记忆 (~/.super-harnes/global_memory.json) 跨工程偏好沉淀与上下文构造顺序"""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="test_global_mem_")
+        self.mem_file = Path(self.temp_dir) / "global_memory.json"
+        from context.global_memory import GlobalMemory
+        self.gm = GlobalMemory(storage_path=self.mem_file)
+        self.sm = SessionManager(default_session_id="default", base_dir=Path(self.temp_dir))
+
+    def tearDown(self):
+        if Path(self.temp_dir).exists():
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_global_memory_persistence_and_habits(self):
+        """验证全局偏好的增删、语言设置及原子落盘与反序列化"""
+        self.assertTrue(self.mem_file.exists(), "初始化后应立即生成物理文件")
+
+        # 添加偏好
+        added = self.gm.add_habit("所有函数必须标注返回类型")
+        self.assertTrue(added)
+        self.assertIn("所有函数必须标注返回类型", self.gm.user_profile["coding_habits"])
+
+        # 设置语言
+        self.gm.set_language("English")
+        self.assertEqual(self.gm.user_profile["language"], "English")
+
+        # 新实例验证持久化
+        from context.global_memory import GlobalMemory
+        reloaded = GlobalMemory(storage_path=self.mem_file)
+        self.assertEqual(reloaded.user_profile["language"], "English")
+        self.assertIn("所有函数必须标注返回类型", reloaded.user_profile["coding_habits"])
+
+        # 移除偏好
+        removed = self.gm.remove_habit("返回类型")
+        self.assertEqual(len(removed), 1)
+        self.assertNotIn("所有函数必须标注返回类型", self.gm.user_profile["coding_habits"])
+
+    def test_project_registry_and_lookup(self):
+        """验证项目工作区索引地图的登记、查找与最近访问排序"""
+        proj_dir = Path(self.temp_dir) / "demo_proj"
+        proj_dir.mkdir()
+        self.gm.register_project("demo_proj", proj_dir, "测试工程简介")
+
+        found = self.gm.get_project("demo_proj")
+        self.assertIsNotNone(found)
+        self.assertEqual(found["path"], str(proj_dir.resolve()))
+        self.assertEqual(found["description"], "测试工程简介")
+
+        # 验证 list_projects
+        projs = self.gm.list_projects()
+        self.assertTrue(any(p["name"] == "demo_proj" for p in projs))
+
+    def test_context_construction_full_order(self):
+        """
+        核心验证点 2: 构造请求时的端到端上下文顺序
+        严格遵守：
+        1. 头部: System Prompt (含 OS 环境感知 + 全局用户记忆偏好)
+        2. 头部后续: 长期记忆摘要 (如果存在)
+        3. 中部: 短期活跃历史轮次 (active_chunks: user -> assistant -> tool)
+        4. 动态尾部: 当前轮首条 User 消息 (头部注入 Working Memory 项目与会话看板)
+        5. 循环执行中追加: Assistant Tool Calls -> Tool Results
+        """
+        from core.prompt import build_system_prompt
+        from context.manager import ContextManager
+        from tools.framework.workspace import default_workspace
+
+        # 1. 构造带有特定习惯的全局记忆
+        self.gm.add_habit("代码测试必须使用 pytest")
+        prompt_with_gm = build_system_prompt(global_memory=self.gm)
+        self.assertIn("用户全局偏好与开发规范", prompt_with_gm)
+        self.assertIn("代码测试必须使用 pytest", prompt_with_gm)
+
+        # 2. 模拟 ContextManager 上下文构造
+        mgr = ContextManager("test_order_session", base_dir=Path(self.temp_dir))
+        # 第 1 轮（将被长期摘要覆盖）
+        mgr.start_new_turn("历史提问 1")
+        mgr.add_assistant_message("历史回答 1")
+        mgr.finish_current_turn()
+
+        # 设置长期摘要覆盖至轮次 1
+        mgr.summarizer.state.summary_text = "历史排查结论: 修复了连接超时。"
+        mgr.summarizer.state.covered_through_turn_id = 1
+
+        # 写入短期历史第 2 轮（未被摘要覆盖，处于短期活跃滑窗）
+        mgr.start_new_turn("历史提问 2")
+        mgr.add_assistant_message("历史回答 2")
+        mgr.finish_current_turn()
+
+        # 开启当前轮（第 3 轮）
+        mgr.start_new_turn("当前最新提问: 请重构订单模块")
+        mgr.working_memory.update_goal("重构订单模块", is_manual=True)
+
+        messages, metrics = mgr.build_context_with_watermark(prompt_with_gm)
+
+        # 验证顺序 1: 首条消息必为 system，且包含全局记忆
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertIn("用户全局偏好与开发规范", messages[0]["content"])
+
+        # 验证顺序 2: 第 2 条消息必为长期摘要 system
+        self.assertEqual(messages[1]["role"], "system")
+        self.assertIn("历史排查结论: 修复了连接超时", messages[1]["content"])
+
+        # 验证顺序 3: 随后是短期历史第 2 轮对话 (未被摘要覆盖的活跃轮次)
+        self.assertEqual(messages[2]["role"], "user")
+        self.assertIn("历史提问 2", messages[2]["content"])
+        self.assertEqual(messages[3]["role"], "assistant")
+        self.assertEqual(messages[3]["content"], "历史回答 2")
+
+        # 验证顺序 4: 尾部为当前轮 User 消息，其内容头部包含 Working Memory 注记，后部包含用户提问正文
+        cur_user_msg = messages[4]
+        self.assertEqual(cur_user_msg["role"], "user")
+        self.assertIn("【系统注记 - 项目与工作区感知状态 (Working Memory)】", cur_user_msg["content"])
+        self.assertIn("[用户当前提问]: 当前最新提问: 请重构订单模块", cur_user_msg["content"])
+
+    def test_cli_global_memory_commands(self):
+        """验证控制台指令：/remember, /forget, /profile, /projects 以及通过工程名 /cd"""
+        from core.agent import ReActAgent
+        from cli.commands import handle_slash_command
+
+        agent = ReActAgent.__new__(ReActAgent)
+        agent.session_manager = self.sm
+        agent.model = "deepseek-chat"
+        agent.mcp_manager = type("DummyMcp", (), {"clients": {}})()
+        agent.executor = type("DummyExec", (), {"registry": type("DummyReg", (), {"get_tool_names": lambda self: ["test_tool"]})()})()
+
+        # 测试 /remember
+        captured = StringIO()
+        old_stdout = sys.stdout
+        try:
+            sys.stdout = captured
+            handled, _ = handle_slash_command(agent, "/remember 统一使用 UTF-8 编码")
+        finally:
+            sys.stdout = old_stdout
+        self.assertTrue(handled)
+        self.assertIn("全局记忆已更新", captured.getvalue())
+
+        # 测试 /profile
+        captured = StringIO()
+        try:
+            sys.stdout = captured
+            handled, _ = handle_slash_command(agent, "/profile")
+        finally:
+            sys.stdout = old_stdout
+        self.assertTrue(handled)
+        self.assertIn("用户全局共享记忆", captured.getvalue())
+        self.assertIn("统一使用 UTF-8 编码", captured.getvalue())
+
+        # 测试 /projects
+        captured = StringIO()
+        try:
+            sys.stdout = captured
+            handled, _ = handle_slash_command(agent, "/projects")
+        finally:
+            sys.stdout = old_stdout
+        self.assertTrue(handled)
+        self.assertIn("已登记工程工作区地图", captured.getvalue())
+
+        # 测试 /forget
+        captured = StringIO()
+        try:
+            sys.stdout = captured
+            handled, _ = handle_slash_command(agent, "/forget UTF-8")
+        finally:
+            sys.stdout = old_stdout
+        self.assertTrue(handled)
+        self.assertIn("已移除", captured.getvalue())

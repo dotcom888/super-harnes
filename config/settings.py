@@ -24,5 +24,5 @@ if not MCP_CONFIG_PATH.exists():
 # 历史会话归档目录
 HISTORY_DIR = WORKSPACE_ROOT / "history"
 # Agent 运行与预算配置
-AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "30"))
+AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "0"))  # 0 或 <=0 代表不限步数自主排查
 AGENT_TOTAL_BUDGET = int(os.getenv("AGENT_TOTAL_BUDGET", "64000"))

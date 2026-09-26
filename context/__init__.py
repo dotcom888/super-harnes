@@ -5,6 +5,7 @@ from context.summarizer import ContextSummarizer, SummaryState
 from context.budget import BudgetLedger, default_budget_ledger
 from context.manager import ContextManager, WatermarkZone, WorkingMemory
 from context.project_state import ProjectState
+from context.global_memory import GlobalMemory, default_global_memory
 
 __all__ = [
     "TokenCounter",
@@ -18,5 +19,7 @@ __all__ = [
     "ContextManager",
     "WatermarkZone",
     "WorkingMemory",
-    "ProjectState"
+    "ProjectState",
+    "GlobalMemory",
+    "default_global_memory"
 ]

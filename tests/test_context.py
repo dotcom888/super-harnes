@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import unittest
 import os
+from pathlib import Path
 from context import ContextManager, WatermarkZone, BudgetLedger, TokenCounter, TurnChunk
 
 class TestContextEnhancements(unittest.TestCase):
@@ -658,10 +659,11 @@ class TestContextEnhancements(unittest.TestCase):
         from unittest.mock import MagicMock
         from core.agent import ReActAgent
         import json
+        import tempfile
+        import shutil
 
-        mgr = ContextManager("test_wrapup_session", budget_ledger=self.ledger)
-        if mgr.history_file.exists():
-            os.remove(mgr.history_file)
+        temp_wrapup_dir = tempfile.mkdtemp(prefix="test_wrapup_")
+        mgr = ContextManager("test_wrapup_session", budget_ledger=self.ledger, base_dir=Path(temp_wrapup_dir))
 
         agent = ReActAgent.__new__(ReActAgent)
         agent.system_prompt = "You are a test agent."
@@ -715,6 +717,7 @@ class TestContextEnhancements(unittest.TestCase):
         user_msgs = [m["content"] for m in step2_messages if m.get("role") == "user"]
         self.assertTrue(any("当前执行进度: 第 2/2 步" in c for c in user_msgs))
         self.assertTrue(any("本轮已达最终步" in c for c in user_msgs))
+        shutil.rmtree(temp_wrapup_dir, ignore_errors=True)
 
     def test_point_23_dynamic_budget_ledger_64k_default(self):
         """验证点 23: 默认 64K 硬预算账本与动态环境变量缩放"""
