@@ -54,6 +54,9 @@ def main():
         mcp_tools = [name for name in all_tools if name.startswith("mcp__")]
         native_tools = [name for name in all_tools if not name.startswith("mcp__")]
 
+        from skills import default_skill_manager
+        loaded_skills = default_skill_manager.list_skills()
+
         if default_ui.is_active:
             default_ui.render_banner(
                 workspace_path=default_workspace.root,
@@ -61,7 +64,8 @@ def main():
                 session_id=active_sid,
                 model=agent.model,
                 native_tools=native_tools,
-                mcp_tools=mcp_tools
+                mcp_tools=mcp_tools,
+                skills=loaded_skills
             )
         else:
             is_auto = default_policy.mode in ("auto", "never") or default_policy.session_approved
@@ -72,6 +76,7 @@ def main():
             print(f"当前项目: 【{proj_name}】 | 当前激活会话: 【{active_sid}】 | 审批模式: 【{mode_desc}】")
             print(f"  [本地内置工具]: {', '.join(native_tools)}")
             print(f"  [MCP 外部工具]: {', '.join(mcp_tools) if mcp_tools else '（无）'}")
+            print(f"  [挂载技能 (Skills)]: {', '.join([s.name for s in loaded_skills]) if loaded_skills else '（无）'}")
             print("💡 提示：输入 /help 查看控制指令，输入 /auto 或 /ask 随时切换审批模式。")
 
 

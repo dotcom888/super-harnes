@@ -8,6 +8,9 @@ from typing import Tuple
 HELP_TEXT = """
 可用控制指令：
   /status, /memory         - 查看当前 Working Memory 与 MCP 工具挂载状态
+  /skills                  - 查看已挂载的所有专家技能 (Skills) 列表
+  /skill load <名>         - 查看指定专家技能的详细 SOP 执行规约
+  /skill install <repo>    - 从 GitHub 或本地目录安装新技能
   /mcp                     - 探测 MCP 扩展服务状态与级联配置文件路径
   /restore                 - 从磁盘 history/ 目录恢复历史会话
   /undo                    - 回滚上一轮对话历史
@@ -274,6 +277,77 @@ def handle_slash_command(agent, prompt: str) -> Tuple[bool, bool]:
         print(f"已挂载 MCP 服务: {list(agent.mcp_manager.clients.keys())}")
         print(f"全量可用工具数: {len(agent.executor.registry.get_tool_names())} 个")
         print("="*60)
+        return True, False
+
+    # 技能系统指令：/skills, /skill
+    if cmd_lower in ["/skills", "/skill", "/skill list"]:
+        from skills import default_skill_manager
+        skills = default_skill_manager.list_skills()
+        try:
+            from cli.ui import default_ui
+            if default_ui.is_active:
+                default_ui.render_skills_table(skills)
+                return True, False
+        except Exception:
+            pass
+
+        print(f"\n【已挂载技能列表】(共 {len(skills)} 个):")
+        for s in skills:
+            print(f"  ● {s.name:<22} [{s.source_scope}] - {s.description}")
+        print("\n💡 提示: 输入 /skill load <name> 查看详细执行规约\n")
+        return True, False
+
+    if cmd_lower.startswith("/skill load ") or (cmd_lower.startswith("/skill ") and not cmd_lower.startswith("/skill install")):
+        parts = raw_prompt.split()
+        target_name = parts[2] if len(parts) >= 3 and parts[1].lower() == "load" else parts[1]
+        from skills import default_skill_manager
+        skill = default_skill_manager.get_skill(target_name)
+        if not skill:
+            print(f"\n【未找到技能】名称为 '{target_name}' 的技能不存在。输入 /skills 查看可用技能。\n")
+            return True, False
+
+        try:
+            from cli.ui import default_ui
+            from rich.panel import Panel
+            from rich.markdown import Markdown
+            if default_ui.is_active:
+                default_ui.console.print()
+                default_ui.console.print(Panel(
+                    Markdown(skill.content),
+                    title=f"[bold #38bdf8]● 专家技能规约: {skill.name} [{skill.source_scope}][/bold #38bdf8]",
+                    subtitle=f"[dim]{skill.skill_file}[/dim]",
+                    border_style="cyan"
+                ))
+                default_ui.console.print()
+                return True, False
+        except Exception:
+            pass
+
+        print(f"\n==================== 【{skill.name}】 ({skill.source_scope}) ====================")
+        print(f"定义路径: {skill.skill_file}")
+        print(f"适用场景: {skill.description}\n")
+        print(skill.content)
+        print("=======================================================================\n")
+        return True, False
+
+    if cmd_lower.startswith("/skill install "):
+        parts = raw_prompt.split()
+        if len(parts) < 3:
+            print("\n【用法错误】格式: /skill install <owner/repo 或 本地路径> [子路径]\n例如: /skill install vinvcn/mattpocock-skills-zh-CN skills/engineering/code-review\n")
+            return True, False
+        repo_or_src = parts[2]
+        subpath = parts[3] if len(parts) >= 4 else None
+        from skills import SkillInstaller
+        try:
+            from pathlib import Path
+            print(f"\n正在安装技能: {repo_or_src} {subpath or ''} ...")
+            if Path(repo_or_src).exists():
+                installed = SkillInstaller.install_from_local(repo_or_src, target_scope="workspace")
+            else:
+                installed = SkillInstaller.install_from_github(repo=repo_or_src, path=subpath, target_scope="workspace")
+            print(f"【安装成功】已成功安装并挂载技能: {installed.name} (路径: {installed.directory})\n")
+        except Exception as err:
+            print(f"【安装失败】{err}\n")
         return True, False
 
     if cmd_lower == "/mcp":

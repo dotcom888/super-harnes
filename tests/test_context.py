@@ -663,7 +663,8 @@ class TestContextEnhancements(unittest.TestCase):
         import shutil
 
         temp_wrapup_dir = tempfile.mkdtemp(prefix="test_wrapup_")
-        mgr = ContextManager("test_wrapup_session", budget_ledger=self.ledger, base_dir=Path(temp_wrapup_dir))
+        wrapup_ledger = BudgetLedger(total_budget=500, system_reserve=30, tools_reserve=30, memory_reserve=30, output_reserve=60)
+        mgr = ContextManager("test_wrapup_session", budget_ledger=wrapup_ledger, base_dir=Path(temp_wrapup_dir))
 
         agent = ReActAgent.__new__(ReActAgent)
         agent.system_prompt = "You are a test agent."
@@ -676,6 +677,7 @@ class TestContextEnhancements(unittest.TestCase):
         agent.executor.registry.get_tool_names.return_value = ["dummy_tool"]
         agent.executor.registry.get_schemas.return_value = [{"type": "function", "function": {"name": "dummy_tool"}}]
         agent.executor.execute.return_value = "dummy result"
+        agent.executor.execute_tool_calls.return_value = [{"tool_call_id": "call_step1", "content": "dummy result"}]
 
         # Step 1: 返回 tool call
         mock_tc = MagicMock()
@@ -712,11 +714,11 @@ class TestContextEnhancements(unittest.TestCase):
         self.assertIsNotNone(call_args_list[0][1].get("tools"))
         self.assertIsNone(call_args_list[1][1].get("tools"))
 
-        # 检查发给模型的 messages 中是否注入了步数倒计时 Banner
+        # 检查发给模型的 messages 中是否单调注入了步数倒计时 Banner (最新 tool 结果尾部追加，前缀逐字稳态)
         step2_messages = call_args_list[1][1]["messages"]
-        user_msgs = [m["content"] for m in step2_messages if m.get("role") == "user"]
-        self.assertTrue(any("当前执行进度: 第 2/2 步" in c for c in user_msgs))
-        self.assertTrue(any("本轮已达最终步" in c for c in user_msgs))
+        all_contents = [str(m.get("content", "")) for m in step2_messages]
+        self.assertTrue(any("当前执行进度: 第 2/2 步" in c for c in all_contents))
+        self.assertTrue(any("本轮已达最终步" in c for c in all_contents))
         shutil.rmtree(temp_wrapup_dir, ignore_errors=True)
 
     def test_point_23_dynamic_budget_ledger_200k_default_and_elastic_expansion(self):

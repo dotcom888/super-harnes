@@ -206,6 +206,37 @@ class ReActAgent:
 
         return clamp_generic_output(raw_content, max_chars=effective_limit, tool_name=tool_name)
 
+    def _build_step_banner(
+        self,
+        step: int,
+        remaining_steps: Optional[int] = None,
+        is_last_step: bool = False,
+        is_near_end: bool = False,
+        loop_state: Any = None,
+        force_wrapup_active: bool = False
+    ) -> str:
+        """构建步数进度、倒计时与阶段引导横幅 (用于尾部单调注入)"""
+        is_unbounded = (self.max_steps is None or self.max_steps <= 0)
+        if force_wrapup_active or loop_state == LoopState.FORCE_WRAPUP:
+            step_banner = self.loop_detector.get_wrapup_prompt_banner()
+        elif is_unbounded:
+            step_banner = f"[当前执行进度: 第 {step} 步 (自主无上限模式)]"
+            if loop_state == LoopState.WARNING:
+                step_banner += "\n" + self.loop_detector.get_warning_prompt_banner()
+        else:
+            step_banner = f"[当前执行进度: 第 {step}/{self.max_steps} 步 | 剩余 {remaining_steps} 步]"
+            if loop_state == LoopState.WARNING:
+                step_banner += "\n" + self.loop_detector.get_warning_prompt_banner()
+            elif is_last_step:
+                step_banner += " [重要提醒: 本轮已达最终步，工具调用已关闭。请基于上述已排查掌握的全部代码与事实，向用户输出详尽完整的最终分析答复或改动说明]"
+            elif is_near_end:
+                step_banner += " [提示: 步数即将耗尽，请尽快收拢排查，准备输出结论]"
+
+        if not force_wrapup_active and loop_state != LoopState.FORCE_WRAPUP and not is_last_step and hasattr(self, "stage_manager") and self.stage_manager:
+            step_banner += f"\n[{self.stage_manager.get_stage_banner()}]"
+
+        return step_banner
+
     def _prune_inturn_observations(
         self,
         messages: List[Dict[str, Any]],
@@ -299,6 +330,8 @@ class ReActAgent:
         step = 0
         force_wrapup_active = False
 
+        # 前缀缓存稳态保障：User 提问消息全周期保持不可变，从 Step 2 起的进度与阶段提示均单调追加至 Tool Result 末尾
+
         try:
             while True:
                 step += 1
@@ -311,12 +344,6 @@ class ReActAgent:
                 remaining_steps = None if is_unbounded else (self.max_steps - step)
                 is_last_step = (not is_unbounded and step == self.max_steps)
                 is_near_end = (not is_unbounded and remaining_steps is not None and remaining_steps <= 2 and self.max_steps > 3)
-
-                # 0. 轮内陈旧工具观察结果折叠 (In-turn Observation Pruning)
-                if step > 2:
-                    pruned_obs = self._prune_inturn_observations(messages)
-                    if pruned_obs > 0 and verbose:
-                        print(f"  [观察结果裁剪] 已折叠 {pruned_obs} 条早期历史工具长输出，释放轮内上下文空间。")
 
                 # 1. 轮内步间动态 Token 预算核验与步间熔断（高优先级）
                 current_context_tokens = self.context_manager.token_counter.count_messages(messages)
@@ -333,7 +360,16 @@ class ReActAgent:
                         if verbose:
                             print(f"  [弹性扩容] 轮内多步推理消耗触达上限，动态扩展至 {tier_info['tier_name']} (上限 {self.context_manager.budget.total_budget:,} Tokens)")
 
-                    # 若已至最高梯队或依然超过允许上限，执行安全熔断保护
+                    # 若扩容后依然超限（例如已达 Tier 3 的 500k 极限），启动最后兜底：应急折叠早期超长工具观察结果
+                    if current_context_tokens > max_context_allowed:
+                        pruned_obs = self._prune_inturn_observations(messages)
+                        if pruned_obs > 0:
+                            current_context_tokens = self.context_manager.token_counter.count_messages(messages)
+                            logger.info(f"轮内多步推理触发应急观察结果裁剪: Step {step} 折叠了 {pruned_obs} 条早期长工具输出。")
+                            if verbose:
+                                print(f"  [应急裁剪] 上下文濒临上限，已紧急折叠 {pruned_obs} 条早期长输出以避免熔断。")
+
+                    # 若依然超过允许上限，执行安全熔断保护
                     if current_context_tokens > max_context_allowed:
                         circuit_msg = (
                             f"【系统保护】轮内多步推理消耗已达上下文上限 ({current_context_tokens}/{self.context_manager.budget.total_budget} Tokens)，"
@@ -371,43 +407,9 @@ class ReActAgent:
                 elif verbose:
                     print(f"[Step {step}] Agent 正在思考{step_status}...")
 
-                # 3. 动态注入进度/倒计时/停滞干预 Banner (注入在当前轮 User 消息动态尾部，保全前缀缓存)
-                if force_wrapup_active or loop_state == LoopState.FORCE_WRAPUP:
-                    step_banner = self.loop_detector.get_wrapup_prompt_banner()
-                elif is_unbounded:
-                    step_banner = f"[当前执行进度: 第 {step} 步 (自主无上限模式)]"
-                    if loop_state == LoopState.WARNING:
-                        step_banner += "\n" + self.loop_detector.get_warning_prompt_banner()
-                else:
-                    step_banner = f"[当前执行进度: 第 {step}/{self.max_steps} 步 | 剩余 {remaining_steps} 步]"
-                    if loop_state == LoopState.WARNING:
-                        step_banner += "\n" + self.loop_detector.get_warning_prompt_banner()
-                    elif is_last_step:
-                        step_banner += " [重要提醒: 本轮已达最终步，工具调用已关闭。请基于上述已排查掌握的全部代码与事实，向用户输出详尽完整的最终分析答复或改动说明]"
-                    elif is_near_end:
-                        step_banner += " [提示: 步数即将耗尽，请尽快收拢排查，准备输出结论]"
-
-                if not force_wrapup_active and loop_state != LoopState.FORCE_WRAPUP and not is_last_step:
-                    step_banner += f"\n[{self.stage_manager.get_stage_banner()}]"
-
-                updated_banner = False
-                for m in messages:
-                    if m.get("role") == "user" and "[用户当前提问]:" in str(m.get("content", "")):
-                        c_text = str(m.get("content", ""))
-                        c_clean = re.sub(r"\n*\[(当前执行进度|系统警示|系统安全熔断).*?\]\n*", "\n", c_text, flags=re.DOTALL).strip()
-                        parts = c_clean.split("[用户当前提问]:", 1)
-                        u_pre = parts[0].strip()
-                        u_suf = parts[1].strip() if len(parts) > 1 else ""
-                        m["content"] = f"{u_pre}\n\n{step_banner}\n\n[用户当前提问]: {u_suf}"
-                        updated_banner = True
-                        break
-                if not updated_banner:
-                    for m in reversed(messages):
-                        if m.get("role") == "user":
-                            old_c = str(m.get("content", ""))
-                            old_c = re.sub(r"\n*\[(当前执行进度|系统警示|系统安全熔断).*?\]\n*", "\n", old_c, flags=re.DOTALL).strip()
-                            m["content"] = f"{step_banner}\n\n{old_c}"
-                            break
+                # 3. 前缀缓存稳态保护 (Strict Append-Only)：
+                # User 消息在 Step 1 注入初始 Banner 后终身只读，绝不回溯改写任何历史 User / Tool 消息。
+                # 下一步的进度倒计时与阶段引导将在工具执行完毕后，单调追加至最新 Tool Result 尾部。
 
                 response = self.client.chat.completions.create(
                     model=self.model,
@@ -472,8 +474,6 @@ class ReActAgent:
                             "content": safe_content
                         })
 
-                    messages.extend(protected_results)
-
                     # 观察阶段：更新工作区感知状态
                     for tc in assistant_dict["tool_calls"]:
                         fname = tc["function"]["name"]
@@ -495,17 +495,40 @@ class ReActAgent:
                             matched_res
                         )
 
-                    # 轮内严格单调追加 (Strict Append-Only) 与 Prompt Cache 保障：
-                    # 轮内已包含最新 Tool Call 与 Tool Result 明文，无需也不得回溯篡改前序 User 消息，
-                    # 确保 Step 1 -> Step N 全程前缀逐字一致，100% 稳态命中大模型 KV Cache！
-                    # 工作记忆状态已在 Python 内存中精确维护，将在 finish_current_turn 时原子落盘并在下一轮生效。
-                    self.context_manager.add_tool_results(protected_results)
-
                     # 记录并检测工具调用指纹与执行结果 (Loop & Stall Detection)
                     new_loop_state = self.loop_detector.record_step(
                         assistant_dict["tool_calls"],
                         protected_results
                     )
+                    if new_loop_state == LoopState.FORCE_WRAPUP:
+                        force_wrapup_active = True
+                        if verbose:
+                            print(f"\n  [死循环熔断] {self.loop_detector.diagnosis_reason} -> 下一步强制关闭工具收拢答复。")
+                    elif new_loop_state == LoopState.WARNING:
+                        if verbose:
+                            print(f"  [停滞预警] {self.loop_detector.diagnosis_reason}")
+
+                    # 轮内严格单调追加 (Strict Append-Only) 与 Prompt Cache 保障：
+                    # 为下一步推理构建状态感知 Banner，并仅单调追加在最新一条 Tool 返回末尾，
+                    # 绝不回溯篡改前序任何 User / Tool 消息，确保 Step 1 -> Step N 全程前缀逐字一致，100% 稳态命中大模型 KV Cache！
+                    next_step = step + 1
+                    next_remaining = None if is_unbounded else (self.max_steps - next_step)
+                    next_is_last = (not is_unbounded and next_step == self.max_steps)
+                    next_is_near = (not is_unbounded and next_remaining is not None and next_remaining <= 2 and self.max_steps > 3)
+
+                    next_banner = self._build_step_banner(
+                        step=next_step,
+                        remaining_steps=next_remaining,
+                        is_last_step=next_is_last,
+                        is_near_end=next_is_near,
+                        loop_state=new_loop_state,
+                        force_wrapup_active=force_wrapup_active
+                    )
+                    if protected_results and next_banner:
+                        protected_results[-1]["content"] += f"\n\n{next_banner}"
+
+                    messages.extend(protected_results)
+                    self.context_manager.add_tool_results(protected_results)
                     if new_loop_state == LoopState.FORCE_WRAPUP:
                         force_wrapup_active = True
                         if verbose:

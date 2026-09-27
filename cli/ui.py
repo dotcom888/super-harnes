@@ -183,7 +183,8 @@ class TerminalUI:
         session_id: str,
         model: str,
         native_tools: List[str],
-        mcp_tools: List[str]
+        mcp_tools: List[str],
+        skills: Optional[List[Any]] = None
     ):
         """呈现极简且具工业美感的启动卡片"""
         header_text = Text()
@@ -201,6 +202,13 @@ class TerminalUI:
             f"[green]{len(native_tools)} 个内置工具[/green] [dim]({', '.join(native_tools[:4])}...)[/]  "
             f"[dim]|[/]  MCP 扩展: [purple]{len(mcp_tools)} 个动态工具[/purple]"
         )
+        if skills:
+            skill_names = [getattr(s, 'name', str(s)) for s in skills]
+            preview = ', '.join(skill_names[:3]) + ('...' if len(skill_names) > 3 else '')
+            meta_table.add_row(
+                '挂载技能',
+                f'[bold #22d3ee]{len(skills)} 个专家 SOP (Skills)[/bold #22d3ee] [dim]({preview})[/]'
+            )
 
         try:
             from tools.framework.policies import default_policy
@@ -512,6 +520,9 @@ class TerminalUI:
             ("/auto", "权限模式", "切换至类似 Claude 的 AUTO 全自动免打扰执行模式"),
             ("/ask", "权限模式", "切换至敏感命令逐条人工审批模式"),
             ("/mode", "权限模式", "查看或切换当前安全审批模式 (auto / ask)"),
+            ("/skills", "技能系统", "查看已挂载的所有领域专家技能 (Skills / SOPs) 列表"),
+            ("/skill load <名>", "技能系统", "查看指定专家技能的详细 SOP 执行规约"),
+            ("/skill install", "技能系统", "从 GitHub 或本地目录安装新技能"),
             ("/status, /memory", "状态排查", "查看当前 Working Memory、已读改文件与 MCP 工具挂载状态"),
             ("/history", "状态排查", "查看当前会话已完成轮次的交互摘要与 Token 消耗估算"),
             ("/undo", "执行控制", "回滚撤销上一轮对话，并将改动的源码文件自动物理还原"),
@@ -645,6 +656,41 @@ class TerminalUI:
         self.console.print("[dim]💡 提示: 输入 [white]/cd <工程标识>[/] 可秒级跳转至目标工程工作区[/dim]\n")
 
     # -------------------------------------------------------------------------
+    def render_skills_table(self, skills: List[Any]):
+        """以结构化表格呈现所有已挂载的领域专家技能 (Skills / SOPs)"""
+        if not self.is_active:
+            print(f'\n已挂载技能列表 (共 {len(skills)} 个):')
+            for s in skills:
+                name = getattr(s, 'name', str(s))
+                desc = getattr(s, 'description', '')
+                scope = getattr(s, 'source_scope', 'workspace')
+                print(f'  ● {name:<22} [{scope}] - {desc}')
+            print('\n💡 提示: 输入 /skill load <name> 查看详细执行规约\n')
+            return
+
+        table = Table(
+            title=f'[bold #38bdf8]● 已挂载领域专家工程技能 (共 {len(skills)} 个)[/bold #38bdf8]',
+            box=ROUNDED,
+            border_style=ClaudeTheme.BORDER_DIM,
+            header_style='bold #38bdf8',
+            padding=(0, 1),
+            expand=True
+        )
+        table.add_column('技能标识 (Name)', style='bold cyan', width=24)
+        table.add_column('作用域 (Scope)', style='yellow', width=12)
+        table.add_column('适用场景与执行规约说明 (Description)', style='white')
+
+        for s in skills:
+            name = getattr(s, 'name', str(s))
+            desc = getattr(s, 'description', '')
+            scope = getattr(s, 'source_scope', 'workspace')
+            scope_badge = '[bold green]工作区[/]' if scope == 'workspace' else '[dim yellow]全局[/]'
+            table.add_row(name, scope_badge, desc)
+
+        self.console.print()
+        self.console.print(table)
+        self.console.print('[dim]💡 提示：输入 [bold]/skill load <name>[/bold] 查看完整 SOP，排查时智能体亦可按需自主调用 load_skill 工具。[/dim]\n')
+
     # 8. 交互输入提示符 (Interactive Prompt: prompt_toolkit with fallback)
     # -------------------------------------------------------------------------
     def get_user_input(self, project_name: str, session_id: str) -> str:

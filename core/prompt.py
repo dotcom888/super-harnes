@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 core/prompt.py: 系统级角色设定与提示词编排 (面向本地终端 Coding Agent)
-具备多步推理准则与操作系统终端环境感知 (OS Platform Awareness)
+具备多步推理准则、操作系统终端环境感知与领域专家技能 (Skills) 动态感知
 """
 import platform
 import sys
@@ -18,6 +18,7 @@ BASE_SYSTEM_PROMPT = """你是一个运行在本地终端、具备高阶多步�
    - 全局搜关键词/符号/报错 ─> 优先调用 `grep_text(keyword='...', file_pattern='*.py')`
    - 理解大型代码结构 ──────> 优先调用 `view_file_outline(file_path='...')`（严禁通读超 150 行大文件）
    - 查看具体函数实现 ──────> 锁定行号后调用 `read_file(file_path='...', start_line=..., max_lines=...)`
+   - 遭遇复杂专门场景 ──────> 优先调用 `load_skill(skill_name='...')` 载入专家 SOP 规范流程
 2. 编码实现阶段：
    - 局部修改现有代码 ──────> 严格调用 `apply_patch` 进行 SEARCH/REPLACE 最小侵入式修改
    - 新建全新模块/脚本 ────> 调用 `write_file(file_path='...', content='...')`
@@ -72,17 +73,27 @@ def get_os_environment_context() -> str:
 """
 
 def build_system_prompt(base_prompt: Optional[str] = None, global_memory: Optional[Any] = None) -> str:
-    """构建包含动态操作系统感知与用户全局记忆的系统提示词"""
+    """构建包含动态操作系统感知、用户全局记忆与可用技能索引的系统提示词"""
     base = base_prompt or BASE_SYSTEM_PROMPT
     env_info = get_os_environment_context()
     parts = [base.strip(), env_info.strip()]
 
+    # 1. 注入用户全局个性化偏好
     from context.global_memory import default_global_memory
     gm = global_memory or default_global_memory
     if gm:
         gm_text = gm.format_prompt_context()
         if gm_text:
             parts.append(gm_text.strip())
+
+    # 2. 注入动态感知的可用专有技能清单 (Skills Catalog)
+    try:
+        from skills import default_skill_manager
+        skills_text = default_skill_manager.format_prompt_skills_catalog()
+        if skills_text:
+            parts.append(skills_text.strip())
+    except Exception:
+        pass
 
     return "\n\n".join(parts)
 
