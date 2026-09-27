@@ -8,6 +8,7 @@ from typing import Tuple
 HELP_TEXT = """
 可用控制指令：
   /status, /memory         - 查看当前 Working Memory 与 MCP 工具挂载状态
+  /mcp                     - 探测 MCP 扩展服务状态与级联配置文件路径
   /restore                 - 从磁盘 history/ 目录恢复历史会话
   /undo                    - 回滚上一轮对话历史
   /new, /reset             - 清空当前内存会话记忆，开启全新排查任务
@@ -23,6 +24,9 @@ HELP_TEXT = """
   /session delete <名>     - 删除指定会话及其磁盘归档
   /session rename <旧> <新>- 重命名会话
   /session info [名]       - 查看指定或当前会话的上下文快照
+  /auto                    - 切换至类似 Claude 的 AUTO 全自动免打扰执行模式
+  /ask                     - 切换至敏感命令逐条人工审批模式
+  /mode                    - 查看或切换当前安全审批模式 (auto / ask)
   /help                    - 显示此帮助信息
   quit, exit               - 退出程序
 """
@@ -49,6 +53,61 @@ def handle_slash_command(agent, prompt: str) -> Tuple[bool, bool]:
         print("再见！")
         return True, True
 
+    # 权限与审批模式切换指令：/auto, /ask, /mode
+    if cmd_lower in ["/auto", "/mode auto"]:
+        from tools.framework.policies import default_policy
+        default_policy.mode = "auto"
+        default_policy.session_approved = True
+        try:
+            from cli.ui import default_ui
+            if default_ui.is_active:
+                default_ui.console.print("\n[bold green][OK] 已切换至 Claude 风格 AUTO 模式[/bold green]: 终端命令将全自动执行，无需逐次审批确认（高危黑名单防御依然生效）。\n")
+            else:
+                print("\n【模式已切换】已切换至 Claude 风格 AUTO 模式：终端命令将全自动执行，无需逐次审批确认（高危黑名单防御依然生效）。\n")
+        except Exception:
+            print("\n【模式已切换】已切换至 Claude 风格 AUTO 模式。\n")
+        return True, False
+
+    if cmd_lower in ["/ask", "/mode ask"]:
+        from tools.framework.policies import default_policy
+        default_policy.mode = "ask"
+        default_policy.session_approved = False
+        try:
+            from cli.ui import default_ui
+            if default_ui.is_active:
+                default_ui.console.print("\n[bold yellow][OK] 已切换至 ASK 审批模式[/bold yellow]: 遇到非白名单敏感命令将弹窗请求人工审批 [y/n/a]。\n")
+            else:
+                print("\n【模式已切换】已切换至 ASK 审批模式：遇到非白名单敏感命令将弹窗请求人工审批 [y/n/a]。\n")
+        except Exception:
+            print("\n【模式已切换】已切换至 ASK 审批模式。\n")
+        return True, False
+
+    if cmd_lower in ["/mode"]:
+        from tools.framework.policies import default_policy
+        if default_policy.mode in ("auto", "never"):
+            cur_mode = "AUTO (类似 Claude 免打扰全自动执行)"
+            color = "green"
+        elif default_policy.session_approved:
+            cur_mode = "ASK (敏感命令与代码修改逐次审批 - 当前会话已临时全部放行 [a])"
+            color = "green"
+        elif default_policy.mode == "always_ask":
+            cur_mode = "ALWAYS_ASK (严格模式：所有操作均须人工确认)"
+            color = "red"
+        else:
+            cur_mode = "ASK (敏感命令与代码修改逐次人工审批)"
+            color = "yellow"
+        try:
+            from cli.ui import default_ui
+            if default_ui.is_active:
+                default_ui.console.print(f"\n当前安全审批模式: [bold {color}]{cur_mode}[/bold {color}]")
+                default_ui.console.print("[dim]💡 提示: 输入 [white]/auto[/] 切换为全自动模式，输入 [white]/ask[/] 切换为交互审批模式。[/dim]\n")
+            else:
+                print(f"\n当前安全审批模式: 【{cur_mode}】")
+                print("💡 提示: 输入 /auto 切换为全自动模式，输入 /ask 切换为交互审批模式。\n")
+        except Exception:
+            print(f"\n当前安全审批模式: 【{cur_mode}】\n")
+        return True, False
+
     # 动态切换或查看工作区：/cd <path> 或 /workspace [path]
     if cmd_lower in ["/workspace", "/cd"]:
         from tools.framework.workspace import default_workspace
@@ -57,6 +116,7 @@ def handle_slash_command(agent, prompt: str) -> Tuple[bool, bool]:
         print(f"当前工作区根目录: 【{default_workspace.root}】 | 当前项目: 【{proj_name}】 | 当前会话: 【{active_id}】")
         print("💡 提示: 输入 /cd <目标路径> 或 /workspace <目标路径> 可直接切换到其他项目工程。")
         return True, False
+
 
     if cmd_lower.startswith("/cd ") or cmd_lower.startswith("/workspace "):
         parts = raw_prompt.split(None, 1)
@@ -83,6 +143,8 @@ def handle_slash_command(agent, prompt: str) -> Tuple[bool, bool]:
                 new_root = default_workspace.set_root(target_path)
             proj_name = getattr(agent, "project_name", new_root.name)
             active_id = getattr(getattr(agent, "session_manager", None), "active_session_id", "default")
+            from tools.framework.policies import default_policy
+            default_policy.reset_session_approval()
             print("【工作区切换成功】")
             print(f"  • 目标工作区根目录: 【{new_root}】")
             print(f"  • 激活项目名称: 【{proj_name}】")
@@ -151,6 +213,8 @@ def handle_slash_command(agent, prompt: str) -> Tuple[bool, bool]:
         return True, False
 
     if cmd_lower in ["/new", "/clear", "/reset"]:
+        from tools.framework.policies import default_policy
+        default_policy.reset_session_approval()
         if hasattr(agent, "reset_session"):
             agent.reset_session()
         else:
@@ -204,6 +268,35 @@ def handle_slash_command(agent, prompt: str) -> Tuple[bool, bool]:
         print(f"已改文件: {wm.modified_files or '（无）'}")
         print(f"已挂载 MCP 服务: {list(agent.mcp_manager.clients.keys())}")
         print(f"全量可用工具数: {len(agent.executor.registry.get_tool_names())} 个")
+        print("="*60)
+        return True, False
+
+    if cmd_lower == "/mcp":
+        print("="*60)
+        print("【MCP 外部扩展服务状态与配置探测】")
+        active_clients = getattr(agent.mcp_manager, "clients", {})
+        all_tools = agent.executor.registry.get_tool_names()
+        mcp_tools = [t for t in all_tools if t.startswith("mcp__")]
+
+        loaded_paths = getattr(agent.mcp_manager, "loaded_config_paths", [])
+        if loaded_paths:
+            effective_str = ", ".join(f"【{p}】" for p in loaded_paths)
+        else:
+            effective_str = f"【{agent.mcp_manager.config_path}】(未检测到实体文件)"
+        print(f"当前生效配置文件: {effective_str}")
+        print(f"已连通 MCP 服务数: {len(active_clients)} 个")
+        for s_id, client in active_clients.items():
+            s_tools = [t for t in mcp_tools if t.startswith(f"mcp__{s_id}__")]
+            print(f"  • 服务 ID: [{s_id}] (连通状态: 正常)")
+            print(f"    提供工具 ({len(s_tools)} 个): {', '.join(s_tools)}")
+
+        if not active_clients:
+            print("  （当前未连通任何外部 MCP 服务）")
+
+        print("\n级联配置文件发现顺序 (由高到低):")
+        for idx, cp in enumerate(agent.mcp_manager.get_candidate_config_paths(), start=1):
+            status = "【已发现并载入】" if cp.exists() else "（未配置）"
+            print(f"  {idx}. {cp} {status}")
         print("="*60)
         return True, False
 
@@ -271,6 +364,8 @@ def handle_slash_command(agent, prompt: str) -> Tuple[bool, bool]:
                 agent.switch_session(target_sid, auto_restore=True)
             elif hasattr(getattr(agent, "session_manager", None), "switch_session"):
                 agent.session_manager.switch_session(target_sid, auto_restore=True)
+            from tools.framework.policies import default_policy
+            default_policy.reset_session_approval()
             active_id = getattr(getattr(agent, "session_manager", None), "active_session_id", target_sid)
             print(f"【会话切换成功】当前激活会话: 【{active_id}】")
             if hasattr(agent, "get_session_preview"):

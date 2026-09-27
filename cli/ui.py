@@ -61,6 +61,9 @@ class SlashCommandCompleter(Completer):
     """
     COMMANDS = [
         ("/help", "查看全部可用控制指令手册与用法", "基础指南"),
+        ("/auto", "切换至类似 Claude 的 AUTO 全自动免打扰执行模式", "权限控制"),
+        ("/ask", "切换至敏感命令逐条人工审批模式", "权限控制"),
+        ("/mode", "查看或切换当前安全审批模式 (auto / ask)", "权限控制"),
         ("/status", "查看当前 Working Memory、已读改文件与 MCP", "状态排查"),
         ("/memory", "查看当前工作区感知记忆与工具挂载", "状态排查"),
         ("/history", "查看当前会话已完成轮次的交互摘要", "状态排查"),
@@ -79,6 +82,7 @@ class SlashCommandCompleter(Completer):
         ("exit", "安全保存并退出 Super-Harnes 智能体终端", "系统退出"),
         ("quit", "安全保存并退出 Super-Harnes 智能体终端", "系统退出"),
     ]
+
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor.lstrip()
@@ -198,6 +202,23 @@ class TerminalUI:
             f"[dim]|[/]  MCP 扩展: [purple]{len(mcp_tools)} 个动态工具[/purple]"
         )
 
+        try:
+            from tools.framework.policies import default_policy
+            if default_policy.mode in ("auto", "never"):
+                mode_badge = "[bold green]AUTO (类似 Claude 免打扰自动执行)[/]"
+            elif default_policy.session_approved:
+                mode_badge = "[bold green]ASK (会话已临时全部放行)[/]"
+            elif default_policy.mode == "always_ask":
+                mode_badge = "[bold red]ALWAYS_ASK (严格逐条人工审批)[/]"
+            else:
+                mode_badge = "[bold yellow]ASK (敏感操作交互审批)[/]"
+            meta_table.add_row(
+                "安全模式",
+                f"{mode_badge}  [dim]|  输入 [white]/auto[/] 或 [white]/ask[/] 随时切换模式[/]"
+            )
+        except Exception:
+            pass
+
         banner_panel = Panel(
             meta_table,
             title=header_text,
@@ -208,6 +229,7 @@ class TerminalUI:
         self.console.print()
         self.console.print(banner_panel)
         self.console.print("[dim #6b7280]  💡 提示: 输入 [white]/help[/] 查看指令手册 · [white]Tab[/] 键智能补全 (支持鼠标点击/滚动选择) · [white]Ctrl+C[/] 中断当前轮次[/]\n")
+
 
     # -------------------------------------------------------------------------
     # 2. 核心：工具调用卡片 (Tool Execution Card: ● Bash / ReadFile / Edit ...)
@@ -487,6 +509,9 @@ class TerminalUI:
         table.add_column("功能说明", style="white")
 
         commands = [
+            ("/auto", "权限模式", "切换至类似 Claude 的 AUTO 全自动免打扰执行模式"),
+            ("/ask", "权限模式", "切换至敏感命令逐条人工审批模式"),
+            ("/mode", "权限模式", "查看或切换当前安全审批模式 (auto / ask)"),
             ("/status, /memory", "状态排查", "查看当前 Working Memory、已读改文件与 MCP 工具挂载状态"),
             ("/history", "状态排查", "查看当前会话已完成轮次的交互摘要与 Token 消耗估算"),
             ("/undo", "执行控制", "回滚撤销上一轮对话，并将改动的源码文件自动物理还原"),
@@ -524,6 +549,21 @@ class TerminalUI:
         table.add_row("激活会话", f"[bold magenta]{active_id}[/] [dim](第 {cm.turn_count} 轮)[/]")
         table.add_row("推理模型", f"[bold #38bdf8]{agent.model}[/]")
         table.add_row("当前目标", wm.current_goal or "[dim]未指定明确目标[/dim]")
+
+        try:
+            from tools.framework.policies import default_policy
+            if default_policy.mode in ("auto", "never"):
+                mode_label = "[bold green]AUTO (类似 Claude 免打扰自动执行)[/]"
+            elif default_policy.session_approved:
+                mode_label = "[bold green]ASK (会话已临时全部放行)[/]"
+            elif default_policy.mode == "always_ask":
+                mode_label = "[bold red]ALWAYS_ASK (严格逐条人工审批)[/]"
+            else:
+                mode_label = "[bold yellow]ASK (敏感操作交互审批)[/]"
+            table.add_row("安全策略", mode_label)
+        except Exception:
+            pass
+
         table.add_row(
             "Token 预算",
             f"上限: [white]{cm.budget.total_budget}[/] | 输出预留: [white]{cm.budget.output_reserve}[/] | "
@@ -542,6 +582,7 @@ class TerminalUI:
             f"[green]共 {len(agent.executor.registry.get_tool_names())} 个工具[/green] "
             f"[dim](已连通 {len(agent.mcp_manager.clients)} 个外部 MCP 服务)[/dim]"
         )
+
 
         panel = Panel(
             table,

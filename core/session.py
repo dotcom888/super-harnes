@@ -116,6 +116,11 @@ class SessionManager:
 
         target_mgr = self.get_session(sid, auto_restore=auto_restore)
         self.active_session_id = sid
+        try:
+            from tools.framework.policies import default_policy
+            default_policy.reset_session_approval()
+        except Exception:
+            pass
         return target_mgr
 
     def create_session(self, session_id: Optional[str] = None) -> ContextManager:
@@ -142,6 +147,11 @@ class SessionManager:
         mgr.clear()
         self._sessions[sid] = mgr
         self.active_session_id = sid
+        try:
+            from tools.framework.policies import default_policy
+            default_policy.reset_session_approval()
+        except Exception:
+            pass
         return mgr
 
     def delete_session(self, session_id: str) -> bool:

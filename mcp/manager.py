@@ -10,6 +10,7 @@ from mcp.bridge import McpToolBridge
 from tools.framework.registry import ToolRegistry, default_registry
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
+AGENT_INSTALL_ROOT = Path(__file__).resolve().parent.parent
 
 class McpManager:
     """
@@ -25,10 +26,12 @@ class McpManager:
         self.registry = registry
         self.clients: Dict[str, McpClient] = {}
         self.configs: Dict[str, McpServerConfig] = {}
+        self.loaded_config_paths: List[Path] = []
 
 
     @property
     def config_path(self) -> Path:
+        """获取当前工作区首选绑定的 MCP 配置文件路径（向后兼容工作区感知单测）"""
         if self._custom_config_path:
             return self._custom_config_path
         preferred = default_workspace.root / "config" / "mcp_servers.json"
@@ -38,28 +41,82 @@ class McpManager:
     def config_path(self, path: Union[str, Path, None]):
         self._custom_config_path = Path(path) if path else None
 
+    def get_candidate_config_paths(self) -> List[Path]:
+        """
+        获取多层级级联候选路径列表（按优先级从高到低）：
+        1. 目标工程项目专属配置：<workspace>/.super/mcp_servers.json、<workspace>/config/mcp_servers.json、<workspace>/mcp_servers.json
+        2. 用户全局配置：~/.super-harnes/mcp_servers.json
+        3. Agent 安装包内置保底配置：<agent_home>/config/mcp_servers.json、<agent_home>/mcp_servers.json
+        """
+        candidates: List[Path] = [
+            default_workspace.root / ".super" / "mcp_servers.json",
+            default_workspace.root / "config" / "mcp_servers.json",
+            default_workspace.root / "mcp_servers.json",
+            Path.home() / ".super-harnes" / "mcp_servers.json",
+            AGENT_INSTALL_ROOT / "config" / "mcp_servers.json",
+            AGENT_INSTALL_ROOT / "mcp_servers.json"
+        ]
+        unique_candidates: List[Path] = []
+        seen = set()
+        for p in candidates:
+            try:
+                resolved = p.resolve()
+            except Exception:
+                resolved = p
+            if resolved not in seen:
+                seen.add(resolved)
+                unique_candidates.append(p)
+        return unique_candidates
+
     def load_configs(self) -> Dict[str, McpServerConfig]:
-        if not self.config_path.exists():
-            return {}
+        """
+        加载并合并 MCP 服务配置：
+        若显式指定了 custom_config_path，仅读取该文件；
+        否则按三级级联由底向上（内置保底 -> 用户全局 -> 项目专属）加载并合并，高优先级配置覆盖低优先级。
+        """
+        if self._custom_config_path:
+            if not self._custom_config_path.exists():
+                return {}
+            target_files = [self._custom_config_path]
+        else:
+            existing = [p for p in self.get_candidate_config_paths() if p.exists()]
+            if not existing:
+                return {}
+            # 反转：低优先级先放入字典，高优先级（项目专属）后放入实现覆盖
+            target_files = list(reversed(existing))
 
-        with open(self.config_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        merged_servers: Dict[str, Dict[str, Any]] = {}
+        valid_loaded_paths: List[Path] = []
+        for cfg_file in target_files:
+            try:
+                with open(cfg_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                servers = data.get("mcpServers", {})
+                if isinstance(servers, dict):
+                    merged_servers.update(servers)
+                    if cfg_file not in valid_loaded_paths:
+                        valid_loaded_paths.append(cfg_file)
+            except Exception as e:
+                pass
+        self.loaded_config_paths = valid_loaded_paths
 
-        servers_dict = data.get("mcpServers", {})
         loaded = {}
-        for server_id, raw_cfg in servers_dict.items():
-            cfg = McpServerConfig(
-                server_id=server_id,
-                command=raw_cfg.get("command", ""),
-                args=raw_cfg.get("args", []),
-                env=raw_cfg.get("env"),
-                cwd=raw_cfg.get("cwd") or str(default_workspace.root),
-                trust_level=raw_cfg.get("trust_level", TrustLevel.TRUSTED),
-                timeout_seconds=raw_cfg.get("timeout_seconds", 20),
-                max_output_chars=raw_cfg.get("max_output_chars", 4000)
-            )
-            cfg.validate()
-            loaded[server_id] = cfg
+        for server_id, raw_cfg in merged_servers.items():
+            try:
+                cfg = McpServerConfig(
+                    server_id=server_id,
+                    command=raw_cfg.get("command", ""),
+                    args=raw_cfg.get("args", []),
+                    env=raw_cfg.get("env"),
+                    cwd=raw_cfg.get("cwd") or str(default_workspace.root),
+                    trust_level=raw_cfg.get("trust_level", TrustLevel.TRUSTED),
+                    timeout_seconds=raw_cfg.get("timeout_seconds", 20),
+                    max_output_chars=raw_cfg.get("max_output_chars", 4000)
+                )
+                cfg.validate()
+                loaded[server_id] = cfg
+            except Exception as e:
+                pass
 
         self.configs = loaded
         return loaded

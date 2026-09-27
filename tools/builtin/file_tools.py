@@ -317,6 +317,16 @@ def write_file(file_path: str, content: str) -> str:
         if default_workspace.root == AGENT_SOURCE_ROOT and norm_rel in CORE_PROTECTED_FILES:
             return f"【安全拦截】：'{norm_rel}' 属于 Agent 核心安全引擎文件，已被设为只读保护，禁止写入！"
 
+        # 核心安全模式审批 (ASK 模式下写文件需人工确认)
+        from tools.framework.policies import default_policy
+        if default_policy.mode in ("ask", "always_ask") and not default_policy.session_approved:
+            is_approved = default_policy.request_approval(
+                f"write_file(file_path='{file_path}')",
+                f"代码/文件写操作（共 {len(content)} 字符）"
+            )
+            if not is_approved:
+                return f"【用户拒绝】：用户在终端取消或拒绝了对文件 '{file_path}' 的写入操作。"
+
         # 核心增强：写前自动创建物理磁盘快照，支持真正的 /undo 物理还原
         default_snapshot_manager.backup_before_mutation(safe_path)
 

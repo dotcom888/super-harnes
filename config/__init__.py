@@ -5,7 +5,8 @@ from config.settings import (
     LLM_BASE_URL,
     LLM_MODEL,
     MCP_CONFIG_PATH,
-    HISTORY_DIR
+    HISTORY_DIR,
+    APPROVAL_MODE
 )
 
 __all__ = [
@@ -14,5 +15,6 @@ __all__ = [
     "LLM_BASE_URL",
     "LLM_MODEL",
     "MCP_CONFIG_PATH",
-    "HISTORY_DIR"
+    "HISTORY_DIR",
+    "APPROVAL_MODE"
 ]

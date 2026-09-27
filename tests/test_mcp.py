@@ -205,5 +205,79 @@ class TestMcpIntegration(unittest.TestCase):
         # 验证 broken_srv 没有残留在 manager.clients 中
         self.assertNotIn("broken_srv", manager.clients)
 
+    def test_cascade_config_discovery_and_dual_base_resolution(self):
+        """验证当工作区位于外部独立目录时，自动触发三级级联查找并回退至 Agent 内置保底配置"""
+        import tempfile
+        import shutil
+        from tools.framework.workspace import default_workspace, set_workspace_root
+
+        orig_root = default_workspace.root
+        temp_dir = tempfile.mkdtemp(prefix="test_external_workspace_")
+        temp_path = Path(temp_dir).resolve()
+
+        try:
+            # 切换工作区为完全空的临时目录（模拟用户在 C:\Users\Administrator 启动）
+            set_workspace_root(temp_path)
+            test_reg = ToolRegistry()
+            manager = McpManager(registry=test_reg)
+
+            # 1. 验证候选级联路径覆盖了临时工作区和 Agent 安装根目录
+            candidates = manager.get_candidate_config_paths()
+            self.assertTrue(any(temp_path in p.parents or p.parent == temp_path for p in candidates))
+
+            # 2. 验证即便当前工作区无任何配置文件，仍能自动加载内置的 calculator 和 system_info
+            loaded = manager.load_configs()
+            self.assertIn("calculator", loaded)
+            self.assertIn("system_info", loaded)
+
+            # 3. 验证脚本路径双基准解析成功：calc_server.py 被解析为绝对路径且真实存在于磁盘
+            calc_cfg = loaded["calculator"]
+            self.assertTrue(len(calc_cfg.args) >= 1)
+            resolved_script = Path(calc_cfg.args[0])
+            self.assertTrue(resolved_script.is_absolute())
+            self.assertTrue(resolved_script.exists())
+            self.assertEqual(resolved_script.name, "calc_server.py")
+        finally:
+            set_workspace_root(orig_root)
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_project_level_mcp_config_override_and_merge(self):
+        """验证项目级配置 (.super/mcp_servers.json) 与 Agent 内置配置的层级合并与优先覆盖"""
+        import tempfile
+        import shutil
+        from tools.framework.workspace import default_workspace, set_workspace_root
+
+        orig_root = default_workspace.root
+        temp_dir = tempfile.mkdtemp(prefix="test_project_mcp_")
+        temp_path = Path(temp_dir).resolve()
+
+        try:
+            set_workspace_root(temp_path)
+            # 在项目工作区写入项目专属 .super/mcp_servers.json
+            super_dir = temp_path / ".super"
+            super_dir.mkdir(parents=True, exist_ok=True)
+            proj_cfg_file = super_dir / "mcp_servers.json"
+            proj_cfg_file.write_text(json.dumps({
+                "mcpServers": {
+                    "project_custom_srv": {
+                        "command": "python",
+                        "args": ["-c", "print('proj')"],
+                        "timeout_seconds": 10
+                    }
+                }
+            }), encoding="utf-8")
+
+            test_reg = ToolRegistry()
+            manager = McpManager(registry=test_reg)
+            loaded = manager.load_configs()
+
+            # 项目专属服务成功载入
+            self.assertIn("project_custom_srv", loaded)
+            # 全局/内置保底服务 (calculator) 同时保留合并
+            self.assertIn("calculator", loaded)
+        finally:
+            set_workspace_root(orig_root)
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
 if __name__ == "__main__":
     unittest.main()

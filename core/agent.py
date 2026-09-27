@@ -25,6 +25,9 @@ from core.prompt import DEFAULT_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 load_dotenv()
+_agent_env = Path(__file__).resolve().parent.parent / ".env"
+if _agent_env.exists():
+    load_dotenv(dotenv_path=_agent_env)
 
 class ReActAgent:
     """

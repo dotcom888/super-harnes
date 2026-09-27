@@ -13,7 +13,24 @@ def main():
     parser = argparse.ArgumentParser(description="ReAct Agent 本地终端代码助手")
     parser.add_argument("-C", "--cwd", help="指定 Agent 操作的目标工程工作区根目录", default=None)
     parser.add_argument("--plain", action="store_true", help="使用传统纯文本输出，禁用 Claude Code 富文本终端界面")
+    parser.add_argument("--mode", choices=["auto", "ask", "always_ask"], default=None, help="命令安全审批模式: auto (类似 Claude AUTO 免打扰全自动执行，默认) 或 ask (敏感命令交互审批)")
+    parser.add_argument("--auto", action="store_true", help="强制启用 Claude AUTO 模式 (免确认全自动执行)")
+    parser.add_argument("--ask", action="store_true", help="强制启用 ASK 模式 (每次敏感命令交互确认)")
     args, _ = parser.parse_known_args()
+
+    from tools.framework.policies import default_policy
+    if args.ask:
+        default_policy.mode = "ask"
+        default_policy.session_approved = False
+    elif args.auto:
+        default_policy.mode = "auto"
+        default_policy.session_approved = True
+    elif args.mode:
+        default_policy.mode = args.mode
+        if args.mode in ("auto", "never"):
+            default_policy.session_approved = True
+        else:
+            default_policy.session_approved = False
 
     if not args.plain:
         default_ui.activate()
@@ -47,13 +64,16 @@ def main():
                 mcp_tools=mcp_tools
             )
         else:
+            is_auto = default_policy.mode in ("auto", "never") or default_policy.session_approved
+            mode_desc = "AUTO (自动免打扰执行)" if is_auto else "ASK (人工审批确认)"
             print("正在启动 ReAct Agent 交互控制台 (本地核心 + MCP 扩展双轨版)...")
             print(f"Agent 就绪！激活模型: 【{agent.model}】")
             print(f"当前工作区根目录: 【{default_workspace.root}】")
-            print(f"当前项目: 【{proj_name}】 | 当前激活会话: 【{active_sid}】")
+            print(f"当前项目: 【{proj_name}】 | 当前激活会话: 【{active_sid}】 | 审批模式: 【{mode_desc}】")
             print(f"  [本地内置工具]: {', '.join(native_tools)}")
             print(f"  [MCP 外部工具]: {', '.join(mcp_tools) if mcp_tools else '（无）'}")
-            print("💡 提示：输入 /help 查看控制指令，输入 /sessions 查看或切换会话。")
+            print("💡 提示：输入 /help 查看控制指令，输入 /auto 或 /ask 随时切换审批模式。")
+
 
         while True:
             active_sid = getattr(getattr(agent, "session_manager", None), "active_session_id", "default")

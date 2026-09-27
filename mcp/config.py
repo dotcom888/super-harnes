@@ -40,6 +40,8 @@ class McpServerConfig:
         if not self.command:
             raise ValueError(f"McpServerConfig[{self.server_id}]: command 不能为空")
 
+        agent_home = Path(__file__).resolve().parent.parent
+
         # 1. 消除 Python 解释器漂移：若指定为 python，强制锁定为当前 Agent 运行的 sys.executable
         cmd_lower = self.command.lower()
         if cmd_lower in ("python", "python3", "python.exe", "python3.exe"):
@@ -50,16 +52,21 @@ class McpServerConfig:
                 self.command = resolved
             elif (default_workspace.root / self.command).exists():
                 self.command = str((default_workspace.root / self.command).resolve())
+            elif (agent_home / self.command).exists():
+                self.command = str((agent_home / self.command).resolve())
 
-        # 2. 规范化参数列表中的脚本路径，避免工作区 cwd 变化导致找不到文件
+        # 2. 双基准规范化参数列表中的脚本路径（优先当前工作区，回退 Agent 源码安装目录）
         resolved_args = []
         for arg in self.args:
             path_in_root = default_workspace.root / arg
             path_in_cwd = Path(self.cwd) / arg if self.cwd else None
+            path_in_agent = agent_home / arg
             if path_in_root.exists() and path_in_root.is_file():
                 resolved_args.append(str(path_in_root.resolve()))
             elif path_in_cwd and path_in_cwd.exists() and path_in_cwd.is_file():
                 resolved_args.append(str(path_in_cwd.resolve()))
+            elif path_in_agent.exists() and path_in_agent.is_file():
+                resolved_args.append(str(path_in_agent.resolve()))
             else:
                 resolved_args.append(arg)
         self.args = resolved_args

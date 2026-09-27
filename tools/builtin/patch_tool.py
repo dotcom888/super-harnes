@@ -341,6 +341,18 @@ def apply_patch(patch_content: str) -> str:
         if not creates and not updates:
             return "【补丁失败】：未检测到有效的补丁格式。请使用 '*** Create File:' 或 '*** Update File:'。"
 
+        # 核心安全模式审批 (ASK 模式下应用源码补丁需人工确认)
+        from tools.framework.policies import default_policy
+        if default_policy.mode in ("ask", "always_ask") and not default_policy.session_approved:
+            targets = [c[0].strip() for c in creates] + [u[0].strip() for u in updates]
+            files_desc = ", ".join(targets[:5]) + ("..." if len(targets) > 5 else "")
+            is_approved = default_policy.request_approval(
+                f"apply_patch(files=[{files_desc}])",
+                f"源码补丁变更（涉及 {len(targets)} 个文件: {files_desc}）"
+            )
+            if not is_approved:
+                return f"【用户拒绝】：用户在终端取消或拒绝了对文件 [{files_desc}] 的补丁修改。"
+
         # 2. 事务级保护：若多文件中任一文件执行失败，立即全部回滚
         with PatchTransaction(default_snapshot_manager) as tx:
             # 先处理所有创建
