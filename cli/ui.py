@@ -564,9 +564,12 @@ class TerminalUI:
         except Exception:
             pass
 
+        tier_info = cm.budget.get_tier_info() if hasattr(cm.budget, "get_tier_info") else {}
+        tier_badge = f" [bold yellow]({tier_info['tier_name']})[/]" if tier_info.get("is_expanded") else " [dim](基线 200k)[/dim]"
+        max_burst = f" [dim](弹性上限: {tier_info.get('max_expand_budget', 500000):,})[/dim]" if tier_info.get("auto_expand") else ""
         table.add_row(
             "Token 预算",
-            f"上限: [white]{cm.budget.total_budget}[/] | 输出预留: [white]{cm.budget.output_reserve}[/] | "
+            f"当前: [white]{cm.budget.total_budget:,}[/]{tier_badge}{max_burst} | 输出预留: [white]{cm.budget.output_reserve:,}[/] | "
             f"API 消耗: [white]{cm.total_api_prompt_tokens:,} 输入 / {cm.total_api_completion_tokens:,} 输出[/]"
         )
         table.add_row(

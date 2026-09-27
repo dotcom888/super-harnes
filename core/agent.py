@@ -217,7 +217,7 @@ class ReActAgent:
         折叠为首尾片段摘要，防止多步大文件读取挤爆上下文，杜绝过早触发步间熔断。
         """
         if threshold_tokens is None:
-            threshold_tokens = min(16000, int(self.context_manager.budget.total_budget * 0.4))
+            threshold_tokens = min(60000, max(16000, int(self.context_manager.budget.total_budget * 0.35)))
 
         current_tokens = self.context_manager.token_counter.count_messages(messages)
         if current_tokens < threshold_tokens:
@@ -322,10 +322,23 @@ class ReActAgent:
                 current_context_tokens = self.context_manager.token_counter.count_messages(messages)
                 max_context_allowed = self.context_manager.budget.total_budget - output_reserve - tools_tokens
                 if step > 1 and current_context_tokens > max_context_allowed:
-                    circuit_msg = (
-                        f"【系统保护】轮内多步推理消耗已达上下文上限 ({current_context_tokens}/{self.context_manager.budget.total_budget} Tokens)，"
-                        f"为避免触发大模型长度超限异常 (400 context_length_exceeded)，已安全熔断并终止后续工具调用。"
-                    )
+                    # 轮内触碰上限时，优先尝试动态梯队弹性扩容 (200k -> 250k -> 350k -> 500k)
+                    total_needed = current_context_tokens + output_reserve + tools_tokens
+                    if getattr(self.context_manager.budget, "auto_expand", False) and self.context_manager.budget.expand_if_needed(total_needed, threshold_ratio=0.85):
+                        tier_info = self.context_manager.budget.get_tier_info()
+                        max_context_allowed = self.context_manager.budget.total_budget - output_reserve - tools_tokens
+                        logger.info(
+                            f"轮内多步推理触发弹性扩容: Step {step} 动态扩展至 {tier_info['tier_name']} (上限 {self.context_manager.budget.total_budget} Tokens)。"
+                        )
+                        if verbose:
+                            print(f"  [弹性扩容] 轮内多步推理消耗触达上限，动态扩展至 {tier_info['tier_name']} (上限 {self.context_manager.budget.total_budget:,} Tokens)")
+
+                    # 若已至最高梯队或依然超过允许上限，执行安全熔断保护
+                    if current_context_tokens > max_context_allowed:
+                        circuit_msg = (
+                            f"【系统保护】轮内多步推理消耗已达上下文上限 ({current_context_tokens}/{self.context_manager.budget.total_budget} Tokens)，"
+                            f"为避免触发大模型长度超限异常 (400 context_length_exceeded)，已安全熔断并终止后续工具调用。"
+                        )
                     logger.warning(
                         f"轮内多步推理触发动态预算熔断: Step {step} 上下文 Tokens ({current_context_tokens}) > 允许上限 ({max_context_allowed})。"
                     )

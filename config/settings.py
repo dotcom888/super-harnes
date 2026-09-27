@@ -25,7 +25,10 @@ if not MCP_CONFIG_PATH.exists():
 HISTORY_DIR = WORKSPACE_ROOT / "history"
 # Agent 运行与预算配置
 AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "0"))  # 0 或 <=0 代表不限步数自主排查
-AGENT_TOTAL_BUDGET = int(os.getenv("AGENT_TOTAL_BUDGET", "64000"))
+AGENT_TOTAL_BUDGET = int(os.getenv("AGENT_TOTAL_BUDGET", "200000"))  # 默认 200k 基线预算
+AGENT_BASE_BUDGET = int(os.getenv("AGENT_BASE_BUDGET", str(AGENT_TOTAL_BUDGET)))
+AGENT_MAX_EXPAND_BUDGET = int(os.getenv("AGENT_MAX_EXPAND_BUDGET", "500000"))  # 弹性扩容最高上限 500k
+AGENT_AUTO_EXPAND = os.getenv("AGENT_AUTO_EXPAND", "true").lower() in ("true", "1", "yes")
 
 # 安全审批策略模式: 'auto' (类似 Claude AUTO 免打扰全自动执行，非黑名单高危命令均自动放行) / 'ask' (每次敏感命令交互确认)
 APPROVAL_MODE = os.getenv("APPROVAL_MODE", os.getenv("SUPER_APPROVAL_MODE", "auto")).strip().lower()

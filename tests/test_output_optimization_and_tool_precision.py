@@ -49,6 +49,9 @@ class TestToolSelectionPrecision(unittest.TestCase):
     def tearDown(self):
         set_workspace_root(self.orig_root)
         shutil.rmtree(self.temp_dir, ignore_errors=True)
+        leaked = Path(self.orig_root) / "history" / self.temp_path.name
+        if leaked.exists():
+            shutil.rmtree(leaked, ignore_errors=True)
 
     def test_schema_negative_constraints_present(self):
         """验证所有核心工具的 JSON Schema 中均包含反向互斥约束与场景指引"""
@@ -144,6 +147,9 @@ class TestSpoolingAndOutputOptimization(unittest.TestCase):
     def tearDown(self):
         set_workspace_root(self.orig_root)
         shutil.rmtree(self.temp_dir, ignore_errors=True)
+        leaked = Path(self.orig_root) / "history" / self.temp_path.name
+        if leaked.exists():
+            shutil.rmtree(leaked, ignore_errors=True)
 
     def test_disk_spooling_creates_file_and_lens_hint(self):
         """验证大输出物理全量落盘并生成追查透镜提示"""

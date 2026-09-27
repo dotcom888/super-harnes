@@ -801,6 +801,29 @@ class ContextManager:
         summary_tokens = self.token_counter.count_text(self.summarizer.state.summary_text) if self.summarizer.state.has_summary() else 0
 
         effective_history_tokens = uncompressed_tokens + current_turn_tokens + summary_tokens
+
+        # --- 弹性梯队自适应伸缩调度 (200k 基线 -> 250k ~ 500k 按需阶梯) ---
+        if getattr(self.budget, "auto_expand", False):
+            total_needed_tokens = effective_history_tokens + sys_tokens + actual_tools_tokens + self.budget.output_reserve
+            if effective_history_tokens >= int(self.budget.history_budget * 0.85) or total_needed_tokens >= int(self.budget.total_budget * 0.85):
+                if self.budget.expand_if_needed(total_needed_tokens, threshold_ratio=0.85):
+                    logger.info(
+                        f"[弹性扩容] 上下文需求触及高位 ({total_needed_tokens} Tokens)，动态扩展至 {self.budget.total_budget} Tokens (Tier {self.budget.current_tier_index})。"
+                    )
+                    self.budget.recalculate_history_budget(
+                        actual_system_tokens=sys_tokens,
+                        actual_tools_tokens=actual_tools_tokens
+                    )
+            else:
+                if self.budget.cooldown_and_contract(total_needed_tokens, lower_ratio=0.70):
+                    logger.info(
+                        f"[弹性缩容] 水位持续低位并完成冷却，安全回退至 {self.budget.total_budget} Tokens (Tier {self.budget.current_tier_index})。"
+                    )
+                    self.budget.recalculate_history_budget(
+                        actual_system_tokens=sys_tokens,
+                        actual_tools_tokens=actual_tools_tokens
+                    )
+
         raw_utilization = self.token_counter.get_utilization(effective_history_tokens, self.budget.history_budget)
 
         zone = WatermarkZone.GREEN
@@ -982,7 +1005,9 @@ class ContextManager:
             "summary_range": (self.summarizer.state.start_turn_id, self.summarizer.state.end_turn_id),
             "last_api_prompt_tokens": self.last_api_prompt_tokens,
             "last_api_completion_tokens": self.last_api_completion_tokens,
-            "total_api_tokens": self.total_api_prompt_tokens + self.total_api_completion_tokens
+            "total_api_tokens": self.total_api_prompt_tokens + self.total_api_completion_tokens,
+            "tier_info": self.budget.get_tier_info() if hasattr(self.budget, "get_tier_info") else {},
+            "is_expanded": getattr(self.budget, "is_expanded", False)
         }
 
         return final_messages, metrics

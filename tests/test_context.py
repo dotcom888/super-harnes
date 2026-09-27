@@ -719,16 +719,65 @@ class TestContextEnhancements(unittest.TestCase):
         self.assertTrue(any("本轮已达最终步" in c for c in user_msgs))
         shutil.rmtree(temp_wrapup_dir, ignore_errors=True)
 
-    def test_point_23_dynamic_budget_ledger_64k_default(self):
-        """验证点 23: 默认 64K 硬预算账本与动态环境变量缩放"""
+    def test_point_23_dynamic_budget_ledger_200k_default_and_elastic_expansion(self):
+        """验证点 23: 默认 200K 基线硬预算账本、分账配额与按需 250k-500k 动态弹性阶梯扩展"""
         default_ledger = BudgetLedger()
-        self.assertEqual(default_ledger.total_budget, 64000)
-        self.assertEqual(default_ledger.system_reserve, 3000)
-        self.assertEqual(default_ledger.tools_reserve, 3000)
-        self.assertEqual(default_ledger.memory_reserve, 3000)
-        self.assertEqual(default_ledger.output_reserve, 4000)
-        self.assertEqual(default_ledger.history_budget, 51000)
+        self.assertEqual(default_ledger.total_budget, 200000)
+        self.assertEqual(default_ledger.system_reserve, 4000)
+        self.assertEqual(default_ledger.tools_reserve, 6000)
+        self.assertEqual(default_ledger.memory_reserve, 6000)
+        self.assertEqual(default_ledger.output_reserve, 8000)
+        self.assertEqual(default_ledger.history_budget, 176000)
+        self.assertEqual(default_ledger.expansion_tiers, [200000, 250000, 350000, 500000])
+        self.assertFalse(default_ledger.is_expanded)
 
+        # 验证单步向上跃迁至 250k (Tier 1)
+        stepped = default_ledger.step_up_tier()
+        self.assertTrue(stepped)
+        self.assertEqual(default_ledger.total_budget, 250000)
+        self.assertEqual(default_ledger.history_budget, 226000)
+        self.assertTrue(default_ledger.is_expanded)
+        self.assertEqual(default_ledger.current_tier_index, 1)
+
+        # 验证继续跃迁至 350k (Tier 2) 与 500k (Tier 3)
+        self.assertTrue(default_ledger.step_up_tier())
+        self.assertEqual(default_ledger.total_budget, 350000)
+        self.assertTrue(default_ledger.step_up_tier())
+        self.assertEqual(default_ledger.total_budget, 500000)
+        # 到达最高梯队 500k，无法进一步向上跃迁
+        self.assertFalse(default_ledger.step_up_tier())
+
+        # 验证多级自动按需扩容 (expand_if_needed)
+        test_ledger = BudgetLedger()
+        # 当预估需求为 180,000 时，超过 200k 的 85% (170,000)，自动扩容至 250k (180k 在 250k 中占 72% < 85%)
+        expanded = test_ledger.expand_if_needed(180000, threshold_ratio=0.85)
+        self.assertTrue(expanded)
+        self.assertEqual(test_ledger.total_budget, 250000)
+
+        # 当预估需求升至 220,000 时，超过 250k 的 85% (212,500)，继续扩容至 350k
+        expanded_mid = test_ledger.expand_if_needed(220000, threshold_ratio=0.85)
+        self.assertTrue(expanded_mid)
+        self.assertEqual(test_ledger.total_budget, 350000)
+
+        # 当需求突发为 450,000 时，连跳至 500k 最高阶梯
+        expanded_further = test_ledger.expand_if_needed(450000, threshold_ratio=0.85)
+        self.assertTrue(expanded_further)
+        self.assertEqual(test_ledger.total_budget, 500000)
+
+        # 验证低水位连续冷却回退机制 (cooldown_and_contract)
+        # Tier 3 (500k) 的上一级是 Tier 2 (350k)，350k * 0.70 = 245,000
+        # 第 1 轮低水位：进入冷却观测期，不立即缩容
+        contracted_1 = test_ledger.cooldown_and_contract(100000, lower_ratio=0.70)
+        self.assertFalse(contracted_1)
+        self.assertEqual(test_ledger.total_budget, 500000)
+        self.assertEqual(test_ledger.consecutive_low_turns, 1)
+
+        # 第 2 轮低水位：冷却周期完成，安全平滑缩容至 350k
+        contracted_2 = test_ledger.cooldown_and_contract(100000, lower_ratio=0.70)
+        self.assertTrue(contracted_2)
+        self.assertEqual(test_ledger.total_budget, 350000)
+
+        # 环境变量动态指定覆盖测试
         old_env = os.environ.get("AGENT_TOTAL_BUDGET")
         try:
             os.environ["AGENT_TOTAL_BUDGET"] = "128000"
@@ -872,6 +921,70 @@ line 3
         new_wm.load_dict(d)
         self.assertEqual(new_wm._modified_file_turns["tools/calc.py"], 1)
         self.assertEqual(new_wm._modified_file_turns["mod_18.py"], 18)
+
+    def test_point_25_elastic_context_watermark_and_agent_inturn_expansion(self):
+        """验证点 25: 动态弹性扩容与 ContextManager 水位联动以及 Agent 轮内步间动态跃迁"""
+        import tempfile
+        import shutil
+        from core.agent import ReActAgent
+
+        temp_dir = tempfile.mkdtemp(prefix="test_elastic_")
+        try:
+            # 1. 验证 ContextManager 在需求接近 85% 时自动从 200k 扩容至 250k
+            ledger = BudgetLedger(
+                total_budget=200000,
+                base_budget=200000,
+                max_expand_budget=500000,
+                auto_expand=True
+            )
+            mgr = ContextManager("test_elastic_session", budget_ledger=ledger, base_dir=Path(temp_dir))
+
+            # 注入历史轮次使需求触及高位 (约 180,000 tokens > 176k*0.85 = 149.6k)
+            big_turn = TurnChunk(turn_id=1)
+            big_turn.add_message({"role": "user", "content": "x" * 700000})  # ~184,000 tokens > 85%
+            mgr.completed_turns.append(big_turn)
+            mgr.turn_count = 1
+
+            msgs, metrics = mgr.build_context_with_watermark("System Prompt")
+            self.assertTrue(metrics["is_expanded"])
+            self.assertEqual(metrics["max_budget"], 250000)
+            self.assertEqual(metrics["tier_info"]["current_tier_index"], 1)
+            self.assertEqual(mgr.budget.total_budget, 250000)
+
+            # 2. 验证 ReActAgent 轮内多步累积导致超过基准上限时，优先触发弹性扩容而非直接截断熔断
+            agent_ledger = BudgetLedger(
+                total_budget=200,
+                base_budget=200,
+                max_expand_budget=500,
+                auto_expand=True,
+                expansion_tiers=[200, 300, 500],
+                system_reserve=20,
+                tools_reserve=20,
+                memory_reserve=20,
+                output_reserve=40,
+                min_history_budget=20
+            )
+            agent_mgr = ContextManager("test_agent_expand", budget_ledger=agent_ledger, base_dir=Path(temp_dir))
+            agent = ReActAgent(context_manager=agent_mgr, max_steps=5)
+
+            test_messages = [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "u" * (180 * 3)},
+                {"role": "assistant", "content": "thinking"},
+                {"role": "tool", "content": "tool result 1", "tool_call_id": "c1"}
+            ]
+            current_tokens = agent.context_manager.token_counter.count_messages(test_messages)
+            max_allowed_before = agent.context_manager.budget.total_budget - agent.context_manager.budget.output_reserve - 20
+            self.assertGreater(current_tokens, max_allowed_before)
+
+            expanded = agent.context_manager.budget.expand_if_needed(current_tokens + 40 + 20)
+            self.assertTrue(expanded)
+            self.assertEqual(agent.context_manager.budget.total_budget, 300)
+            max_allowed_after = agent.context_manager.budget.total_budget - agent.context_manager.budget.output_reserve - 20
+            self.assertGreaterEqual(max_allowed_after, current_tokens)
+
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 if __name__ == "__main__":
     unittest.main()

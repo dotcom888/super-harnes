@@ -262,7 +262,12 @@ def handle_slash_command(agent, prompt: str) -> Tuple[bool, bool]:
         print(f"当前轮次: {agent.context_manager.turn_count}")
         print(f"当前目标: {wm.current_goal or '（未指定）'}")
         cm = agent.context_manager
-        print(f"当前 Token 预算: 上限 {cm.budget.total_budget} | 输出预留 {cm.budget.output_reserve}")
+        tier_info = cm.budget.get_tier_info() if hasattr(cm.budget, "get_tier_info") else {}
+        if tier_info.get("auto_expand") and tier_info.get("max_expand_budget", 0) > cm.budget.base_budget:
+            tier_status = f" (动态弹性梯队: {tier_info.get('tier_name', 'Tier 0')}，最高扩展至 {tier_info.get('max_expand_budget', 500000):,} Tokens)"
+            print(f"当前 Token 预算: 上限 {cm.budget.total_budget} | 输出预留 {cm.budget.output_reserve}{tier_status}")
+        else:
+            print(f"当前 Token 预算: 上限 {cm.budget.total_budget} | 输出预留 {cm.budget.output_reserve}")
         print(f"累计 API 消耗: 输入 {cm.total_api_prompt_tokens} Tokens | 输出 {cm.total_api_completion_tokens} Tokens")
         print(f"已读文件: {list(wm.inspected_files.keys()) or '（无）'}")
         print(f"已改文件: {wm.modified_files or '（无）'}")
