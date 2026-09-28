@@ -100,6 +100,19 @@ class TestClaudeCodeUI(unittest.TestCase):
             self.ui.render_sessions_table(sessions, "super-harnes")
             self.assertTrue(mock_print.called)
 
+    def test_user_prompt_rendering(self):
+        """验证 OpenCode 风格用户提问独立卡片正常渲染"""
+        with patch.object(self.ui.console, "print") as mock_print:
+            self.ui.render_user_prompt("帮我跑一下测试并检查覆盖率", "test_proj", "session_1")
+            self.assertTrue(mock_print.called)
+
+    def test_interactive_command_palette_fallback(self):
+        """验证非交互终端下命令中心平滑降级渲染帮助表格"""
+        with patch.object(self.ui, "render_help") as mock_help:
+            chosen = self.ui.interactive_command_palette()
+            self.assertIsNone(chosen)
+            mock_help.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

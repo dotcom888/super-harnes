@@ -542,7 +542,27 @@ def handle_slash_command(agent, prompt: str) -> Tuple[bool, bool]:
         print(f"【未知子命令】/session {subcmd}，输入 /help 查看用法。")
         return True, False
 
-    if cmd_lower == "/help":
+    if cmd_lower.startswith("/help"):
+        if "--all" in cmd_lower or "-t" in cmd_lower or "-h" in cmd_lower:
+            print_help()
+            return True, False
+        try:
+            from cli.ui import default_ui
+            if default_ui.is_active:
+                chosen = default_ui.interactive_command_palette(agent)
+                if chosen:
+                    if chosen == "/help --all":
+                        default_ui.render_help()
+                    elif chosen in ["exit", "quit"]:
+                        print("再见！")
+                        return True, True
+                    elif any(chosen.startswith(p) for p in ["/switch", "/cd", "/remember", "/forget", "/skill load"]):
+                        default_ui.console.print(f"\n[dim]💡 已选中指令: [bold #38bdf8]{chosen}[/bold #38bdf8]，请补充参数后按回车执行。[/dim]\n")
+                    else:
+                        return handle_slash_command(agent, chosen)
+                return True, False
+        except Exception:
+            pass
         print_help()
         return True, False
 

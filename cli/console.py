@@ -104,6 +104,9 @@ def main():
             if is_cmd:
                 continue
 
+            if default_ui.is_active:
+                default_ui.render_user_prompt(prompt, proj_name, active_sid)
+
             # 轮内软中断保护：执行长耗时推理或工具调用时，Ctrl+C 仅打断当前轮次，保留交互上下文与历史
             try:
                 result = agent.run(prompt, verbose=True)
