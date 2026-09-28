@@ -1,6 +1,33 @@
-.venv/
-.env
-history/
+# Python bytecode & cache
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Virtual Environments
+.venv/
+env/
+venv/
+ENV/
+
+# Local sensitive configuration (Do NOT commit real keys!)
+.env
+.env.local
+*.pem
+*.key
+
+# Agent Runtime & Local states
+history/
 .super-harnes/
+*.log
+
+# IDE & Editor caches
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
