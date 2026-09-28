@@ -19,7 +19,7 @@ class TestClaudeCodeUI(unittest.TestCase):
         """验证启动横幅正常渲染且包含必要元数据"""
         with patch.object(self.ui.console, "print") as mock_print:
             self.ui.render_banner(
-                workspace_path=Path("E:/study/super-harnes"),
+                workspace_path=Path.cwd(),
                 project_name="super-harnes",
                 session_id="default",
                 model="deepseek-chat",

@@ -216,7 +216,7 @@ class TestMcpIntegration(unittest.TestCase):
         temp_path = Path(temp_dir).resolve()
 
         try:
-            # 切换工作区为完全空的临时目录（模拟用户在 C:\Users\Administrator 启动）
+            # 切换工作区为完全空的临时目录（模拟用户在 宿主根目录或空目录 启动）
             set_workspace_root(temp_path)
             test_reg = ToolRegistry()
             manager = McpManager(registry=test_reg)
