@@ -34,7 +34,6 @@ args = [
     f"--add-data={str(root / 'config')};config",
     f"--add-data={str(root / 'mcp' / 'servers')};mcp/servers",
     f"--add-data={str(root / '.skills')};.skills",
-    f"--add-data={str(root / 'history')};history",
     "--hidden-import=uvicorn",
     "--hidden-import=uvicorn.logging",
     "--hidden-import=uvicorn.loops",

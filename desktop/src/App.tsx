@@ -42,8 +42,9 @@ export const App: React.FC = () => {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
 
   // 模型状态 (仅同步有效配置的模型，支持自定义映射)
-  const [availableModels, setAvailableModels] = useState<string[]>(["gemini-3.8-flash-high"]);
-  const [currentModel, setCurrentModel] = useState("gemini-3.8-flash-high");
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [currentModel, setCurrentModel] = useState("");
+  const [settingsInitialTab, setSettingsInitialTab] = useState<"models" | "security" | "general" | "about">("models");
   const [modeName, setModeName] = useState("AUTO 模式");
 
   // 外观主题状态 (浅色为当前默认背景色，深色为护眼深黑)
@@ -148,12 +149,9 @@ export const App: React.FC = () => {
     fetch("http://127.0.0.1:8765/api/models")
       .then((res) => res.json())
       .then((data) => {
-        if (data.models && data.models.length > 0) {
-          setAvailableModels(data.models);
-        }
-        if (data.current_model) {
-          setCurrentModel(data.current_model);
-        }
+        const list = data.models || [];
+        setAvailableModels(list);
+        setCurrentModel(data.current_model || (list.length > 0 ? list[0] : ""));
       })
       .catch(() => {});
   };
@@ -200,8 +198,8 @@ export const App: React.FC = () => {
           setHasStarted(true);
           setSessionTurnsMap((prev) => {
             const curList = prev[key] || [];
-            // 若该会话此时正在在途执行且内存已有更多轮次，绝不粗暴覆盖
-            if (runningSessionsRef.current[key] && curList.length > data.turns.length) {
+            // 若内存中已有轮次且多于磁盘数据，绝对不能回退覆盖抹除最新对话气泡
+            if (curList.length > data.turns.length) {
               return prev;
             }
             return { ...prev, [key]: data.turns };
@@ -464,11 +462,8 @@ export const App: React.FC = () => {
                 return { ...prev, [targetKey]: updated };
               });
 
-              if (targetKey === getSessionKey(projectNameRef.current, activeSessionIdRef.current)) {
-                setTimeout(() => {
-                  loadSessionTurns(targetSid, targetProj);
-                }, 400);
-              }
+              // 仅静默同步刷新侧边栏工作区会话元数据（如最新轮次与时间），绝不重新拉取磁盘覆盖内存中在途消息
+              fetchWorkspaces(projectNameRef.current, activeSessionIdRef.current, false);
             } else if (payload.event === "error") {
               setRunningSessions((prev) => ({ ...prev, [targetKey]: false }));
             } else if (payload.event === "metrics") {

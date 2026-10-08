@@ -25,6 +25,7 @@ interface SettingsModalProps {
   onSelectTheme?: (theme: "light" | "dark") => void;
   fontSizeLevel?: number;
   onSelectFontSize?: (level: number) => void;
+  initialTab?: "models" | "security" | "general" | "about";
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -36,7 +37,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   theme = "light",
   onSelectTheme,
   fontSizeLevel = 1,
-  onSelectFontSize
+  onSelectFontSize,
+  initialTab = "models"
 }) => {
   if (!isOpen) return null;
 
@@ -55,7 +57,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   useEffect(() => {
     fetchProviders();
-  }, [isOpen]);
+    if (isOpen && initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [isOpen, initialTab]);
 
   const fetchProviders = () => {
     fetch("http://127.0.0.1:8765/api/models/providers")
@@ -81,10 +86,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const handleOpenAdd = (isCustom: boolean = true) => {
     setEditingProvider(null);
     setIsAddingCustom(true);
-    setFormName(isCustom ? "" : "中转代理服务");
-    setFormBaseUrl(isCustom ? "" : "https://api.openai.com/v1");
+    if (!isCustom) {
+      setFormName("DeepSeek");
+      setFormBaseUrl("https://api.deepseek.com/v1");
+      setFormModels("deepseek-chat, deepseek-reasoner");
+    } else {
+      setFormName("");
+      setFormBaseUrl("");
+      setFormModels("");
+    }
     setFormApiKey("");
-    setFormModels("");
     setIsFormCustom(isCustom);
   };
 
@@ -350,7 +361,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         type="text"
                         value={formName}
                         onChange={(e) => setFormName(e.target.value)}
-                        placeholder="例如: 中转ai.rjk66.cn 或 DeepSeek"
+                        placeholder="例如: DeepSeek"
                         className="w-full px-3 py-1.5 bg-white dark:bg-[#1f2230] border border-gray-200 dark:border-[#2e344a] text-gray-900 dark:text-gray-100 rounded-lg focus:border-blue-500 outline-none"
                       />
                     </div>
@@ -361,7 +372,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         type="text"
                         value={formBaseUrl}
                         onChange={(e) => setFormBaseUrl(e.target.value)}
-                        placeholder="例如: https://api.deepseek.com/v1 或 http://127.0.0.1:8045/v1"
+                        placeholder="例如: https://api.deepseek.com/v1"
                         className="w-full px-3 py-1.5 bg-white dark:bg-[#1f2230] border border-gray-200 dark:border-[#2e344a] text-gray-900 dark:text-gray-100 rounded-lg focus:border-blue-500 outline-none"
                       />
                     </div>
@@ -383,7 +394,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         type="text"
                         value={formModels}
                         onChange={(e) => setFormModels(e.target.value)}
-                        placeholder="例如: gpt-4o, qwen-max, deepseek-chat"
+                        placeholder="例如: deepseek-chat, deepseek-reasoner"
                         className="w-full px-3 py-1.5 bg-white dark:bg-[#1f2230] border border-gray-200 dark:border-[#2e344a] text-gray-900 dark:text-gray-100 rounded-lg focus:border-blue-500 outline-none"
                       />
                     </div>

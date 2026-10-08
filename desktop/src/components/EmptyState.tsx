@@ -30,6 +30,7 @@ interface EmptyStateProps {
   models?: string[];
   selectedModel?: string;
   onSelectModel?: (m: string) => void;
+  onOpenModelSettings?: () => void;
   onSelectProject?: (name: string) => void;
   onAddWorkspace?: () => void;
   onPause?: () => void;
@@ -48,15 +49,16 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   modeName = "AUTO 模式",
   onSend,
   isLoading,
-  models = ["gemini-3.8-flash-high"],
+  models = [],
   selectedModel,
   onSelectModel,
+  onOpenModelSettings,
   onSelectProject,
   onAddWorkspace,
   onPause
 }) => {
   const [input, setInput] = useState("");
-  const [model, setModel] = useState(selectedModel || models[0] || "gemini-3.8-flash-high");
+  const [model, setModel] = useState(selectedModel || models[0] || "");
   const [permission, setPermission] = useState("AUTO 模式");
   const [showWorkspaceMenu, setShowWorkspaceMenu] = useState(false);
   const [showModelMenu, setShowModelMenu] = useState(false);
@@ -66,10 +68,12 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
-    if (selectedModel) {
-      setModel(selectedModel);
+    if (selectedModel !== undefined) {
+      setModel(selectedModel || "");
+    } else if (!model && models.length > 0) {
+      setModel(models[0]);
     }
-  }, [selectedModel]);
+  }, [selectedModel, models]);
 
   const shortcutCommands: CommandItem[] = [
     {
@@ -374,14 +378,14 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
             </div>
 
             <div className="flex items-center gap-3 relative">
-              {/* 模型选择下拉项 */}
+              {/* 模型选择下拉项：未配置模型时按钮为空白，下拉列表底部提供“添加模型” */}
               <div className="relative">
                 <button
                   type="button"
                   onClick={() => setShowModelMenu(!showModelMenu)}
-                  className="flex items-center gap-1 text-xs text-gray-700 dark:text-gray-300 font-medium hover:text-blue-600 dark:hover:text-blue-400 px-2 py-1 rounded-lg hover:bg-gray-100 dark:hover:bg-[#20232e] transition cursor-pointer"
+                  className="flex items-center gap-1 text-xs text-gray-700 dark:text-gray-300 font-medium hover:text-blue-600 dark:hover:text-blue-400 px-2 py-1 rounded-lg hover:bg-gray-100 dark:hover:bg-[#20232e] transition cursor-pointer min-h-[26px]"
                 >
-                  <span>{model}</span>
+                  <span>{model || ""}</span>
                   <ChevronDown size={12} className="text-gray-400" />
                 </button>
 
@@ -397,21 +401,40 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
                         <span className="text-[10px] text-gray-400">无缝切换</span>
                       </div>
                       <div className="max-h-56 overflow-y-auto py-1">
-                        {models.map((m) => {
-                          const isCur = m === model;
-                          return (
-                            <div
-                              key={m}
-                              onClick={() => handleSelectModel(m)}
-                              className={`px-3 py-2 hover:bg-gray-50 cursor-pointer flex items-center justify-between transition ${
-                                isCur ? "text-blue-600 font-semibold bg-blue-50/60" : "text-gray-700"
-                              }`}
-                            >
-                              <span className="truncate pr-2">{m}</span>
-                              {isCur && <Check size={13} className="text-blue-600 shrink-0" />}
-                            </div>
-                          );
-                        })}
+                        {models && models.length > 0 ? (
+                          models.map((m) => {
+                            const isCur = m === model;
+                            return (
+                              <div
+                                key={m}
+                                onClick={() => handleSelectModel(m)}
+                                className={`px-3 py-2 hover:bg-gray-50 dark:hover:bg-[#222534] cursor-pointer flex items-center justify-between transition ${
+                                  isCur ? "text-blue-600 font-semibold bg-blue-50/60" : "text-gray-700 dark:text-gray-300"
+                                }`}
+                              >
+                                <span className="truncate pr-2">{m}</span>
+                                {isCur && <Check size={13} className="text-blue-600 shrink-0" />}
+                              </div>
+                            );
+                          })
+                        ) : (
+                          <div className="px-3.5 py-3 text-center text-gray-400 text-xs">
+                            暂无已配置模型
+                          </div>
+                        )}
+                      </div>
+                      <div className="border-t border-gray-100 dark:border-gray-800 p-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowModelMenu(false);
+                            onOpenModelSettings?.();
+                          }}
+                          className="w-full px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-lg flex items-center justify-center gap-1.5 text-xs font-medium transition cursor-pointer"
+                        >
+                          <Plus size={13} />
+                          <span>添加模型</span>
+                        </button>
                       </div>
                     </div>
                   </>

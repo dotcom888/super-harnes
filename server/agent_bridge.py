@@ -169,7 +169,7 @@ class AgentBridge:
             project_name=project_name
         )
 
-        ag_model = model or (self.default_agent.model if self.default_agent else "gemini-3.8-flash-high")
+        ag_model = model or (self.default_agent.model if self.default_agent else "deepseek-chat")
 
         # 从配置或环境中动态匹配 API Key 与 Base URL
         provider_key = ""
@@ -232,7 +232,7 @@ class AgentBridge:
                 "project_name": default_workspace.root.name,
                 "workspace_path": str(default_workspace.root),
                 "active_session_id": "default",
-                "model": "gemini-3.8-flash-high",
+                "model": "",
                 "permission_mode": default_policy.mode,
                 "turn_count": 0,
                 "tools_count": len(default_executor.registry.get_tool_names()),
@@ -278,7 +278,7 @@ class AgentBridge:
             logger.error(f"Failed to initialize agent for session: {err}")
             err_msg = (
                 "⚠️ **未检测到有效的模型 API 密钥**\n\n"
-                "请点击左侧【设置】➔【模型提供方】，在当前模型配置中填入您的 API 密钥，保存后即可开启全自主智能排查与交互。"
+                "请在右下角模型选择栏点击【添加模型】，或前往左下角【设置】➔【模型提供方】配置您的 API 密钥与接口地址，保存后即可开启全自主智能排查与交互。"
             )
             wrapped_callback({
                 "event": "assistant_response",

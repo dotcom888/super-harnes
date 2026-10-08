@@ -50,33 +50,7 @@ USER_HISTORY_ROOT = USER_DATA_ROOT / "history"
 USER_HISTORY_ROOT.mkdir(parents=True, exist_ok=True)
 
 if getattr(sys, "frozen", False):
-    # 打包运行模式：将自带初始 history 模板复制至用户数据目录，避免 Program Files 等目录写保护
-    meipass = Path(getattr(sys, "_MEIPASS", ROOT_DIR / "_internal"))
-    candidates = [
-        meipass / "history",
-        ROOT_DIR / "_internal" / "history",
-        ROOT_DIR / "history"
-    ]
-    bundled_history = next((c for c in candidates if c.exists()), None)
-    if bundled_history:
-        for item in bundled_history.iterdir():
-            dest = USER_HISTORY_ROOT / item.name
-            if not dest.exists():
-                try:
-                    if item.is_dir():
-                        shutil.copytree(item, dest)
-                    else:
-                        shutil.copy2(item, dest)
-                except Exception:
-                    pass
-            elif item.is_dir():
-                for f in item.iterdir():
-                    fdest = dest / f.name
-                    if not fdest.exists():
-                        try:
-                            shutil.copy2(f, fdest)
-                        except Exception:
-                            pass
+    # 打包脱机运行模式：用户聊天历史存储在用户数据目录，初始状态为空白纯净
     HISTORY_ROOT = USER_HISTORY_ROOT
 else:
     HISTORY_ROOT = ROOT_DIR / "history" 
@@ -127,21 +101,30 @@ def load_models_config() -> Dict[str, Any]:
             except Exception:
                 pass
 
-    # 默认兜底配置 (严格仅根据当前环境生成有效模型，不预置不存在的虚假模型)
-    default_model = os.getenv("LLM_MODEL", "gemini-3.8-flash-high")
+    # 仅在当前环境显式配置了真实有效的 LLM_API_KEY 时才自动生成环境提供方
+    env_key = os.getenv("LLM_API_KEY", "").strip()
+    env_model = os.getenv("LLM_MODEL", "").strip()
+    env_base_url = os.getenv("LLM_BASE_URL", "").strip()
+
+    if env_key and env_model:
+        return {
+            "current_model": env_model,
+            "providers": [
+                {
+                    "id": "env_provider",
+                    "name": f"环境模型 ({env_model})",
+                    "base_url": env_base_url or "https://api.openai.com/v1",
+                    "api_key": env_key,
+                    "models": [env_model],
+                    "is_custom": False,
+                    "status": "connected"
+                }
+            ]
+        }
+
     return {
-        "current_model": default_model,
-        "providers": [
-            {
-                "id": "gemini_env",
-                "name": "Gemini (当前环境)",
-                "base_url": os.getenv("LLM_BASE_URL", "http://127.0.0.1:8045/v1"),
-                "api_key": os.getenv("LLM_API_KEY", ""),
-                "models": [default_model],
-                "is_custom": False,
-                "status": "connected" if os.getenv("LLM_API_KEY") else "unconfigured"
-            }
-        ]
+        "current_model": "",
+        "providers": []
     }
 
 def save_models_config(cfg: Dict[str, Any]):
@@ -155,26 +138,22 @@ def save_models_config(cfg: Dict[str, Any]):
             pass
 
 def get_active_models_list() -> List[str]:
-    """仅返回已配置有效密钥或当前环境活跃的模型列表，删除所有未配置的虚假项"""
+    """仅返回已配置有效 API Key 的模型列表，未配置密钥时严格返回空列表"""
     cfg = load_models_config()
     active_models = []
     
-    # 1. 优先加入当前环境配置的模型
-    env_model = os.getenv("LLM_MODEL", "gemini-3.8-flash-high")
-    if env_model:
+    # 1. 检查环境变量中是否配置了有效的 API 密钥
+    env_key = os.getenv("LLM_API_KEY", "").strip()
+    env_model = os.getenv("LLM_MODEL", "").strip()
+    if env_key and env_model:
         active_models.append(env_model)
 
-    # 2. 从提供方中提取有效配置的模型（有 key 或 status == connected）
+    # 2. 从提供方中提取已填写有效 API Key 的模型
     for p in cfg.get("providers", []):
-        has_key = bool(p.get("api_key", "").strip())
-        is_conn = p.get("status") == "connected"
-        if has_key or is_conn:
+        if p.get("api_key", "").strip():
             for m in p.get("models", []):
                 if m and m not in active_models:
                     active_models.append(m)
-
-    if not active_models:
-        active_models = [cfg.get("current_model", "gemini-3.8-flash-high")]
 
     return active_models
 
@@ -552,12 +531,12 @@ def switch_mode(req: ModeSwitchRequest):
 
 @app.get("/api/models")
 def get_available_models():
-    """获取所有已配置有效的大模型列表供无缝切换（已自动过滤无 key 的未配置项）"""
+    """获取所有已配置有效的大模型列表供无缝切换（未配置时返回空列表与空字符串）"""
     cfg = load_models_config()
-    cur = cfg.get("current_model", os.getenv("LLM_MODEL", "gemini-3.8-flash-high"))
     active_models = get_active_models_list()
-    if cur not in active_models and active_models:
-        cur = active_models[0]
+    cur = cfg.get("current_model", "")
+    if cur not in active_models:
+        cur = active_models[0] if active_models else ""
     return {
         "current_model": cur,
         "models": active_models
