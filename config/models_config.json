@@ -1,0 +1,16 @@
+{
+  "current_model": "gemini-3.8-flash-high",
+  "providers": [
+    {
+      "id": "gemini_env",
+      "name": "Gemini (当前环境)",
+      "base_url": "http://127.0.0.1:8045/v1",
+      "api_key": "",
+      "models": [
+        "gemini-3.8-flash-high"
+      ],
+      "is_custom": false,
+      "status": "connected"
+    }
+  ]
+}

@@ -5,9 +5,10 @@ core/agent.py: 具备多步推理 (Thought -> Action -> Observation) 的 ReAct �
 import os
 import re
 import json
+import time
 import atexit
 import logging
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Union, Callable
 from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -72,6 +73,7 @@ class ReActAgent:
         self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
 
         # 自动挂载来自外部配置的 MCP 工具
+        self.abort_requested = False
         self.mcp_loaded = self.mcp_manager.start_and_bridge_all()
         # 退出时自动释放外部子进程
         atexit.register(self.mcp_manager.close_all)
@@ -149,6 +151,10 @@ class ReActAgent:
         sid = session_id or self.session_manager.active_session_id
         return self.session_manager.get_session_preview(sid)
 
+    def abort(self):
+        """请求中止当前正在运行的轮次"""
+        self.abort_requested = True
+
     def reset_session(self):
         """重置当前内存会话"""
         self.context_manager.clear()
@@ -162,6 +168,9 @@ class ReActAgent:
             "role": "assistant",
             "content": getattr(message, "content", "") or ""
         }
+        reasoning = getattr(message, "reasoning_content", "") or ""
+        if reasoning:
+            msg_dict["reasoning_content"] = reasoning
         tool_calls = getattr(message, "tool_calls", None)
         if tool_calls:
             msg_dict["tool_calls"] = []
@@ -283,7 +292,7 @@ class ReActAgent:
         return pruned_count
 
 
-    def run(self, user_prompt: str, verbose: bool = True) -> str:
+    def run(self, user_prompt: str, verbose: bool = True, token_callback: Optional[Callable[[str], None]] = None, thought_callback: Optional[Callable[[str], None]] = None) -> str:
         """
         运行 ReAct 核心循环：
         具备轮内预算防爆炸、消息格式归一化、工作记忆轮内即时同步与事务性保护
@@ -334,6 +343,14 @@ class ReActAgent:
 
         try:
             while True:
+                if getattr(self, "abort_requested", False):
+                    self.abort_requested = False
+                    pause_msg = "【用户已手动暂停】已终止当前轮次的推理与工具调用。"
+                    logger.info("ReActAgent run aborted by user request.")
+                    self.context_manager.add_assistant_message(pause_msg)
+                    self.context_manager.finish_current_turn()
+                    turn_finished = True
+                    return pause_msg
                 step += 1
                 is_unbounded = (self.max_steps is None or self.max_steps <= 0)
 
@@ -438,11 +455,16 @@ class ReActAgent:
                     messages.append(assistant_dict)
                     self.context_manager.add_assistant_message(assistant_dict)
 
-                    if assistant_dict.get("content"):
+                    thought_str = assistant_dict.get("reasoning_content") or assistant_dict.get("content") or ""
+                    if thought_str:
+                        if thought_callback:
+                            thought_callback(thought_str)
+                        elif token_callback:
+                            token_callback(f"[思考] {thought_str}\n\n")
                         if is_ui:
-                            default_ui.render_thinking(assistant_dict["content"])
+                            default_ui.render_thinking(thought_str)
                         elif verbose:
-                            print(f"  [Thought] {assistant_dict['content']}")
+                            print(f"  [Thought] {thought_str}")
 
                     # 调度执行工具
                     tool_results = self.executor.execute_tool_calls(
@@ -546,6 +568,12 @@ class ReActAgent:
                             print(f"\n[任务达成] Agent 在第 {step} 步完成了本轮推理（无需继续调用工具，自然结束）。")
 
                     final_text = assistant_dict.get("content") or "（无返回内容）"
+                    if token_callback and final_text:
+                        # 流式切片推送给客户端
+                        step_len = max(2, len(final_text) // 25)
+                        for i in range(0, len(final_text), step_len):
+                            token_callback(final_text[i:i+step_len])
+                            time.sleep(0.015)
                     self.context_manager.add_assistant_message(assistant_dict)
                     self.context_manager.finish_current_turn()
                     turn_finished = True
@@ -559,6 +587,8 @@ class ReActAgent:
                 fallback_msg += f" 已修改文件: {wm.modified_files}。"
             if verbose:
                 print(f"\n[优雅收尾] {fallback_msg}")
+            if token_callback and fallback_msg:
+                token_callback(fallback_msg)
             self.context_manager.add_assistant_message(fallback_msg)
             self.context_manager.finish_current_turn()
             turn_finished = True

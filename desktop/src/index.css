@@ -1,0 +1,96 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+}
+
+/* 现代自适应滚动条 (对标需求 6：上下滑块宽度扩大至 1.5 倍，9px 舒适触控) */
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+  border: 1.5px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: #2a2e3f;
+  border: 1.5px solid transparent;
+  background-clip: padding-box;
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #414860;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+
+/* 窗口拖动区域支持 (针对 Electron 无边框顶部) */
+.titlebar-drag-region {
+  -webkit-app-region: drag;
+}
+.titlebar-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* 动态图标动画增强 (Think & Tool 符号动态呼吸与平滑旋转) */
+@keyframes spinSlow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+    filter: drop-shadow(0 0 3px rgba(168, 85, 247, 0.45));
+  }
+  50% {
+    opacity: 0.75;
+    transform: scale(0.92);
+    filter: drop-shadow(0 0 1px rgba(168, 85, 247, 0.15));
+  }
+}
+
+@keyframes toolPulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+    filter: drop-shadow(0 0 2px rgba(245, 158, 11, 0.35));
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(0.93);
+    filter: drop-shadow(0 0 0px transparent);
+  }
+}
+
+.animate-spin-slow {
+  animation: spinSlow 8s linear infinite;
+}
+
+.animate-pulse-glow {
+  animation: pulseGlow 2.5s ease-in-out infinite;
+}
+
+.animate-tool-pulse {
+  animation: toolPulse 2.2s ease-in-out infinite;
+}

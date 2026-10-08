@@ -31,3 +31,23 @@ history/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Node & Frontend Build Artifacts
+node_modules/
+desktop/node_modules/
+dist/
+desktop/dist/
+release/
+desktop/release/
+dist-electron/
+desktop/dist-electron/
+out/
+desktop/out/
+
+# Packaging Binaries & Installers
+*.exe
+*.zip
+*.tar.gz
+*.dmg
+*.deb
+*.AppImage

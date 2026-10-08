@@ -1,0 +1,7 @@
+node_modules/
+dist/
+release/
+dist-electron/
+out/
+*.exe
+*.zip
