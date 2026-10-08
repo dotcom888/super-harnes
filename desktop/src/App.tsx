@@ -124,10 +124,24 @@ export const App: React.FC = () => {
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
   const sessionScrollMap = useRef<Record<string, number>>({});
 
-  // 1. 初始化加载所有工作区项目、有效模型列表与活跃会话
+  // 1. 初始化加载所有工作区项目、有效模型列表与活跃会话 (若后端正在启动，持续轮询重试直至成功获取真实项目与历史)
   useEffect(() => {
     fetchModels();
     fetchWorkspaces();
+
+    const timer = setInterval(() => {
+      setProjects((currentProjects) => {
+        if (!currentProjects || currentProjects.length === 0 || (currentProjects.length === 1 && currentProjects[0].session_count === 0)) {
+          fetchModels();
+          fetchWorkspaces();
+        } else {
+          clearInterval(timer);
+        }
+        return currentProjects;
+      });
+    }, 1200);
+
+    return () => clearInterval(timer);
   }, []);
 
   const fetchModels = () => {
@@ -146,15 +160,18 @@ export const App: React.FC = () => {
 
   const fetchWorkspaces = (targetProject?: string, targetSession?: string, shouldLoadSession: boolean = true) => {
     fetch("http://127.0.0.1:8765/api/workspaces")
-      .then((res) => res.json())
+      .then((res) => {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+      })
       .then((data) => {
         const projs: ProjectInfo[] = data.projects || [];
         setProjects(projs);
 
-        const currentProj = targetProject || data.name || "super-harnes";
+        const currentProj = targetProject || data.name || (projs.length > 0 ? projs[0].name : "super-harnes");
         setProjectName(currentProj);
 
-        const matchedProj = projs.find((p) => p.name === currentProj);
+        const matchedProj = projs.find((p) => p.name === currentProj) || (projs.length > 0 ? projs[0] : undefined);
         const projSessions = matchedProj?.sessions || [];
         setSessions(projSessions);
 
@@ -162,14 +179,10 @@ export const App: React.FC = () => {
         setActiveSessionId(sid);
 
         if (shouldLoadSession) {
-          loadSessionTurns(sid, currentProj);
+          loadSessionTurns(sid, matchedProj ? matchedProj.name : currentProj);
         }
       })
-      .catch(() => {
-        if (shouldLoadSession) {
-          loadSessionTurns("default", "super-harnes");
-        }
-      });
+      .catch(() => {});
   };
 
   // 读取指定项目和会话的历史轮次 (智能保护内存中的在途轮次，杜绝二次发消息覆盖)

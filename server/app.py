@@ -51,8 +51,14 @@ USER_HISTORY_ROOT.mkdir(parents=True, exist_ok=True)
 
 if getattr(sys, "frozen", False):
     # 打包运行模式：将自带初始 history 模板复制至用户数据目录，避免 Program Files 等目录写保护
-    bundled_history = ROOT_DIR / "_internal" / "history" if (ROOT_DIR / "_internal" / "history").exists() else ROOT_DIR / "history"
-    if bundled_history.exists():
+    meipass = Path(getattr(sys, "_MEIPASS", ROOT_DIR / "_internal"))
+    candidates = [
+        meipass / "history",
+        ROOT_DIR / "_internal" / "history",
+        ROOT_DIR / "history"
+    ]
+    bundled_history = next((c for c in candidates if c.exists()), None)
+    if bundled_history:
         for item in bundled_history.iterdir():
             dest = USER_HISTORY_ROOT / item.name
             if not dest.exists():
@@ -63,6 +69,14 @@ if getattr(sys, "frozen", False):
                         shutil.copy2(item, dest)
                 except Exception:
                     pass
+            elif item.is_dir():
+                for f in item.iterdir():
+                    fdest = dest / f.name
+                    if not fdest.exists():
+                        try:
+                            shutil.copy2(f, fdest)
+                        except Exception:
+                            pass
     HISTORY_ROOT = USER_HISTORY_ROOT
 else:
     HISTORY_ROOT = ROOT_DIR / "history" 
@@ -296,9 +310,9 @@ def get_all_projects_metadata() -> List[Dict[str, Any]]:
         except Exception:
             pass
 
-    # 确保当前活跃工作区在列表中
+    # 确保当前活跃工作区在列表中 (排除打包内部临时目录)
     cur_name = default_workspace.root.name
-    if cur_name not in known_names and cur_name not in deleted_names:
+    if cur_name.lower() not in ("super-server", "bin", "resources", "_internal", "workspace") and cur_name not in known_names and cur_name not in deleted_names:
         cur_sessions = scan_project_sessions(HISTORY_ROOT / cur_name)
         projects.insert(0, {
             "name": cur_name,
@@ -629,10 +643,19 @@ def delete_provider(provider_id: str):
 
 @app.get("/api/workspaces")
 def get_workspaces():
-    """获取所有已扫描到的项目与工作区列表（包含磁盘 4 个项目的全部聊天历史）"""
-    current_root = str(default_workspace.root)
-    active_name = default_workspace.root.name
+    """获取所有已扫描到的项目与工作区列表（包含磁盘项目的全部聊天历史）"""
     all_projects = get_all_projects_metadata()
+    active_name = default_workspace.root.name
+    if active_name.lower() in ("super-server", "bin", "resources", "_internal", "workspace") or not any(p["name"] == active_name for p in all_projects):
+        sh_proj = next((p for p in all_projects if p["name"] == "super-harnes"), None)
+        if sh_proj:
+            active_name = "super-harnes"
+        elif all_projects:
+            active_name = all_projects[0]["name"]
+        else:
+            active_name = "super-harnes"
+
+    current_root = str(default_workspace.root)
     return {
         "current": current_root,
         "name": active_name,

@@ -43,8 +43,16 @@ class WorkspaceContext:
         git_root = self._detect_git_root()
         if git_root:
             return git_root
-        # 2. 降级为当前终端物理工作目录
-        return Path.cwd().resolve()
+        # 2. 降级为当前终端物理工作目录 (若处于打包内置目录则重定向至用户工程区)
+        p = Path.cwd().resolve()
+        if p.name.lower() in ("super-server", "bin", "resources", "_internal"):
+            user_proj = Path.home() / "super-harnes"
+            if user_proj.exists():
+                return user_proj
+            user_ws = Path.home() / ".super-harnes" / "workspace"
+            user_ws.mkdir(parents=True, exist_ok=True)
+            return user_ws
+        return p
 
     @property
     def root(self) -> Path:

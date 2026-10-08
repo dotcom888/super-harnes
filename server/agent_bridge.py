@@ -4,6 +4,7 @@ server/agent_bridge.py: 桌面端 Agent 异步事件总线与桥接层
 将 ReActAgent 的同步多步推理改造为支持 WebSocket 全双工流式推送的事件驱动架构。
 """
 import os
+import sys
 import time
 import json
 import asyncio
