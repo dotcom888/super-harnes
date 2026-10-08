@@ -20,7 +20,10 @@ from tools.executor import ToolExecutor, default_executor
 logger = logging.getLogger("server.agent_bridge")
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-HISTORY_ROOT = ROOT_DIR / "history" 
+if getattr(sys, "frozen", False):
+    HISTORY_ROOT = Path.home() / ".super-harnes" / "history"
+else:
+    HISTORY_ROOT = ROOT_DIR / "history" 
 
 def format_tool_display(tool_name: str, args: Dict[str, Any]) -> Dict[str, str]:
     """对标 DeepSeek Harness 的工具显示分类 (Pwsh, Read, Edit, Grep 等)"""
@@ -144,7 +147,7 @@ class AgentBridge:
                 ag.model = model
             return ag
 
-        proj_dir = ROOT_DIR / "history" / project_name
+        proj_dir = HISTORY_ROOT / project_name
         proj_dir.mkdir(parents=True, exist_ok=True)
 
         target_workspace = default_workspace
@@ -166,8 +169,35 @@ class AgentBridge:
         )
 
         ag_model = model or (self.default_agent.model if self.default_agent else "gemini-3.8-flash-high")
+
+        # 从配置或环境中动态匹配 API Key 与 Base URL
+        provider_key = ""
+        provider_base_url = ""
+        try:
+            from server.app import load_models_config
+            cfg = load_models_config()
+            for p in cfg.get("providers", []):
+                if ag_model in p.get("models", []):
+                    if p.get("api_key", "").strip():
+                        provider_key = p.get("api_key", "").strip()
+                        provider_base_url = p.get("base_url", "").strip()
+                        break
+            if not provider_key:
+                for p in cfg.get("providers", []):
+                    if p.get("api_key", "").strip():
+                        provider_key = p.get("api_key", "").strip()
+                        provider_base_url = p.get("base_url", "").strip()
+                        break
+        except Exception:
+            pass
+
+        final_key = provider_key or os.getenv("LLM_API_KEY", "")
+        final_base_url = provider_base_url or os.getenv("LLM_BASE_URL", "")
+
         try:
             ag = ReActAgent(
+                api_key=final_key or None,
+                base_url=final_base_url or None,
                 model=ag_model,
                 session_manager=sess_mgr
             )
@@ -196,7 +226,17 @@ class AgentBridge:
         """获取系统状态元数据"""
         ag = self.default_agent
         if not ag:
-            return {"ready": False, "error": "Agent not initialized"}
+            return {
+                "ready": True,
+                "project_name": default_workspace.root.name,
+                "workspace_path": str(default_workspace.root),
+                "active_session_id": "default",
+                "model": "gemini-3.8-flash-high",
+                "permission_mode": default_policy.mode,
+                "turn_count": 0,
+                "tools_count": len(default_executor.registry.get_tool_names()),
+                "mcp_clients_count": 0,
+            }
         active_sid = getattr(getattr(ag, "session_manager", None), "active_session_id", "default")
         proj_name = getattr(ag, "project_name", default_workspace.root.name)
         cm = ag.context_manager
@@ -226,7 +266,25 @@ class AgentBridge:
         active_sid = session_id or "default"
         cur_proj = project_name or default_workspace.root.name
 
-        cur_agent = self.get_or_create_agent(cur_proj, active_sid, model=model)
+        def wrapped_callback(ev: Dict[str, Any]):
+            ev.setdefault("session_id", active_sid)
+            ev.setdefault("project", cur_proj)
+            event_callback(ev)
+
+        try:
+            cur_agent = self.get_or_create_agent(cur_proj, active_sid, model=model)
+        except Exception as err:
+            logger.error(f"Failed to initialize agent for session: {err}")
+            err_msg = (
+                "⚠️ **未检测到有效的模型 API 密钥**\n\n"
+                "请点击左侧【设置】➔【模型提供方】，在当前模型配置中填入您的 API 密钥，保存后即可开启全自主智能排查与交互。"
+            )
+            wrapped_callback({
+                "event": "assistant_response",
+                "content": err_msg,
+                "timestamp": time.time()
+            })
+            return err_msg
 
         if permission_mode:
             if permission_mode == "full_access":

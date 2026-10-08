@@ -63,6 +63,12 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "super-harnes"
-    }
+    },
+    "extraResources": [
+      {
+        "from": "bin/super-server",
+        "to": "bin/super-server"
+      }
+    ]
   }
 }

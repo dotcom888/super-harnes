@@ -51,3 +51,9 @@ desktop/out/
 *.dmg
 *.deb
 *.AppImage
+
+# PyInstaller Build Artifacts
+build_server/
+build_test/
+desktop/bin/
+*.spec

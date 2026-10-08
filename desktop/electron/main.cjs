@@ -20,6 +20,21 @@ function checkBackendReady(callback) {
   req.end();
 }
 
+function getBundledServerExe() {
+  const exeName = process.platform === 'win32' ? 'super-server.exe' : 'super-server';
+  // 1. 打包生产环境: process.resourcesPath/bin/super-server/super-server.exe
+  const packagedPath = path.join(process.resourcesPath, 'bin', 'super-server', exeName);
+  if (fs.existsSync(packagedPath)) {
+    return packagedPath;
+  }
+  // 2. 本地开发环境: desktop/bin/super-server/super-server.exe
+  const devPath = path.resolve(__dirname, '../bin/super-server', exeName);
+  if (fs.existsSync(devPath)) {
+    return devPath;
+  }
+  return null;
+}
+
 function resolvePythonCommand() {
   const venvWin = path.resolve(__dirname, '../../.venv/Scripts/python.exe');
   const venvUnix = path.resolve(__dirname, '../../.venv/bin/python');
@@ -39,20 +54,63 @@ function startBackendDaemon() {
       return;
     }
 
-    console.log('Spawning Super-Harnes backend daemon...');
+    const bundledExe = getBundledServerExe();
+    if (bundledExe) {
+      console.log('Spawning bundled standalone backend engine:', bundledExe);
+      try {
+        pythonProcess = spawn(bundledExe, [String(BACKEND_PORT)], {
+          cwd: path.dirname(bundledExe),
+          stdio: 'inherit',
+          windowsHide: true,
+          env: { ...process.env, PYTHONUNBUFFERED: '1' }
+        });
+
+        pythonProcess.on('error', (err) => {
+          console.error('Failed to spawn bundled backend:', err);
+        });
+
+        pythonProcess.on('exit', (code, signal) => {
+          console.log(`Bundled backend exited with code ${code}, signal ${signal}`);
+        });
+        return;
+      } catch (err) {
+        console.error('Error launching bundled backend:', err);
+      }
+    }
+
+    console.log('Falling back to system/venv python...');
     const pythonCmd = resolvePythonCommand();
     const serverScript = path.resolve(__dirname, '../../server/run_server.py');
 
-    pythonProcess = spawn(pythonCmd, [serverScript, String(BACKEND_PORT)], {
-      cwd: path.resolve(__dirname, '../..'),
-      stdio: 'inherit',
-      env: { ...process.env, PYTHONUNBUFFERED: '1' }
-    });
+    if (fs.existsSync(serverScript)) {
+      pythonProcess = spawn(pythonCmd, [serverScript, String(BACKEND_PORT)], {
+        cwd: path.resolve(__dirname, '../..'),
+        stdio: 'inherit',
+        windowsHide: true,
+        env: { ...process.env, PYTHONUNBUFFERED: '1' }
+      });
 
-    pythonProcess.on('error', (err) => {
-      console.error('Failed to spawn Python backend:', err);
-    });
+      pythonProcess.on('error', (err) => {
+        console.error('Failed to spawn Python backend:', err);
+      });
+    } else {
+      console.error('Neither bundled backend nor server script found!');
+    }
   });
+}
+
+function killBackend() {
+  if (pythonProcess) {
+    console.log('Terminating backend daemon...');
+    try {
+      if (process.platform === 'win32') {
+        spawn('taskkill', ['/pid', String(pythonProcess.pid), '/f', '/t']);
+      } else {
+        pythonProcess.kill('SIGTERM');
+      }
+    } catch (e) {}
+    pythonProcess = null;
+  }
 }
 
 function createWindow() {
@@ -116,14 +174,8 @@ app.whenReady().then(() => {
   });
 });
 
-app.on('will-quit', () => {
-  if (pythonProcess) {
-    console.log('Terminating Python backend daemon...');
-    try {
-      pythonProcess.kill();
-    } catch (e) {}
-  }
-});
+app.on('will-quit', killBackend);
+app.on('before-quit', killBackend);
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {

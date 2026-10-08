@@ -3,8 +3,20 @@ import os
 import sys
 from pathlib import Path
 
-# 强制将项目根目录加入 sys.path
-ROOT_DIR = Path(__file__).resolve().parent.parent
+# 支持以脚本解释器模式直接运行子进程（如 MCP 服务脚本）
+if len(sys.argv) > 1 and sys.argv[1].endswith(".py"):
+    script_path = Path(sys.argv[1]).resolve()
+    sys.argv = sys.argv[1:]
+    import runpy
+    runpy.run_path(str(script_path), run_name="__main__")
+    sys.exit(0)
+
+# 动态定位项目或打包根目录
+if getattr(sys, "frozen", False):
+    ROOT_DIR = Path(sys.executable).resolve().parent
+else:
+    ROOT_DIR = Path(__file__).resolve().parent.parent
+
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 

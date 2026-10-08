@@ -277,7 +277,10 @@ export const App: React.FC = () => {
             const targetProj = payload.project || projectNameRef.current;
             const targetKey = getSessionKey(targetProj, targetSid);
 
-            if (payload.event === "approval_required") {
+            if (payload.event === "connected") {
+              fetchModels();
+              fetchWorkspaces();
+            } else if (payload.event === "approval_required") {
               setApprovalReq({
                 ticket_id: payload.ticket_id,
                 command: payload.command,
@@ -626,9 +629,9 @@ export const App: React.FC = () => {
         setRunningSessions((prev) => ({ ...prev, [targetKey]: false }));
         setSessionThoughtMap((prev) => ({
           ...prev,
-          [targetKey]: `收到指令: "${text}"。正在执行上下文感知与文件走查...`
+          [targetKey]: "⚠️ 后端服务正在建立连接，请稍候 1~2 秒后重试发送..."
         }));
-      }, 1500);
+      }, 500);
     }
   };
 

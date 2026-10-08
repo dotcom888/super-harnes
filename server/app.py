@@ -12,8 +12,12 @@ from typing import Dict, Any, List, Optional
 from pathlib import Path
 from pydantic import BaseModel
 
-# 确保项目根目录在 sys.path
-ROOT_DIR = Path(__file__).resolve().parent.parent
+# 确保项目根目录在 sys.path (支持 PyInstaller 打包与冻结运行)
+if getattr(sys, "frozen", False):
+    ROOT_DIR = Path(sys.executable).resolve().parent
+else:
+    ROOT_DIR = Path(__file__).resolve().parent.parent
+
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
@@ -35,8 +39,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+USER_DATA_ROOT = Path.home() / ".super-harnes"
+USER_DATA_ROOT.mkdir(parents=True, exist_ok=True)
+USER_CONFIG_DIR = USER_DATA_ROOT / "config"
+USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+USER_MODELS_CONFIG_PATH = USER_CONFIG_DIR / "models_config.json"
+
 MODELS_CONFIG_PATH = ROOT_DIR / "config" / "models_config.json"
-HISTORY_ROOT = ROOT_DIR / "history"
+USER_HISTORY_ROOT = USER_DATA_ROOT / "history"
+USER_HISTORY_ROOT.mkdir(parents=True, exist_ok=True)
+
+if getattr(sys, "frozen", False):
+    # 打包运行模式：将自带初始 history 模板复制至用户数据目录，避免 Program Files 等目录写保护
+    bundled_history = ROOT_DIR / "_internal" / "history" if (ROOT_DIR / "_internal" / "history").exists() else ROOT_DIR / "history"
+    if bundled_history.exists():
+        for item in bundled_history.iterdir():
+            dest = USER_HISTORY_ROOT / item.name
+            if not dest.exists():
+                try:
+                    if item.is_dir():
+                        shutil.copytree(item, dest)
+                    else:
+                        shutil.copy2(item, dest)
+                except Exception:
+                    pass
+    HISTORY_ROOT = USER_HISTORY_ROOT
+else:
+    HISTORY_ROOT = ROOT_DIR / "history" 
 
 # ================= 数据模型定义 =================
 class PromptRequest(BaseModel):
@@ -73,15 +102,18 @@ class ModeSwitchRequest(BaseModel):
 
 # ================= 辅助函数：模型与提供方管理 =================
 def load_models_config() -> Dict[str, Any]:
-    """读取模型与提供方配置"""
-    if MODELS_CONFIG_PATH.exists():
-        try:
-            with open(MODELS_CONFIG_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
+    """读取模型与提供方配置 (优先用户数据持久化目录，回退安装包内置配置)"""
+    for p in (USER_MODELS_CONFIG_PATH, MODELS_CONFIG_PATH):
+        if p.exists():
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if data and "providers" in data:
+                        return data
+            except Exception:
+                pass
 
-    # 默认兜底配置 (严格仅根据 .env 文件生成当前有效环境模型，不预置不存在的模型)
+    # 默认兜底配置 (严格仅根据当前环境生成有效模型，不预置不存在的虚假模型)
     default_model = os.getenv("LLM_MODEL", "gemini-3.8-flash-high")
     return {
         "current_model": default_model,
@@ -99,10 +131,14 @@ def load_models_config() -> Dict[str, Any]:
     }
 
 def save_models_config(cfg: Dict[str, Any]):
-    """持久化保存模型与提供方配置"""
-    MODELS_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(MODELS_CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    """持久化保存模型与提供方配置 (双重写入用户目录与本地开发目录)"""
+    for p in (USER_MODELS_CONFIG_PATH, MODELS_CONFIG_PATH):
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
 def get_active_models_list() -> List[str]:
     """仅返回已配置有效密钥或当前环境活跃的模型列表，删除所有未配置的虚假项"""
@@ -606,9 +642,6 @@ def get_workspaces():
 @app.post("/api/workspaces/switch")
 def switch_workspace(req: WorkspaceSwitchRequest):
     """切换工作区根目录或目标项目"""
-    if not bridge.agent:
-        raise HTTPException(status_code=500, detail="Agent is not initialized")
-    
     target_path = req.path
     if not target_path and req.name:
         # 寻找已知项目的路径
@@ -620,13 +653,17 @@ def switch_workspace(req: WorkspaceSwitchRequest):
         
         if not target_path:
             # 切换项目会话目录名称
-            bridge.agent.session_manager.project_name = req.name
-            bridge.agent.session_manager.history_dir = HISTORY_ROOT / req.name
-            bridge.agent.session_manager.history_dir.mkdir(parents=True, exist_ok=True)
+            if bridge.agent:
+                bridge.agent.session_manager.project_name = req.name
+                bridge.agent.session_manager.history_dir = HISTORY_ROOT / req.name
+                bridge.agent.session_manager.history_dir.mkdir(parents=True, exist_ok=True)
             return {"success": True, "name": req.name, "workspace_path": str(default_workspace.root)}
 
     try:
-        new_root = bridge.agent.switch_workspace(target_path)
+        new_root = Path(target_path).resolve()
+        default_workspace.set_root(new_root)
+        if bridge.agent:
+            bridge.agent.switch_workspace(target_path)
         return {"success": True, "workspace_path": str(new_root), "name": new_root.name}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
