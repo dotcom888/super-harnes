@@ -21,7 +21,10 @@ else:
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+import logging
 import urllib.parse
+
+logger = logging.getLogger("server")
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -550,16 +553,65 @@ def switch_mode(req: ModeSwitchRequest):
 
 @app.get("/api/models")
 def get_available_models():
-    """获取所有已配置有效的大模型列表供无缝切换（未配置时返回空列表与空字符串）"""
+    """获取所有已配置有效的大模型列表及对应的提供方映射（未配置时返回空列表与空字符串）"""
     cfg = load_models_config()
     active_models = get_active_models_list()
     cur = cfg.get("current_model", "")
     if cur not in active_models:
         cur = active_models[0] if active_models else ""
+
+    # 构建 model -> provider_name 映射表供前端下拉菜单标注来源
+    model_providers = {}
+    for p in cfg.get("providers", []):
+        p_name = p.get("name", "自定义")
+        for m in p.get("models", []):
+            if m:
+                model_providers[m] = p_name
+
     return {
         "current_model": cur,
-        "models": active_models
+        "models": active_models,
+        "model_providers": model_providers
     }
+
+class ModelTestRequest(BaseModel):
+    base_url: str
+    api_key: str
+    model: Optional[str] = None
+
+@app.post("/api/models/test")
+def test_provider_connection(req: ModelTestRequest):
+    """测试模型提供方连通性与 API Key 有效性"""
+    url = req.base_url.strip().rstrip("/")
+    key = req.api_key.strip()
+    if not url or not key:
+        raise HTTPException(status_code=400, detail="接口地址与 API 密钥不能为空")
+
+    try:
+        from openai import OpenAI
+        test_client = OpenAI(api_key=key, base_url=url, timeout=12.0)
+        # 尝试通过轻量级模型调用或者 models.list 测试连通
+        test_model = req.model or "deepseek-chat"
+        try:
+            test_client.chat.completions.create(
+                model=test_model,
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=3
+            )
+            return {"success": True, "message": f"连接成功！模型「{test_model}」调用正常响应。"}
+        except Exception as e_chat:
+            # 若模型名不匹配但 API 连通，尝试列出模型验证 Key
+            err_str = str(e_chat)
+            if "model" in err_str.lower() or "not found" in err_str.lower():
+                try:
+                    test_client.models.list()
+                    return {"success": True, "message": f"接口鉴权成功！但提示模型「{test_model}」暂不可用，请确认映射模型名称。"}
+                except Exception:
+                    pass
+            raise e_chat
+    except Exception as e:
+        logger.warning(f"Model test connection failed: {e}")
+        return {"success": False, "error": str(e)}
 
 @app.post("/api/models/switch")
 def switch_model(req: ModelSwitchRequest):
@@ -574,18 +626,18 @@ def switch_model(req: ModelSwitchRequest):
 
 @app.get("/api/models/providers")
 def get_providers():
-    """获取所有模型提供方（对标设置页面：包含内置提供方与自定义提供方）"""
+    """获取所有模型提供方（本地桌面模式返回明文密钥以供回显编辑，同时保留脱敏字段）"""
     cfg = load_models_config()
     providers_list = []
     for p in cfg.get("providers", []):
         key = p.get("api_key", "")
-        # 脱敏展示
         masked_key = (key[:6] + "..." + key[-4:]) if len(key) > 10 else ("已配置" if key else "")
         status = "connected" if key or p.get("status") == "connected" else "unconfigured"
         providers_list.append({
             "id": p.get("id"),
             "name": p.get("name"),
             "base_url": p.get("base_url"),
+            "api_key": key,
             "api_key_masked": masked_key,
             "models": p.get("models", []),
             "is_custom": p.get("is_custom", True),

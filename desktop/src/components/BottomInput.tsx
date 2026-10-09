@@ -30,6 +30,7 @@ interface BottomInputProps {
   onScrollToBottom?: () => void;
   models?: string[];
   selectedModel?: string;
+  modelProviders?: Record<string, string>;
   onSelectModel?: (m: string) => void;
   onOpenModelSettings?: () => void;
   draftText?: string;
@@ -53,6 +54,7 @@ export const BottomInput: React.FC<BottomInputProps> = ({
   onScrollToBottom,
   models = [],
   selectedModel,
+  modelProviders,
   onSelectModel,
   onOpenModelSettings,
   draftText,
@@ -469,11 +471,24 @@ export const BottomInput: React.FC<BottomInputProps> = ({
                               key={m}
                               onClick={() => handleSelectModel(m)}
                               className={`px-3 py-2 hover:bg-gray-50 dark:hover:bg-[#222534] cursor-pointer flex items-center justify-between transition ${
-                                isCur ? "text-blue-600 font-semibold bg-blue-50/60" : "text-gray-700 dark:text-gray-300"
+                                isCur ? "text-blue-600 font-semibold bg-blue-50/60 dark:bg-blue-900/20" : "text-gray-700 dark:text-gray-300"
                               }`}
                             >
-                              <span className="truncate pr-2">{m}</span>
-                              {isCur && <Check size={13} className="text-blue-600 shrink-0" />}
+                              <div className="flex flex-col min-w-0 pr-2">
+                                <span className="truncate font-mono">{m}</span>
+                              </div>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                {modelProviders && modelProviders[m] && (
+                                  <span className="text-[10px] text-gray-400 dark:text-gray-500 font-normal select-none">
+                                    {modelProviders[m]}
+                                  </span>
+                                )}
+                                {isCur ? (
+                                  <Check size={13} className="text-blue-600 dark:text-blue-400 shrink-0" />
+                                ) : (
+                                  <span className="w-3.5" />
+                                )}
+                              </div>
                             </div>
                           );
                         })

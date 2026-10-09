@@ -140,13 +140,41 @@ class AgentBridge:
     def agent(self, val: Optional[ReActAgent]):
         self.default_agent = val
 
+    def _resolve_model_config(self, ag_model: str) -> tuple[str, str]:
+        """严格根据模型名称解析匹配的 (api_key, base_url)，杜绝跨提供方乱借 Key"""
+        provider_key = ""
+        provider_base_url = ""
+        try:
+            from server.app import load_models_config
+            cfg = load_models_config()
+            for p in cfg.get("providers", []):
+                if ag_model in p.get("models", []):
+                    if p.get("api_key", "").strip():
+                        provider_key = p.get("api_key", "").strip()
+                        provider_base_url = p.get("base_url", "").strip()
+                        break
+        except Exception:
+            pass
+
+        final_key = provider_key or os.getenv("LLM_API_KEY", "")
+        final_base_url = provider_base_url or os.getenv("LLM_BASE_URL", "")
+        return final_key, final_base_url
+
     def get_or_create_agent(self, project_name: str, session_id: str, model: Optional[str] = None) -> ReActAgent:
         """获取或创建与指定 (project, session) 强绑定的专属独立 Agent 实例，确保多会话并发无串扰"""
         key = f"{project_name}:{session_id}"
         if key in self.agents:
             ag = self.agents[key]
-            if model:
+            if model and model != ag.model:
                 ag.model = model
+                final_key, final_base_url = self._resolve_model_config(model)
+                if not final_key:
+                    raise ValueError(f"未配置模型「{model}」对应的有效 API 密钥！请点击右下角「+ 添加模型」或前往「系统设置 -> 模型」填入 API Key 与接口地址。")
+                ag.api_key = final_key
+                ag.base_url = final_base_url or None
+                from openai import OpenAI
+                ag.client = OpenAI(api_key=final_key, base_url=ag.base_url)
+                logger.info(f"Updated agent for session '{key}' to model '{model}' with baseUrl '{ag.base_url}'")
             return ag
 
         proj_dir = HISTORY_ROOT / project_name
@@ -172,47 +200,19 @@ class AgentBridge:
 
         ag_model = model or (self.default_agent.model if self.default_agent else "deepseek-chat")
 
-        # 从配置或环境中动态匹配 API Key 与 Base URL
-        provider_key = ""
-        provider_base_url = ""
-        try:
-            from server.app import load_models_config
-            cfg = load_models_config()
-            for p in cfg.get("providers", []):
-                if ag_model in p.get("models", []):
-                    if p.get("api_key", "").strip():
-                        provider_key = p.get("api_key", "").strip()
-                        provider_base_url = p.get("base_url", "").strip()
-                        break
-            if not provider_key:
-                for p in cfg.get("providers", []):
-                    if p.get("api_key", "").strip():
-                        provider_key = p.get("api_key", "").strip()
-                        provider_base_url = p.get("base_url", "").strip()
-                        break
-        except Exception:
-            pass
+        final_key, final_base_url = self._resolve_model_config(ag_model)
+        if not final_key:
+            raise ValueError(f"未配置模型「{ag_model}」对应的有效 API 密钥！请点击右下角「+ 添加模型」或前往「系统设置 -> 模型」填入 API Key 与接口地址。")
 
-        final_key = provider_key or os.getenv("LLM_API_KEY", "")
-        final_base_url = provider_base_url or os.getenv("LLM_BASE_URL", "")
-
-        try:
-            ag = ReActAgent(
-                api_key=final_key or None,
-                base_url=final_base_url or None,
-                model=ag_model,
-                session_manager=sess_mgr
-            )
-        except Exception as err:
-            logger.warning(f"ReActAgent dedicated init error ({err}), falling back to default agent")
-            if self.default_agent:
-                ag = self.default_agent
-                ag.switch_session(session_id)
-            else:
-                raise
+        ag = ReActAgent(
+            api_key=final_key or None,
+            base_url=final_base_url or None,
+            model=ag_model,
+            session_manager=sess_mgr
+        )
 
         self.agents[key] = ag
-        logger.info(f"Created dedicated ReActAgent instance for session '{key}', workspace: {target_workspace.root}")
+        logger.info(f"Created dedicated ReActAgent instance for session '{key}', workspace: {target_workspace.root}, model: {ag_model}")
         return ag
 
     def abort_session(self, session_id: str, project_name: str):
@@ -465,29 +465,42 @@ class AgentBridge:
                     })
 
             # 在独立工作线程中运行该专属 Agent 的 run() 并挂接流式 Token 回调与实时思考回调
-            result = await loop.run_in_executor(
-                None,
-                lambda: cur_agent.run(
-                    augmented_prompt, 
-                    False, 
-                    token_callback=on_token_chunk, 
-                    thought_callback=on_thought_chunk,
-                    attachments=attachments,
-                    display_prompt=prompt,
-                    llm_content=llm_content
+            try:
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: cur_agent.run(
+                        augmented_prompt, 
+                        False, 
+                        token_callback=on_token_chunk, 
+                        thought_callback=on_thought_chunk,
+                        attachments=attachments,
+                        display_prompt=prompt,
+                        llm_content=llm_content
+                    )
                 )
-            )
 
-            # 计算从用户发送到回复完成的真实总耗时
-            elapsed_total = round(max(1.0, time.time() - start_time), 1)
+                # 计算从用户发送到回复完成的真实总耗时
+                elapsed_total = round(max(1.0, time.time() - start_time), 1)
 
-            # 最终答复确认推送 (包含真实耗时 elapsed)
-            wrapped_callback({
-                "event": "assistant_response",
-                "content": result,
-                "elapsed": elapsed_total,
-                "timestamp": time.time()
-            })
+                # 最终答复确认推送 (包含真实耗时 elapsed)
+                wrapped_callback({
+                    "event": "assistant_response",
+                    "content": result,
+                    "elapsed": elapsed_total,
+                    "timestamp": time.time()
+                })
+            except Exception as run_err:
+                logger.error(f"Error running agent for prompt: {run_err}", exc_info=True)
+                elapsed_total = round(max(1.0, time.time() - start_time), 1)
+                err_text = f"❌ 模型调用失败: {str(run_err)}\n\n💡 检查建议: 请前往右下角「+ 添加模型」或「系统设置 -> 模型」检查模型「{getattr(cur_agent, 'model', model)}」的 API Key、接口地址 (Base URL) 是否正确有效。"
+                wrapped_callback({
+                    "event": "assistant_response",
+                    "content": err_text,
+                    "elapsed": elapsed_total,
+                    "timestamp": time.time(),
+                    "is_error": True
+                })
+                raise run_err
 
             # 计算最终遥测指标并推送
             elapsed_total = time.time() - start_time

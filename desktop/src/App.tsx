@@ -43,6 +43,7 @@ export const App: React.FC = () => {
 
   // 模型状态 (仅同步有效配置的模型，支持自定义映射)
   const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [modelProviders, setModelProviders] = useState<Record<string, string>>({});
   const [currentModel, setCurrentModel] = useState("");
   const [settingsInitialTab, setSettingsInitialTab] = useState<"models" | "security" | "general" | "about">("models");
   const [modeName, setModeName] = useState("AUTO 模式");
@@ -169,6 +170,9 @@ export const App: React.FC = () => {
         const list = data.models || [];
         setAvailableModels(list);
         setCurrentModel(data.current_model || (list.length > 0 ? list[0] : ""));
+        if (data.model_providers) {
+          setModelProviders(data.model_providers);
+        }
       })
       .catch(() => {});
   };
@@ -503,6 +507,20 @@ export const App: React.FC = () => {
               fetchWorkspaces(projectNameRef.current, activeSessionIdRef.current, false);
             } else if (payload.event === "error") {
               setRunningSessions((prev) => ({ ...prev, [targetKey]: false }));
+              const errorMsg = `❌ 模型调用异常: ${payload.message || "请求失败"}\n\n💡 检查建议: 请前往右下角「+ 添加模型」或「系统设置 -> 模型」检查当前模型配置、API 密钥与网络连接是否有效。`;
+              setSessionTurnsMap((prev) => {
+                const list = prev[targetKey] || [];
+                if (list.length === 0) return prev;
+                const lastIdx = list.length - 1;
+                const updated = [...list];
+                if (!updated[lastIdx].assistant_response) {
+                  updated[lastIdx] = {
+                    ...updated[lastIdx],
+                    assistant_response: errorMsg
+                  };
+                }
+                return { ...prev, [targetKey]: updated };
+              });
             } else if (payload.event === "metrics") {
               setMetrics({
                 turns: payload.turns,
@@ -880,6 +898,7 @@ export const App: React.FC = () => {
         setCurrentModel(activeModels[0]);
       }
     }
+    fetchModels();
   };
 
   // 1. 编辑工作区 (更改名称及磁盘目录)
@@ -1055,7 +1074,9 @@ export const App: React.FC = () => {
               isLoading={isCurrentSessionLoading}
               models={availableModels}
               selectedModel={currentModel}
+              modelProviders={modelProviders}
               onSelectModel={handleSelectModel}
+              onOpenModelSettings={() => setShowSettings(true)}
               onSelectProject={handleSelectProjectInEmptyState}
               onAddWorkspace={handleAddWorkspace}
               onPause={handlePause}
@@ -1084,6 +1105,7 @@ export const App: React.FC = () => {
                         onOpenFile={(p) => setSelectedFile(p)}
                         onEditPrompt={(txt) => setDraftPrompt(txt)}
                         onResendTurn={handleResendTurn}
+                        onOpenSettings={() => setShowSettings(true)}
                       />
                     ))
                   )}
@@ -1121,7 +1143,9 @@ export const App: React.FC = () => {
             onScrollToBottom={handleScrollToBottom}
             models={availableModels}
             selectedModel={currentModel}
+            modelProviders={modelProviders}
             onSelectModel={handleSelectModel}
+            onOpenModelSettings={() => setShowSettings(true)}
             draftText={draftPrompt}
             onDraftConsumed={() => setDraftPrompt("")}
             onPause={handlePause}

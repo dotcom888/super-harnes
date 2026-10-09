@@ -9,7 +9,12 @@ import {
   Check, 
   Layers,
   Sparkles,
-  Type
+  Type,
+  Eye,
+  EyeOff,
+  Loader2,
+  CheckCircle2,
+  AlertCircle
 } from "lucide-react";
 import { ModelProvider } from "../types";
 import { ConfirmModal } from "./ConfirmModal";
@@ -54,6 +59,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [formApiKey, setFormApiKey] = useState("");
   const [formModels, setFormModels] = useState("");
   const [isFormCustom, setIsFormCustom] = useState(true);
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [validationError, setValidationError] = useState("");
+  const [saveSuccessMsg, setSaveSuccessMsg] = useState("");
 
   useEffect(() => {
     fetchProviders();
@@ -81,40 +91,107 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setFormModels((p.models || []).join(", "));
     setIsFormCustom(Boolean(p.is_custom));
     setIsAddingCustom(false);
+    setShowApiKey(false);
+    setTestResult(null);
+    setValidationError("");
+    setSaveSuccessMsg("");
   };
 
-  const handleOpenAdd = (isCustom: boolean = true) => {
+  const handleOpenAdd = () => {
     setEditingProvider(null);
     setIsAddingCustom(true);
-    if (!isCustom) {
-      setFormName("DeepSeek");
-      setFormBaseUrl("https://api.deepseek.com/v1");
-      setFormModels("deepseek-chat, deepseek-reasoner");
-    } else {
-      setFormName("");
-      setFormBaseUrl("");
-      setFormModels("");
-    }
+    setFormName("");
+    setFormBaseUrl("");
     setFormApiKey("");
-    setIsFormCustom(isCustom);
+    setFormModels("");
+    setIsFormCustom(true);
+    setShowApiKey(false);
+    setTestResult(null);
+    setValidationError("");
+    setSaveSuccessMsg("");
   };
 
-  const handleSaveProviderForm = () => {
-    if (!formName.trim() || !formBaseUrl.trim()) {
-      alert("请完整填写提供方名称与接口地址！");
+  // 连通性测试
+  const handleTestConnection = async () => {
+    setValidationError("");
+    const trimmedUrl = formBaseUrl.trim().replace(/\/+$/, "");
+    const trimmedKey = formApiKey.trim();
+    if (!trimmedUrl) {
+      setValidationError("请先填写接口地址 (Base URL)");
+      return;
+    }
+    if (!trimmedKey) {
+      setValidationError("请先填写 API 密钥 (API Key)");
       return;
     }
 
+    const firstModel = formModels.split(/[,，\s]+/).map(m => m.trim()).filter(Boolean)[0] || "";
+
+    setIsTesting(true);
+    setTestResult(null);
+
+    try {
+      const res = await fetch("http://127.0.0.1:8765/api/models/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          base_url: trimmedUrl,
+          api_key: trimmedKey,
+          model: firstModel || undefined
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setTestResult({ success: true, message: data.message || "接口连通正常，鉴权通过！" });
+      } else {
+        setTestResult({ success: false, message: data.error || data.detail || "连接失败，请检查 Base URL 与 API Key" });
+      }
+    } catch (err: any) {
+      setTestResult({ success: false, message: "请求服务失败: " + err.message });
+    } finally {
+      setIsTesting(false);
+    }
+  };
+
+  const handleSaveProviderForm = () => {
+    setValidationError("");
+    setSaveSuccessMsg("");
+
+    const name = formName.trim();
+    const baseUrl = formBaseUrl.trim().replace(/\/+$/, "");
+    const apiKey = formApiKey.trim();
     const modelsList = formModels
       .split(/[,，\s]+/)
       .map((m) => m.trim())
       .filter(Boolean);
 
+    // 严密字段校验 (对标需求 2)
+    if (!name) {
+      setValidationError("请填写提供方名称（例如: DeepSeek）");
+      return;
+    }
+    if (!baseUrl) {
+      setValidationError("请填写接口地址 Base URL（例如: https://api.deepseek.com/v1）");
+      return;
+    }
+    if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
+      setValidationError("接口地址格式无效，必须以 http:// 或 https:// 开头");
+      return;
+    }
+    if (!apiKey) {
+      setValidationError("请填写 API 密钥 (API Key)");
+      return;
+    }
+    if (modelsList.length === 0) {
+      setValidationError("请至少填写一个映射模型名称（例如: deepseek-chat, deepseek-reasoner）");
+      return;
+    }
+
     const payload = {
       id: editingProvider ? editingProvider.id : undefined,
-      name: formName.trim(),
-      base_url: formBaseUrl.trim(),
-      api_key: formApiKey.trim(),
+      name: name,
+      base_url: baseUrl,
+      api_key: apiKey,
       models: modelsList,
       is_custom: isFormCustom
     };
@@ -127,16 +204,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       .then((res) => res.json())
       .then((data) => {
         if (data.success) {
-          setEditingProvider(null);
-          setIsAddingCustom(false);
+          setSaveSuccessMsg("保存成功！已更新提供方并同步模型。");
           fetchProviders();
           if (onProvidersUpdated) {
             onProvidersUpdated(data.providers, data.active_models);
           }
+          setTimeout(() => {
+            setEditingProvider(null);
+            setIsAddingCustom(false);
+            setSaveSuccessMsg("");
+          }, 1200);
         }
       })
       .catch((err) => {
-        alert("保存提供方失败: " + err.message);
+        setValidationError("保存提供方失败: " + err.message);
       });
   };
 
@@ -321,20 +402,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   })}
                 </div>
 
-                {/* 底部添加按钮 */}
-                <div className="grid grid-cols-2 gap-3 pt-1">
+                {/* 底部添加按钮：删除冗余的“添加提供方”，保留单体清晰的自定义添加按钮 (对标需求 1) */}
+                <div className="pt-1">
                   <button
                     type="button"
-                    onClick={() => handleOpenAdd(false)}
-                    className="flex items-center justify-center gap-1.5 py-3 border border-dashed border-gray-300 dark:border-[#2f354a] hover:border-blue-400 dark:hover:border-blue-500 hover:bg-blue-50/30 dark:hover:bg-blue-900/10 rounded-xl text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 text-xs font-medium transition cursor-pointer"
-                  >
-                    <Plus size={14} />
-                    <span>添加提供方</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleOpenAdd(true)}
-                    className="flex items-center justify-center gap-1.5 py-3 border border-dashed border-gray-300 dark:border-[#2f354a] hover:border-blue-400 dark:hover:border-blue-500 hover:bg-blue-50/30 dark:hover:bg-blue-900/10 rounded-xl text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 text-xs font-medium transition cursor-pointer"
+                    onClick={handleOpenAdd}
+                    className="w-full flex items-center justify-center gap-1.5 py-3 border border-dashed border-gray-300 dark:border-[#2f354a] hover:border-blue-400 dark:hover:border-blue-500 hover:bg-blue-50/30 dark:hover:bg-blue-900/10 rounded-xl text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 text-xs font-medium transition cursor-pointer"
                   >
                     <Plus size={14} />
                     <span>添加自定义提供方</span>
@@ -379,13 +452,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                     <div>
                       <label className="block text-gray-600 dark:text-gray-400 font-medium mb-1">API 密钥 (API Key)</label>
-                      <input
-                        type="password"
-                        value={formApiKey}
-                        onChange={(e) => setFormApiKey(e.target.value)}
-                        placeholder="sk-..."
-                        className="w-full px-3 py-1.5 bg-white dark:bg-[#1f2230] border border-gray-200 dark:border-[#2e344a] text-gray-900 dark:text-gray-100 rounded-lg focus:border-blue-500 outline-none"
-                      />
+                      <div className="relative flex items-center">
+                        <input
+                          type={showApiKey ? "text" : "password"}
+                          value={formApiKey}
+                          onChange={(e) => setFormApiKey(e.target.value)}
+                          placeholder="sk-..."
+                          className="w-full px-3 py-1.5 pr-9 bg-white dark:bg-[#1f2230] border border-gray-200 dark:border-[#2e344a] text-gray-900 dark:text-gray-100 rounded-lg focus:border-blue-500 outline-none font-mono"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowApiKey(!showApiKey)}
+                          className="absolute right-2.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 cursor-pointer p-0.5"
+                          title={showApiKey ? "隐藏密钥" : "显示密钥"}
+                        >
+                          {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
+                        </button>
+                      </div>
                     </div>
 
                     <div>
@@ -395,25 +478,69 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         value={formModels}
                         onChange={(e) => setFormModels(e.target.value)}
                         placeholder="例如: deepseek-chat, deepseek-reasoner"
-                        className="w-full px-3 py-1.5 bg-white dark:bg-[#1f2230] border border-gray-200 dark:border-[#2e344a] text-gray-900 dark:text-gray-100 rounded-lg focus:border-blue-500 outline-none"
+                        className="w-full px-3 py-1.5 bg-white dark:bg-[#1f2230] border border-gray-200 dark:border-[#2e344a] text-gray-900 dark:text-gray-100 rounded-lg focus:border-blue-500 outline-none font-mono"
                       />
                     </div>
 
-                    <div className="flex justify-end gap-2 pt-2">
+                    {/* 校验错误提示条 */}
+                    {validationError && (
+                      <div className="flex items-center gap-1.5 p-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40 rounded-lg text-red-600 dark:text-red-400 text-xs">
+                        <AlertCircle size={14} className="shrink-0" />
+                        <span>{validationError}</span>
+                      </div>
+                    )}
+
+                    {/* 测试连通性结果反馈 */}
+                    {testResult && (
+                      <div className={`flex items-start gap-1.5 p-2 rounded-lg text-xs border ${
+                        testResult.success 
+                          ? "bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800/40 text-green-700 dark:text-green-400"
+                          : "bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800/40 text-amber-700 dark:text-amber-400"
+                      }`}>
+                        {testResult.success ? (
+                          <CheckCircle2 size={14} className="shrink-0 mt-0.5" />
+                        ) : (
+                          <AlertCircle size={14} className="shrink-0 mt-0.5" />
+                        )}
+                        <span className="leading-relaxed">{testResult.message}</span>
+                      </div>
+                    )}
+
+                    {/* 保存成功动画条 */}
+                    {saveSuccessMsg && (
+                      <div className="flex items-center gap-1.5 p-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800/40 rounded-lg text-green-700 dark:text-green-400 text-xs animate-in fade-in">
+                        <CheckCircle2 size={14} className="shrink-0" />
+                        <span className="font-medium">{saveSuccessMsg}</span>
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between pt-2">
                       <button
                         type="button"
-                        onClick={() => { setEditingProvider(null); setIsAddingCustom(false); }}
-                        className="px-3 py-1.5 border border-gray-200 dark:border-[#2e344a] text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-[#222534] transition cursor-pointer"
+                        onClick={handleTestConnection}
+                        disabled={isTesting}
+                        className="flex items-center gap-1.5 px-3 py-1.5 border border-blue-200 dark:border-blue-900/50 bg-blue-50/50 dark:bg-blue-900/20 hover:bg-blue-100/70 dark:hover:bg-blue-900/40 text-blue-600 dark:text-blue-400 rounded-lg font-medium transition cursor-pointer disabled:opacity-50"
                       >
-                        取消
+                        {isTesting && <Loader2 size={13} className="animate-spin" />}
+                        <span>{isTesting ? "正在测试..." : "测试连接"}</span>
                       </button>
-                      <button
-                        type="button"
-                        onClick={handleSaveProviderForm}
-                        className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition shadow-xs cursor-pointer"
-                      >
-                        保存并生效
-                      </button>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => { setEditingProvider(null); setIsAddingCustom(false); }}
+                          className="px-3 py-1.5 border border-gray-200 dark:border-[#2e344a] text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-[#222534] transition cursor-pointer"
+                        >
+                          取消
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleSaveProviderForm}
+                          className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition shadow-xs cursor-pointer"
+                        >
+                          保存并生效
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}

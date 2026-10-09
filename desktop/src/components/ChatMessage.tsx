@@ -12,6 +12,7 @@ import {
   Terminal, 
   Loader2, 
   AlertCircle,
+  Settings,
   ThumbsUp,
   ThumbsDown,
   ArrowUp,
@@ -29,6 +30,7 @@ interface ChatMessageProps {
   onOpenFile?: (path: string) => void;
   onEditPrompt?: (text: string) => void;
   onResendTurn?: (turnId: number, newPrompt: string) => void;
+  onOpenSettings?: () => void;
 }
 
 // 格式化时间戳为 20:49 形式
@@ -560,7 +562,8 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   isLatestTurn = false,
   onOpenFile, 
   onEditPrompt,
-  onResendTurn
+  onResendTurn,
+  onOpenSettings
 }) => {
   const [traceExpanded, setTraceExpanded] = useState(false);
 
@@ -745,6 +748,29 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
             </div>
           )}
 
+          {/* 若模型调用异常导致思考中断且无答复时，在此处抛出报错信息 (对标需求 4) */}
+          {!isLoading && !turn.assistant_response && hasSteps && (
+            <div className="my-2 p-3 bg-red-50/80 dark:bg-red-950/20 border border-red-200 dark:border-red-900/40 rounded-xl text-xs text-red-700 dark:text-red-300 flex items-start gap-2.5 animate-in fade-in">
+              <AlertCircle size={15} className="shrink-0 mt-0.5 text-red-600 dark:text-red-400" />
+              <div className="flex-1 space-y-1.5">
+                <div className="font-semibold">模型思考中断，未能生成最终回复</div>
+                <div className="text-[11px] leading-relaxed text-red-600/90 dark:text-red-400/90">
+                  可能原因：当前选择的模型未配置有效 API 密钥、接口地址无法连通或模型名称不匹配。
+                </div>
+                {onOpenSettings && (
+                  <button
+                    type="button"
+                    onClick={onOpenSettings}
+                    className="mt-1 px-2.5 py-1 bg-red-100 hover:bg-red-200 dark:bg-red-900/40 dark:hover:bg-red-900/60 text-red-700 dark:text-red-200 rounded-lg text-xs font-medium transition cursor-pointer flex items-center gap-1.5"
+                  >
+                    <Settings size={12} />
+                    <span>前往配置模型提供方</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           {showTrace && (
             <div className="space-y-1.5 py-1 select-text animate-in fade-in duration-150">
               {steps.map((st, i) => {
@@ -798,9 +824,32 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
               </div>
             </div>
 
-            {/* 核心 Markdown 输出 (表格、流程图、代码块、层级标题) */}
+            {/* 核心 Markdown 输出 (表格、流程图、代码块、层级标题，若为异常信息则醒目警示) */}
             {turn.assistant_response ? (
-              <MarkdownContent content={turn.assistant_response} />
+              turn.assistant_response.startsWith("❌") || turn.assistant_response.startsWith("⚠️") ? (
+                <div className="p-3 bg-red-50/80 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50 rounded-xl text-xs text-red-800 dark:text-red-300 space-y-2">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle size={16} className="text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+                    <div className="flex-1 whitespace-pre-wrap leading-relaxed font-sans">
+                      {turn.assistant_response}
+                    </div>
+                  </div>
+                  {onOpenSettings && (
+                    <div className="pt-1 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={onOpenSettings}
+                        className="px-2.5 py-1 bg-red-100 hover:bg-red-200 dark:bg-red-900/50 dark:hover:bg-red-800/60 text-red-700 dark:text-red-200 rounded-lg text-xs font-medium transition cursor-pointer flex items-center gap-1"
+                      >
+                        <Settings size={12} />
+                        <span>前往模型设置</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <MarkdownContent content={turn.assistant_response} />
+              )
             ) : isLoading ? (
               <div className="text-xs text-gray-400 italic">正在组织最终答复...</div>
             ) : null}
