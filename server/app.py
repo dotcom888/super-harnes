@@ -21,8 +21,11 @@ else:
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException
+import urllib.parse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, UploadFile, File, Form
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from server.attachment_parser import detect_attachment_type, extract_attachment_summary
 
 from server.agent_bridge import bridge, format_tool_display
 from tools.framework.workspace import default_workspace
@@ -324,8 +327,9 @@ def parse_project_turns_from_disk(project_name: str, session_id: str) -> Dict[st
     turns_map = {}
     all_actions = []
     working_memory_last = {}
-
     tool_results_by_turn = {}
+    turn_start_times = {}
+    turn_end_times = {}
 
     with open(target_file, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -348,6 +352,7 @@ def parse_project_turns_from_disk(project_name: str, session_id: str) -> Dict[st
                 turns_map[tid] = {
                     "turn_id": tid,
                     "user_prompt": "",
+                    "attachments": [],
                     "thought": "",
                     "assistant_response": "",
                     "actions": [],
@@ -362,12 +367,15 @@ def parse_project_turns_from_disk(project_name: str, session_id: str) -> Dict[st
 
             elif t == "user_message":
                 turns_map[tid]["user_prompt"] = data.get("content", "")
+                turns_map[tid]["attachments"] = data.get("attachments", [])
+                turn_start_times[tid] = row.get("timestamp", time.time())
 
             elif t == "assistant_message":
+                turn_end_times[tid] = max(turn_end_times.get(tid, 0), row.get("timestamp", time.time()))
                 content = data.get("content", "")
                 tcs = data.get("tool_calls", [])
                 
-                # 捕获思考内容与助理推理步骤
+                # 捕获思考内容与助理推理步骤 (对标需求 2: 独立捕获思考与正文，杜绝有思考时正文被 elif 吞掉)
                 thought_cand = data.get("reasoning_content", "") or data.get("thought", "")
                 if thought_cand:
                     if not turns_map[tid]["thought"]:
@@ -378,6 +386,9 @@ def parse_project_turns_from_disk(project_name: str, session_id: str) -> Dict[st
                         "thought": thought_cand,
                         "timestamp": row.get("timestamp", time.time())
                     })
+
+                if content and not tcs:
+                    turns_map[tid]["assistant_response"] = content
                 elif content and tcs:
                     if not turns_map[tid]["thought"]:
                         turns_map[tid]["thought"] = content
@@ -387,8 +398,6 @@ def parse_project_turns_from_disk(project_name: str, session_id: str) -> Dict[st
                         "thought": content,
                         "timestamp": row.get("timestamp", time.time())
                     })
-                elif content and not tcs:
-                    turns_map[tid]["assistant_response"] = content
 
                 for tc in tcs:
                     tc_id = tc.get("id")
@@ -433,11 +442,21 @@ def parse_project_turns_from_disk(project_name: str, session_id: str) -> Dict[st
                         "timestamp": row.get("timestamp", time.time())
                     })
 
-            elif t == "turn_finished":
+            elif t in ("turn_finished", "turn_aborted"):
+                turn_end_times[tid] = max(turn_end_times.get(tid, 0), row.get("timestamp", time.time()))
                 wm = data.get("working_memory", {})
                 working_memory_last = wm
                 if wm.get("current_goal") and not turns_map[tid]["user_prompt"]:
                     turns_map[tid]["user_prompt"] = wm.get("current_goal")
+
+    # 计算并写入该轮真实的发送至回答完成时间
+    for tid, tdata in turns_map.items():
+        t_start = turn_start_times.get(tid)
+        t_end = turn_end_times.get(tid)
+        if t_start and t_end and t_end >= t_start:
+            tdata["elapsed"] = round(max(1.0, t_end - t_start), 1)
+        elif not tdata.get("elapsed"):
+            tdata["elapsed"] = 1.0
 
     # 填充缺失工具的输出
     for tid, tdata in turns_map.items():
@@ -759,6 +778,13 @@ def delete_session(req: SessionActionRequest):
             target_file.unlink()
         except Exception:
             pass
+    # 同步清理此会话绑定的本地上传附件，杜绝磁盘孤儿文件堆积
+    att_dir = default_workspace.root / ".super_attachments" / req.session_id
+    if att_dir.exists():
+        try:
+            shutil.rmtree(att_dir, ignore_errors=True)
+        except Exception:
+            pass
     return {"success": True}
 
 @app.get("/api/skills")
@@ -821,11 +847,60 @@ def read_file_content(path: str = Query(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/api/attachments/upload")
+async def upload_attachments(
+    files: List[UploadFile] = File(...),
+    project: Optional[str] = Form(None),
+    session_id: Optional[str] = Form(None)
+):
+    """上传文档、图片与数据附件并返回保存路径及预览信息"""
+    proj_name = project or default_workspace.root.name
+    sid = session_id or "default"
+    save_dir = default_workspace.root / ".super_attachments" / sid
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    uploaded_items = []
+    for f in files:
+        clean_name = Path(f.filename).name
+        target_path = save_dir / clean_name
+        if target_path.exists():
+            base = target_path.stem
+            ext = target_path.suffix
+            target_path = save_dir / f"{base}_{int(time.time()*1000)}{ext}"
+
+        content = await f.read()
+        if len(content) > 50 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail=f"文件 {clean_name} 超过 50MB 大小限制，建议上传轻量级文档或图片")
+        target_path.write_bytes(content)
+
+        ftype = detect_attachment_type(clean_name)
+        resolved_path = str(target_path.resolve())
+        uploaded_items.append({
+            "id": f"att_{int(time.time()*1000)}_{len(uploaded_items)}",
+            "name": clean_name,
+            "size": len(content),
+            "type": ftype,
+            "path": resolved_path,
+            "url": f"http://127.0.0.1:8765/api/attachments/raw?path={urllib.parse.quote(resolved_path)}"
+        })
+
+    return {"attachments": uploaded_items}
+
+@app.get("/api/attachments/raw")
+def get_attachment_raw(path: str):
+    """直接读取本地附件二进制流 (用于图片渲染或文档下载)"""
+    target = Path(path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="附件不存在")
+    return FileResponse(path=str(target), filename=target.name)
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """全双工实时通信：接收 Prompt 并向前端持续广播工具流与执行结果"""
     await websocket.accept()
     loop = asyncio.get_running_loop()
+    active_tasks: Dict[str, asyncio.Task] = {}
 
     try:
         status = bridge.get_status()
@@ -842,21 +917,29 @@ async def websocket_endpoint(websocket: WebSocket):
 
             if msg_type == "prompt":
                 prompt_text = payload.get("prompt", "").strip()
-                if not prompt_text:
+                attachments = payload.get("attachments", [])
+                if not prompt_text and not attachments:
                     continue
 
                 model = payload.get("model")
                 perm_mode = payload.get("permission_mode", "auto")
                 session_id = payload.get("session_id", "default")
                 project_name = payload.get("project_name", default_workspace.root.name)
+                session_key = f"{project_name}:{session_id}"
 
                 await websocket.send_json({
                     "event": "prompt_received",
                     "prompt": prompt_text,
+                    "attachments": attachments,
                     "session_id": session_id,
                     "project": project_name,
                     "timestamp": asyncio.get_event_loop().time()
                 })
+
+                # 若当前会话已有正在运行的未完成任务，先行安全中断并注销旧任务 (对标需求 5)
+                if session_key in active_tasks and not active_tasks[session_key].done():
+                    bridge.abort_session(session_id, project_name)
+                    active_tasks[session_key].cancel()
 
                 def emit_event(ev: Dict[str, Any]):
                     ev.setdefault("session_id", session_id)
@@ -866,30 +949,50 @@ async def websocket_endpoint(websocket: WebSocket):
                         loop
                     )
 
-                try:
-                    await bridge.execute_prompt_stream(
-                        prompt=prompt_text,
-                        event_callback=emit_event,
-                        model=model,
-                        permission_mode=perm_mode,
-                        session_id=session_id,
-                        project_name=project_name
-                    )
-                except Exception as err:
-                    await websocket.send_json({
-                        "event": "error",
-                        "session_id": session_id,
-                        "project": project_name,
-                        "message": str(err)
-                    })
+                async def run_prompt_task(s_key=session_key, s_id=session_id, p_name=project_name, p_text=prompt_text, m=model, pm=perm_mode, atts=attachments):
+                    try:
+                        await bridge.execute_prompt_stream(
+                            prompt=p_text,
+                            event_callback=emit_event,
+                            model=m,
+                            permission_mode=pm,
+                            session_id=s_id,
+                            project_name=p_name,
+                            attachments=atts
+                        )
+                    except asyncio.CancelledError:
+                        logger.info(f"Prompt task cancelled for session {s_key}")
+                    except Exception as err:
+                        try:
+                            await websocket.send_json({
+                                "event": "error",
+                                "session_id": s_id,
+                                "project": p_name,
+                                "message": str(err)
+                            })
+                        except Exception:
+                            pass
+                    finally:
+                        if s_key in active_tasks and active_tasks[s_key] == asyncio.current_task():
+                            active_tasks.pop(s_key, None)
+
+                task = asyncio.create_task(run_prompt_task())
+                active_tasks[session_key] = task
 
             elif msg_type == "abort":
                 session_id = payload.get("session_id", "default")
                 project_name = payload.get("project_name", default_workspace.root.name)
+                session_key = f"{project_name}:{session_id}"
+
+                # 立即向底层 agent 派发中止信号，并取消异步任务 (对标需求 5)
                 bridge.abort_session(session_id, project_name)
+                if session_key in active_tasks and not active_tasks[session_key].done():
+                    active_tasks[session_key].cancel()
+                    active_tasks.pop(session_key, None)
+
                 await websocket.send_json({
                     "event": "assistant_response",
-                    "content": "【用户已手动暂停】已终止当前轮次的推理与工具执行。",
+                    "content": "【用户已手动暂停】已终止当前思考与工具调用。",
                     "session_id": session_id,
                     "project": project_name,
                     "timestamp": asyncio.get_event_loop().time()
@@ -905,6 +1008,10 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_json({"event": "error", "message": str(e)})
         except Exception:
             pass
+    finally:
+        for t in list(active_tasks.values()):
+            if not t.done():
+                t.cancel()
 
 
 class WorkspaceEditRequest(BaseModel):

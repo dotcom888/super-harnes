@@ -132,14 +132,30 @@ function createWindow() {
     }
   });
 
-  const devUrl = 'http://localhost:5173';
   const prodPath = path.join(__dirname, '../dist/index.html');
+  const devUrl = process.env.VITE_DEV_SERVER_URL || null;
 
-  const testReq = http.get(devUrl, () => {
-    mainWindow.loadURL(devUrl);
-  });
-  testReq.on('error', () => {
+  // 生产模式或已构建模式：直接加载本地离线静态资源，完全不占用、不依赖任何 5173 端口，彻底避免端口冲突
+  if (app.isPackaged || (!devUrl && fs.existsSync(prodPath))) {
     mainWindow.loadFile(prodPath);
+  } else if (devUrl) {
+    mainWindow.loadURL(devUrl);
+  } else {
+    // 仅在无本地 dist 且显式处于开发态时，尝试连接本地开发服务器
+    const testReq = http.get('http://localhost:5173', () => {
+      mainWindow.loadURL('http://localhost:5173');
+    });
+    testReq.on('error', () => {
+      mainWindow.loadFile(prodPath);
+    });
+  }
+
+  // 支持按 F12 或 Ctrl+Shift+I 快速开启/切换开发者工具调试
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.key === 'F12' || (input.control && input.shift && input.key.toLowerCase() === 'i')) {
+      mainWindow.webContents.toggleDevTools();
+      event.preventDefault();
+    }
   });
 
   ipcMain.on('window-minimize', () => mainWindow?.minimize());

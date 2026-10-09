@@ -292,17 +292,34 @@ class ReActAgent:
         return pruned_count
 
 
-    def run(self, user_prompt: str, verbose: bool = True, token_callback: Optional[Callable[[str], None]] = None, thought_callback: Optional[Callable[[str], None]] = None) -> str:
+    def run(
+        self, 
+        user_prompt: str, 
+        verbose: bool = True, 
+        token_callback: Optional[Callable[[str], None]] = None, 
+        thought_callback: Optional[Callable[[str], None]] = None,
+        attachments: Optional[List[Dict[str, Any]]] = None,
+        display_prompt: Optional[str] = None,
+        llm_content: Optional[Any] = None
+    ) -> str:
         """
         运行 ReAct 核心循环：
         具备轮内预算防爆炸、消息格式归一化、工作记忆轮内即时同步与事务性保护
         """
+        # 重置当前轮次中止信号，杜绝上一轮悬挂的 abort 标记误伤新会话任务 (对标需求 5)
+        self.abort_requested = False
+
         tools_schema = self.executor.registry.get_schemas()
         tools_json = json.dumps(tools_schema, ensure_ascii=False) if tools_schema else ""
         tools_tokens = self.context_manager.token_counter.count_text(tools_json)
 
-        # 开启新原子轮次
-        self.context_manager.start_new_turn(user_prompt)
+        # 开启新原子轮次（记录展示提问与附件元数据，LLM 推理直接使用增广文本或多模态结构）
+        effective_llm_content = llm_content if llm_content is not None else user_prompt
+        self.context_manager.start_new_turn(
+            display_prompt or user_prompt, 
+            attachments=attachments,
+            llm_content=effective_llm_content
+        )
 
         # 组装安全上下文
         messages, metrics = self.context_manager.build_context_with_watermark(
@@ -345,7 +362,7 @@ class ReActAgent:
             while True:
                 if getattr(self, "abort_requested", False):
                     self.abort_requested = False
-                    pause_msg = "【用户已手动暂停】已终止当前轮次的推理与工具调用。"
+                    pause_msg = "【用户已手动暂停】已终止当前思考与工具调用。"
                     logger.info("ReActAgent run aborted by user request.")
                     self.context_manager.add_assistant_message(pause_msg)
                     self.context_manager.finish_current_turn()
@@ -448,6 +465,15 @@ class ReActAgent:
                     elif verbose:
                         print(f"  [API 实际用量] 输入: {prompt_toks} Tokens | 输出: {comp_toks} Tokens | 计费总计: {total_toks} Tokens")
 
+                if getattr(self, "abort_requested", False):
+                    self.abort_requested = False
+                    pause_msg = "【用户已手动暂停】已终止当前思考与工具调用。"
+                    logger.info("ReActAgent run aborted by user request right after model completion.")
+                    self.context_manager.add_assistant_message(pause_msg)
+                    self.context_manager.finish_current_turn()
+                    turn_finished = True
+                    return pause_msg
+
                 response_msg = response.choices[0].message
                 assistant_dict = self._convert_response_to_dict(response_msg)
 
@@ -471,6 +497,15 @@ class ReActAgent:
                         response_msg.tool_calls,
                         verbose=verbose
                     )
+
+                    if getattr(self, "abort_requested", False):
+                        self.abort_requested = False
+                        pause_msg = "【用户已手动暂停】已终止当前思考与工具调用。"
+                        logger.info("ReActAgent run aborted by user request right after tool execution.")
+                        self.context_manager.add_assistant_message(pause_msg)
+                        self.context_manager.finish_current_turn()
+                        turn_finished = True
+                        return pause_msg
 
                     # 单步工具输出保护与动态水位联动
                     current_zone = metrics.get("zone", "GREEN") if ("metrics" in locals() and isinstance(metrics, dict)) else "GREEN"
@@ -572,6 +607,13 @@ class ReActAgent:
                         # 流式切片推送给客户端
                         step_len = max(2, len(final_text) // 25)
                         for i in range(0, len(final_text), step_len):
+                            if getattr(self, "abort_requested", False):
+                                self.abort_requested = False
+                                pause_msg = "【用户已手动暂停】已终止当前思考与工具调用。"
+                                self.context_manager.add_assistant_message(pause_msg)
+                                self.context_manager.finish_current_turn()
+                                turn_finished = True
+                                return pause_msg
                             token_callback(final_text[i:i+step_len])
                             time.sleep(0.015)
                     self.context_manager.add_assistant_message(assistant_dict)

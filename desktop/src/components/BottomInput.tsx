@@ -15,12 +15,16 @@ import {
   Minimize2,
   Trash2,
   Layers,
-  Square
+  Square,
+  Paperclip,
+  UploadCloud,
+  Loader2
 } from "lucide-react";
-import { TelemetryMetrics } from "../types";
+import { TelemetryMetrics, AttachmentItem } from "../types";
+import { PendingAttachmentChip } from "./AttachmentCards";
 
 interface BottomInputProps {
-  onSend: (text: string, model: string, permission: string) => void;
+  onSend: (text: string, model: string, permission: string, attachments?: AttachmentItem[]) => void;
   isLoading: boolean;
   metrics: TelemetryMetrics;
   onScrollToBottom?: () => void;
@@ -31,6 +35,8 @@ interface BottomInputProps {
   draftText?: string;
   onDraftConsumed?: () => void;
   onPause?: () => void;
+  projectName?: string;
+  sessionId?: string;
 }
 
 interface CommandItem {
@@ -51,7 +57,9 @@ export const BottomInput: React.FC<BottomInputProps> = ({
   onOpenModelSettings,
   draftText,
   onDraftConsumed,
-  onPause
+  onPause,
+  projectName,
+  sessionId
 }) => {
   const [input, setInput] = useState("");
   const [model, setModel] = useState(selectedModel || models[0] || "");
@@ -60,7 +68,82 @@ export const BottomInput: React.FC<BottomInputProps> = ({
   const [showPermMenu, setShowPermMenu] = useState(false);
   const [showCommandMenu, setShowCommandMenu] = useState(false);
 
+  // 附件上传与拖拽状态
+  const [attachments, setAttachments] = useState<AttachmentItem[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const dragCounter = useRef(0);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const handleUploadFiles = async (files: FileList | File[]) => {
+    if (!files || files.length === 0) return;
+    setIsUploading(true);
+    const formData = new FormData();
+    Array.from(files).forEach((f) => formData.append("files", f));
+    if (projectName) formData.append("project", projectName);
+    if (sessionId) formData.append("session_id", sessionId);
+
+    try {
+      const res = await fetch("http://127.0.0.1:8765/api/attachments/upload", {
+        method: "POST",
+        body: formData
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.attachments) {
+          setAttachments((prev) => [...prev, ...data.attachments]);
+        }
+      }
+    } catch (err) {
+      console.error("上传附件异常:", err);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current += 1;
+    try {
+      e.dataTransfer.dropEffect = "copy";
+    } catch {}
+    if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+      setIsDragging(true);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      e.dataTransfer.dropEffect = "copy";
+    } catch {}
+    if (!isDragging) {
+      setIsDragging(true);
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current -= 1;
+    if (dragCounter.current <= 0) {
+      dragCounter.current = 0;
+      setIsDragging(false);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current = 0;
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleUploadFiles(e.dataTransfer.files);
+    }
+  };
 
   useEffect(() => {
     if (selectedModel !== undefined) {
@@ -149,9 +232,10 @@ export const BottomInput: React.FC<BottomInputProps> = ({
 
   const handleSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!input.trim() || isLoading) return;
-    onSend(input, model, permission);
+    if ((!input.trim() && attachments.length === 0) || isLoading || isUploading) return;
+    onSend(input, model, permission, attachments);
     setInput("");
+    setAttachments([]);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -182,8 +266,37 @@ export const BottomInput: React.FC<BottomInputProps> = ({
         </button>
       )}
 
-      {/* 底部吸附输入框卡片 */}
-      <div className="w-full bg-white dark:bg-[#181920] border border-gray-200 dark:border-gray-800 shadow-sm focus-within:shadow-md focus-within:border-gray-300 dark:focus-within:border-gray-700 rounded-2xl p-3 transition">
+      {/* 底部吸附输入框卡片 (支持拖拽上传) */}
+      <div 
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className={`w-full bg-white dark:bg-[#181920] border ${
+          isDragging ? "border-blue-500 ring-2 ring-blue-500/20" : "border-gray-200 dark:border-gray-800"
+        } shadow-sm focus-within:shadow-md focus-within:border-gray-300 dark:focus-within:border-gray-700 rounded-2xl p-3 transition relative`}
+      >
+        {/* 拖拽感应悬浮蒙层 */}
+        {isDragging && (
+          <div className="absolute inset-0 bg-blue-50/95 dark:bg-[#161a29]/95 border-2 border-dashed border-blue-500 rounded-2xl flex items-center justify-center gap-2.5 z-40 text-blue-600 dark:text-blue-400 font-medium text-xs backdrop-blur-2xs pointer-events-none select-none">
+            <UploadCloud size={20} className="animate-bounce" />
+            <span>松开鼠标立即上传文档或图片附件...</span>
+          </div>
+        )}
+
+        {/* 待发送附件缩略展示栏 */}
+        {attachments.length > 0 && (
+          <div className="flex flex-wrap gap-2 pb-2 mb-2 border-b border-gray-100 dark:border-gray-800">
+            {attachments.map((att) => (
+              <PendingAttachmentChip 
+                key={att.id} 
+                attachment={att} 
+                onRemove={(id) => setAttachments((prev) => prev.filter((a) => a.id !== id))} 
+              />
+            ))}
+          </div>
+        )}
+
         <textarea
           ref={textareaRef}
           value={input}
@@ -247,6 +360,35 @@ export const BottomInput: React.FC<BottomInputProps> = ({
                   </div>
                 </>
               )}
+            </div>
+
+            {/* 新增附件上传按钮 📎 (支持多选与各种文档/图片格式) */}
+            <div className="relative">
+              <input 
+                type="file" 
+                ref={fileInputRef} 
+                multiple 
+                className="hidden" 
+                onChange={(e) => {
+                  if (e.target.files) {
+                    handleUploadFiles(e.target.files);
+                    e.target.value = "";
+                  }
+                }} 
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isUploading}
+                className="p-1.5 rounded-lg text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-[#20232e] transition cursor-pointer flex items-center justify-center"
+                title="添加附件或图片 (支持 txt/md/doc/pdf/excel/图片，亦可直接拖入)"
+              >
+                {isUploading ? (
+                  <Loader2 size={16} className="text-blue-600 animate-spin" />
+                ) : (
+                  <Paperclip size={16} />
+                )}
+              </button>
             </div>
 
             {/* 权限控制下拉项：实际支持的 AUTO 模式与 ASK 模式 */}

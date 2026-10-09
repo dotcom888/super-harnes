@@ -57,3 +57,6 @@ build_server/
 build_test/
 desktop/bin/
 *.spec
+
+# Local uploaded attachments
+.super_attachments/

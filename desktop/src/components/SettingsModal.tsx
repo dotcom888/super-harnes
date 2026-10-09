@@ -587,7 +587,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <img src={LOGO_DATA_URI} alt="super logo" className="w-10 h-10 object-contain" />
                   <div>
                     <h2 className="text-base font-bold text-gray-900 dark:text-white">super HARNESS 桌面客户端</h2>
-                    <p className="text-xs text-gray-500 dark:text-gray-400">版本 v5.7.4 · DeepSeek Harness 架构增强版</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">版本 v5.7.5 · DeepSeek Harness 架构增强版</p>
                   </div>
                 </div>
 

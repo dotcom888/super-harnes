@@ -13,6 +13,7 @@ from typing import Dict, Any, Optional, Callable, List
 from pathlib import Path
 
 from core.agent import ReActAgent
+from server.attachment_parser import extract_attachment_summary
 from tools.framework.workspace import default_workspace, WorkspaceContext
 from core.session import SessionManager
 from tools.framework.policies import default_policy, PolicyDecision
@@ -261,7 +262,8 @@ class AgentBridge:
         model: Optional[str] = None,
         permission_mode: Optional[str] = None,
         session_id: Optional[str] = None,
-        project_name: Optional[str] = None
+        project_name: Optional[str] = None,
+        attachments: Optional[List[Dict[str, Any]]] = None
     ) -> str:
         """异步执行用户 Prompt，并以结构化事件流推向前端"""
         active_sid = session_id or "default"
@@ -423,16 +425,67 @@ class AgentBridge:
                     "timestamp": time.time()
                 })
 
+            augmented_prompt = prompt
+            image_data_urls = []
+
+            if attachments and len(attachments) > 0:
+                att_sections = [f"【用户随消息上传了 {len(attachments)} 个附件】"]
+                for idx, att in enumerate(attachments, 1):
+                    att_path_str = att.get("path", "")
+                    att_name = att.get("name", Path(att_path_str).name if att_path_str else f"附件_{idx}")
+                    att_path = Path(att_path_str) if att_path_str else None
+                    if att_path and att_path.exists():
+                        summary_info = extract_attachment_summary(att_path, filename=att_name)
+                        att_sections.append(f"\n--- [附件 {idx}: {att_name}] (类型: {summary_info['type']}, 大小: {summary_info['size']} 字节) ---")
+                        att_sections.append(f"本地保存路径: `{summary_info['path']}`")
+                        if summary_info["type"] == "image" and summary_info.get("image_meta", {}).get("data_url"):
+                            image_data_urls.append(summary_info["image_meta"]["data_url"])
+                            att_sections.append("（注：图片已通过多模态视觉通道直接呈现在当前消息中，你可以直接观察并解读图片视觉细节）")
+                        elif summary_info.get("extracted_text"):
+                            att_sections.append("【文件已预先提取正文与结构内容如下】:")
+                            att_sections.append(summary_info["extracted_text"])
+                            att_sections.append("【系统强力指导：上述附件全部内容已在此完整提取提供！请直接基于以上提取的正文向用户给出精准、详尽的分析答复，严禁调用任何读取文件或编写执行 Python 脚本的工具！】")
+                    else:
+                        att_sections.append(f"\n--- [附件 {idx}: {att_name}] ---")
+                        if att.get("extracted_text"):
+                            att_sections.append(att["extracted_text"])
+
+                att_sections.append("\n【用户具体提问/分析指令】:")
+                att_sections.append(prompt or "请详细分析并说明该附件的具体内容。")
+                augmented_prompt = "\n".join(att_sections)
+
+            # 构造多模态或增强文本输入
+            llm_content: Any = augmented_prompt
+            if image_data_urls:
+                llm_content = [{"type": "text", "text": augmented_prompt}]
+                for d_url in image_data_urls:
+                    llm_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": d_url}
+                    })
+
             # 在独立工作线程中运行该专属 Agent 的 run() 并挂接流式 Token 回调与实时思考回调
             result = await loop.run_in_executor(
                 None,
-                lambda: cur_agent.run(prompt, False, token_callback=on_token_chunk, thought_callback=on_thought_chunk)
+                lambda: cur_agent.run(
+                    augmented_prompt, 
+                    False, 
+                    token_callback=on_token_chunk, 
+                    thought_callback=on_thought_chunk,
+                    attachments=attachments,
+                    display_prompt=prompt,
+                    llm_content=llm_content
+                )
             )
 
-            # 最终答复确认推送
+            # 计算从用户发送到回复完成的真实总耗时
+            elapsed_total = round(max(1.0, time.time() - start_time), 1)
+
+            # 最终答复确认推送 (包含真实耗时 elapsed)
             wrapped_callback({
                 "event": "assistant_response",
                 "content": result,
+                "elapsed": elapsed_total,
                 "timestamp": time.time()
             })
 
@@ -453,6 +506,10 @@ class AgentBridge:
             })
 
             return result
+        except asyncio.CancelledError:
+            logger.info(f"AgentBridge: execute_prompt_stream cancelled for session '{active_sid}'")
+            cur_agent.abort()
+            raise
         finally:
             cur_agent.executor = orig_executor
 

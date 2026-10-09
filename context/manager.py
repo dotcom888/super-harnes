@@ -435,14 +435,28 @@ class ContextManager:
             return trimmed[:120]
         return None
 
-    def start_new_turn(self, user_content: str):
+    def start_new_turn(
+        self, 
+        user_content: str, 
+        attachments: Optional[List[Dict[str, Any]]] = None,
+        llm_content: Optional[Any] = None
+    ):
         self.turn_count += 1
         self.current_turn = TurnChunk(turn_id=self.turn_count)
         if hasattr(self, "snapshot_manager") and self.snapshot_manager:
             self.snapshot_manager.set_active_turn(self.session_id, self.turn_count)
-        user_msg = {"role": "user", "content": user_content}
+        user_msg: Dict[str, Any] = {"role": "user", "content": user_content}
+        if attachments:
+            user_msg["attachments"] = attachments
+        if llm_content is not None:
+            user_msg["llm_content"] = llm_content
         self.current_turn.add_message(user_msg)
-        self._append_to_disk("user_message", user_msg)
+
+        # 存盘使用紧凑版本，不将超大 base64 图像块硬编码写入磁盘历史
+        disk_msg = {"role": "user", "content": user_content}
+        if attachments:
+            disk_msg["attachments"] = attachments
+        self._append_to_disk("user_message", disk_msg)
 
         extracted_goal = self._extract_clean_goal(user_content)
         if extracted_goal:
@@ -910,12 +924,33 @@ class ContextManager:
             wm_context = self.working_memory.format_prompt_context(compact=False)
         if current_turn_msgs:
             first_user_msg = current_turn_msgs[0]
+            # 优先使用增强提问或多模态结构 (llm_content)，确保模型直接感知提取后文本与视觉图像
+            active_content = first_user_msg.get("llm_content", first_user_msg.get("content", ""))
+
             if wm_context and first_user_msg.get("role") == "user":
-                annotated_user_content = f"{wm_context}\n\n[用户当前提问]: {first_user_msg.get('content', '')}"
-                final_messages.append({"role": "user", "content": annotated_user_content})
+                if isinstance(active_content, list):
+                    annotated_list = []
+                    wm_injected = False
+                    for item in active_content:
+                        if isinstance(item, dict) and item.get("type") == "text" and not wm_injected:
+                            annotated_list.append({
+                                "type": "text",
+                                "text": f"{wm_context}\n\n[用户当前提问]: {item.get('text', '')}"
+                            })
+                            wm_injected = True
+                        else:
+                            annotated_list.append(item)
+                    if not wm_injected:
+                        annotated_list.insert(0, {"type": "text", "text": wm_context})
+                    final_messages.append({"role": "user", "content": annotated_list})
+                else:
+                    annotated_user_content = f"{wm_context}\n\n[用户当前提问]: {active_content}"
+                    final_messages.append({"role": "user", "content": annotated_user_content})
                 final_messages.extend(current_turn_msgs[1:])
             else:
-                final_messages.extend(current_turn_msgs)
+                eff_msg = {**first_user_msg, "content": active_content}
+                final_messages.append(eff_msg)
+                final_messages.extend(current_turn_msgs[1:])
         elif wm_context:
             # 兼容无当前轮次（纯测试构造场景）
             final_messages.append({"role": "system", "content": wm_context})

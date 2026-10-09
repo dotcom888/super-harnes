@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { 
   User, 
   ChevronDown, 
@@ -20,10 +20,12 @@ import {
 } from "lucide-react";
 import { TurnData, TrajectoryStep } from "../types";
 import { LOGO_DATA_URI } from "../assets/logoData";
+import { ChatAttachmentItemCard } from "./AttachmentCards";
 
 interface ChatMessageProps {
   turn: TurnData;
   isLoading?: boolean;
+  isLatestTurn?: boolean;
   onOpenFile?: (path: string) => void;
   onEditPrompt?: (text: string) => void;
   onResendTurn?: (turnId: number, newPrompt: string) => void;
@@ -555,11 +557,19 @@ const ToolStepCard: React.FC<{ step: TrajectoryStep; onOpenFile?: (path: string)
 export const ChatMessage: React.FC<ChatMessageProps> = ({ 
   turn, 
   isLoading = false,
+  isLatestTurn = false,
   onOpenFile, 
   onEditPrompt,
   onResendTurn
 }) => {
-  const [traceExpanded, setTraceExpanded] = useState(isLoading);
+  const [traceExpanded, setTraceExpanded] = useState(false);
+
+  // 运行中默认展开查看实时轨迹；一旦运行结束或暂停，思考过程自动收起折叠 (对标需求 4)
+  useEffect(() => {
+    if (!isLoading) {
+      setTraceExpanded(false);
+    }
+  }, [isLoading]);
   const [copiedAsst, setCopiedAsst] = useState(false);
   const [copiedUser, setCopiedUser] = useState(false);
   const [liked, setLiked] = useState<boolean | null>(null);
@@ -625,8 +635,8 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 
   return (
     <div className="space-y-3.5 mb-6 select-text">
-      {/* 1. 用户提问气泡 (支持气泡原地就地编辑重发与复制) */}
-      {turn.user_prompt && (
+      {/* 1. 用户提问气泡 (支持气泡原地就地编辑重发与复制，支持附件展示) */}
+      {(turn.user_prompt || (turn.attachments && turn.attachments.length > 0)) && (
         <div className="flex items-start gap-2.5 justify-end group">
           {!isEditing && (
             <div className="flex items-center gap-1.5 self-end mb-1 text-gray-400 text-xs select-none">
@@ -638,16 +648,18 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
               >
                 {copiedUser ? <Check size={12} className="text-green-600" /> : <Copy size={12} />}
               </button>
-              <button
-                onClick={() => {
-                  setEditText(turn.user_prompt);
-                  setIsEditing(true);
-                }}
-                className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-700 dark:hover:text-gray-300 transition cursor-pointer"
-                title="在气泡处编辑并重发"
-              >
-                <Edit2 size={12} />
-              </button>
+              {isLatestTurn && (
+                <button
+                  onClick={() => {
+                    setEditText(turn.user_prompt);
+                    setIsEditing(true);
+                  }}
+                  className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-700 dark:hover:text-gray-300 transition cursor-pointer"
+                  title="在气泡处编辑并重发"
+                >
+                  <Edit2 size={12} />
+                </button>
+              )}
             </div>
           )}
 
@@ -690,8 +702,21 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
             </div>
           ) : (
             /* 常规展示气泡 */
-            <div className="max-w-2xl bg-[#f0f4f9] dark:bg-[#1f222e] text-gray-800 dark:text-gray-100 rounded-2xl px-4 py-2.5 text-xs leading-relaxed shadow-2xs border border-gray-100/90 dark:border-gray-800 select-text">
-              <div className="whitespace-pre-wrap break-words">{turn.user_prompt}</div>
+            <div className="max-w-2xl flex flex-col items-end gap-2 select-text">
+              {/* 渲染随本轮提问上传的附件或图片卡片 */}
+              {turn.attachments && turn.attachments.length > 0 && (
+                <div className="flex flex-wrap gap-2 justify-end max-w-full">
+                  {turn.attachments.map((att) => (
+                    <ChatAttachmentItemCard key={att.id} attachment={att} />
+                  ))}
+                </div>
+              )}
+
+              {turn.user_prompt && (
+                <div className="bg-[#f0f4f9] dark:bg-[#1f222e] text-gray-800 dark:text-gray-100 rounded-2xl px-4 py-2.5 text-xs leading-relaxed shadow-2xs border border-gray-100/90 dark:border-gray-800">
+                  <div className="whitespace-pre-wrap break-words">{turn.user_prompt}</div>
+                </div>
+              )}
             </div>
           )}
 
@@ -701,10 +726,10 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
         </div>
       )}
 
-      {/* 2. 思考过程与工具调用过程 (对标图四：执行时流式展开，完成后自动折叠) */}
-      {hasSteps && (
+      {/* 2. 思考过程与工具调用过程 (对标图四：执行时流式展开，完成后自动折叠，发消息立即显示动效) */}
+      {(hasSteps || isLoading) && (
         <div className="max-w-3xl mr-auto pl-10">
-          {!isLoading && turn.assistant_response && (
+          {!isLoading && (turn.assistant_response || hasSteps) && hasSteps && (
             <div className="mb-2 flex items-center gap-2">
               <button
                 type="button"

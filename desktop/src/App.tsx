@@ -12,7 +12,7 @@ import { SettingsModal } from "./components/SettingsModal";
 import { PluginsModal } from "./components/PluginsModal";
 import { ApprovalModal } from "./components/ApprovalModal";
 import { ConfirmModal } from "./components/ConfirmModal";
-import { SessionInfo, ProjectInfo, ToolAction, TaskItem, TurnData, TelemetryMetrics, TrajectoryStep } from "./types";
+import { SessionInfo, ProjectInfo, ToolAction, TaskItem, TurnData, TelemetryMetrics, TrajectoryStep, AttachmentItem } from "./types";
 import { TrajectoryTimeline } from "./components/TrajectoryTimeline";
 import { LOGO_DATA_URI } from "./assets/logoData";
 
@@ -76,6 +76,7 @@ export const App: React.FC = () => {
 
   // 多会话独立状态隔离字典 (按照 project:session_id 绝对隔离)
   const [hasStarted, setHasStarted] = useState(false);
+  const [isWsConnected, setIsWsConnected] = useState(true);
   const [sessionTurnsMap, setSessionTurnsMap] = useState<Record<string, TurnData[]>>({});
   const [sessionActionsMap, setSessionActionsMap] = useState<Record<string, ToolAction[]>>({});
   const [sessionThoughtMap, setSessionThoughtMap] = useState<Record<string, string>>({});
@@ -124,6 +125,22 @@ export const App: React.FC = () => {
   const scrollEndRef = useRef<HTMLDivElement | null>(null);
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
   const sessionScrollMap = useRef<Record<string, number>>({});
+
+  // 全局阻止默认拖拽行为，防止 Electron 误将拖入窗口边缘的文件作为网页打开
+  useEffect(() => {
+    const handleGlobalDragOver = (e: DragEvent) => {
+      e.preventDefault();
+    };
+    const handleGlobalDrop = (e: DragEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener("dragover", handleGlobalDragOver);
+    window.addEventListener("drop", handleGlobalDrop);
+    return () => {
+      window.removeEventListener("dragover", handleGlobalDragOver);
+      window.removeEventListener("drop", handleGlobalDrop);
+    };
+  }, []);
 
   // 1. 初始化加载所有工作区项目、有效模型列表与活跃会话 (若后端正在启动，持续轮询重试直至成功获取真实项目与历史)
   useEffect(() => {
@@ -202,7 +219,21 @@ export const App: React.FC = () => {
             if (curList.length > data.turns.length) {
               return prev;
             }
-            return { ...prev, [key]: data.turns };
+            // 深度合并轮次：若内存中已有完整的 assistant_response，避免被磁盘临时空数据覆盖
+            const mergedTurns = data.turns.map((dTurn: TurnData, idx: number) => {
+              const memoryTurn = curList[idx];
+              if (memoryTurn && memoryTurn.turn_id === dTurn.turn_id) {
+                return {
+                  ...dTurn,
+                  attachments: (dTurn.attachments && dTurn.attachments.length > 0) ? dTurn.attachments : (memoryTurn.attachments || []),
+                  assistant_response: dTurn.assistant_response || memoryTurn.assistant_response || "",
+                  thought: dTurn.thought || memoryTurn.thought || "",
+                  steps: (dTurn.steps && dTurn.steps.length > 0) ? dTurn.steps : (memoryTurn.steps || [])
+                };
+              }
+              return dTurn;
+            });
+            return { ...prev, [key]: mergedTurns };
           });
           setSessionActionsMap((prev) => ({
             ...prev,
@@ -262,7 +293,12 @@ export const App: React.FC = () => {
           setSessionTurnsMap((prev) => {
             const curList = prev[key] || [];
             if (curList.length === 0 && key === getSessionKey(projectNameRef.current, activeSessionIdRef.current)) {
-              setHasStarted(false);
+              const currentProjObj = projects.find((p) => p.name === proj);
+              const sessionList = currentProjObj ? currentProjObj.sessions : sessions;
+              const targetSessionMeta = sessionList?.find((s) => s.session_id === sid);
+              if (!targetSessionMeta || targetSessionMeta.turn_count === 0) {
+                setHasStarted(false);
+              }
             }
             return prev;
           });
@@ -457,7 +493,8 @@ export const App: React.FC = () => {
                 const updated = [...list];
                 updated[lastIdx] = {
                   ...updated[lastIdx],
-                  assistant_response: payload.content
+                  assistant_response: payload.content,
+                  elapsed: payload.elapsed !== undefined ? payload.elapsed : updated[lastIdx].elapsed
                 };
                 return { ...prev, [targetKey]: updated };
               });
@@ -482,7 +519,12 @@ export const App: React.FC = () => {
           } catch (e) {}
         };
 
+        ws.onopen = () => {
+          setIsWsConnected(true);
+        };
+
         ws.onclose = () => {
+          setIsWsConnected(false);
           if (!isUnmounted) {
             setTimeout(connect, 2000);
           }
@@ -550,10 +592,15 @@ export const App: React.FC = () => {
       .catch(() => {});
   };
 
-  // 发送 Prompt 消息 (多会话并发状态完全隔离)
-  const handleSendPrompt = (text: string, model: string, permission: string) => {
+  // 发送 Prompt 消息 (多会话并发状态完全隔离，支持附件上传与感知)
+  const handleSendPrompt = (
+    text: string, 
+    model: string, 
+    permission: string, 
+    attachments: AttachmentItem[] = []
+  ) => {
     const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!trimmed && attachments.length === 0) return;
 
     const targetKey = getSessionKey(projectName, activeSessionId);
     const isFirstTurn = !hasStarted || (sessionTurnsMap[targetKey] || []).length === 0;
@@ -567,6 +614,10 @@ export const App: React.FC = () => {
     } else {
       setHasStarted(true);
 
+      const titleCandidate = trimmed 
+        ? text.slice(0, 24) 
+        : (attachments[0] ? `附件: ${attachments[0].name}` : "新会话");
+
       // 若是在新建会话页面首次发送消息，立刻在该工作区侧边栏中渲染出该新建聊天框
       if (isFirstTurn) {
         setProjects((prevProjs) =>
@@ -578,7 +629,7 @@ export const App: React.FC = () => {
                   session_id: activeSessionId,
                   is_active: true,
                   turn_count: 1,
-                  current_goal: text.slice(0, 24),
+                  current_goal: titleCandidate,
                   time_ago: "刚刚",
                   is_pinned: false
                 };
@@ -600,32 +651,49 @@ export const App: React.FC = () => {
         }).catch(() => {});
       }
 
-      // 乐观添加新的一轮至专属隔离会话字典
+      // 乐观添加新的一轮至专属隔离会话字典 (包含附件)
       const curList = sessionTurnsMap[targetKey] || [];
       const tempTurn: TurnData = {
         turn_id: curList.length + 1,
         user_prompt: text,
-        thought: "",
+        attachments: attachments,
+        thought: "正在深度思考与执行下一步排查...",
         assistant_response: "",
         actions: [],
+        steps: [],
         timestamp: Date.now() / 1000
       };
       setSessionTurnsMap((prev) => ({
         ...prev,
         [targetKey]: [...(prev[targetKey] || []), tempTurn]
       }));
-      setSessionThoughtMap((prev) => ({ ...prev, [targetKey]: "" }));
+      setSessionThoughtMap((prev) => ({ ...prev, [targetKey]: "正在深度思考与执行下一步排查..." }));
+
+      // 发送消息后模拟鼠标平滑下滑至最新消息处 (对标需求 1)
+      setTimeout(() => {
+        if (chatContainerRef.current) {
+          chatContainerRef.current.scrollTo({
+            top: chatContainerRef.current.scrollHeight,
+            behavior: "smooth"
+          });
+        }
+        scrollEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      }, 50);
     }
 
     // 仅锁定当前复合键对应的会话
     setRunningSessions((prev) => ({ ...prev, [targetKey]: true }));
-    setSessionTitle(text.slice(0, 24));
+    const titleCandidate = trimmed 
+      ? text.slice(0, 24) 
+      : (attachments[0] ? `附件: ${attachments[0].name}` : "新会话");
+    setSessionTitle(titleCandidate);
 
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(
         JSON.stringify({
           type: "prompt",
           prompt: text,
+          attachments: attachments,
           model: model,
           permission_mode: permission.toLowerCase().includes("ask") ? "ask" : "auto",
           session_id: activeSessionId,
@@ -726,7 +794,16 @@ export const App: React.FC = () => {
     if (cachedTurns && cachedTurns.length > 0) {
       setHasStarted(true);
     } else {
-      setHasStarted(false);
+      // 检查当前会话是否为既有历史会话 (避免在数据返回前闪烁新建会话/空态视图)
+      const currentProjObj = projects.find((p) => p.name === targetProj);
+      const sessionList = currentProjObj ? currentProjObj.sessions : sessions;
+      const targetSessionMeta = sessionList?.find((s) => s.session_id === sid);
+      if (targetSessionMeta && (targetSessionMeta.turn_count > 0 || targetSessionMeta.current_goal)) {
+        setHasStarted(true);
+      } else {
+        // 点击侧边栏已有会话时，绝不提前置为 false，先保持为 true 显示过渡态，彻底杜绝闪烁新建会话页面
+        setHasStarted(true);
+      }
     }
 
     loadSessionTurns(sid, targetProj);
@@ -937,6 +1014,12 @@ export const App: React.FC = () => {
 
       {/* 2. 主操作区 */}
       <div className="flex-1 h-full flex flex-col bg-white dark:bg-[#0f1117] overflow-hidden relative transition-colors">
+        {!isWsConnected && (
+          <div className="w-full bg-amber-500/10 border-b border-amber-500/20 px-4 py-1.5 flex items-center justify-center gap-2 text-xs text-amber-600 dark:text-amber-400 select-none animate-pulse z-50">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
+            <span>正在连接后端服务 (127.0.0.1:8765)... 若刚启动请稍候</span>
+          </div>
+        )}
         {/* 顶部标题栏 (展示当前工程与对话/轨迹切换，未开始时显示窗口操作按钮) */}
         {hasStarted ? (
           <Header
@@ -965,6 +1048,7 @@ export const App: React.FC = () => {
             /* 空态居中视图：支持选择工作区、添加磁盘项目、+ 号快捷指令与配置模型 */
             <EmptyState
               projectName={projectName}
+              sessionId={activeSessionId}
               projects={projects}
               modeName={modeName}
               onSend={handleSendPrompt}
@@ -983,16 +1067,26 @@ export const App: React.FC = () => {
               {activeTab === "chat" ? (
                 /* 对话流视图：展示完整历史问答轮次、实时流式思考与折叠步骤 (对标图四) */
                 <div className="space-y-2 flex-1">
-                  {turns.map((turn, idx) => (
-                    <ChatMessage
-                      key={turn.turn_id}
-                      turn={turn}
-                      isLoading={isCurrentSessionLoading && idx === turns.length - 1}
-                      onOpenFile={(p) => setSelectedFile(p)}
-                      onEditPrompt={(txt) => setDraftPrompt(txt)}
-                      onResendTurn={handleResendTurn}
-                    />
-                  ))}
+                  {turns.length === 0 ? (
+                    <div className="flex-1 flex items-center justify-center text-gray-400 dark:text-gray-500 py-24 select-none">
+                      <div className="flex items-center gap-2.5 text-xs">
+                        <span className="w-2 h-2 rounded-full bg-blue-500 animate-ping" />
+                        <span>正在加载历史会话...</span>
+                      </div>
+                    </div>
+                  ) : (
+                    turns.map((turn, idx) => (
+                      <ChatMessage
+                        key={turn.turn_id}
+                        turn={turn}
+                        isLoading={isCurrentSessionLoading && idx === turns.length - 1}
+                        isLatestTurn={idx === turns.length - 1}
+                        onOpenFile={(p) => setSelectedFile(p)}
+                        onEditPrompt={(txt) => setDraftPrompt(txt)}
+                        onResendTurn={handleResendTurn}
+                      />
+                    ))
+                  )}
                   {isCurrentSessionLoading && turns.length === 0 && (
                     <div className="flex items-center gap-3 p-3 bg-blue-50/50 border border-blue-100 rounded-2xl text-xs text-blue-700 animate-pulse">
                       <img src={LOGO_DATA_URI} alt="super logo" className="w-5 h-5 object-contain shrink-0" />
@@ -1018,7 +1112,7 @@ export const App: React.FC = () => {
           )}
         </div>
 
-        {/* 底部吸附输入栏 (带 '+' 快捷指令菜单、AUTO 模式、点击空白关闭下拉) */}
+        {/* 底部吸附输入栏 (带 '+' 快捷指令菜单、📎 附件上传、AUTO 模式、点击空白关闭下拉) */}
         {hasStarted && (
           <BottomInput
             onSend={handleSendPrompt}
@@ -1031,6 +1125,8 @@ export const App: React.FC = () => {
             draftText={draftPrompt}
             onDraftConsumed={() => setDraftPrompt("")}
             onPause={handlePause}
+            projectName={projectName}
+            sessionId={activeSessionId}
           />
         )}
       </div>

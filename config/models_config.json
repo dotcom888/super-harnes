@@ -1,4 +1,16 @@
 {
-  "current_model": "",
-  "providers": []
+  "current_model": "gemini-3.8-flash-high",
+  "providers": [
+    {
+      "id": "provider_1791504270",
+      "name": "gemini",
+      "base_url": "http://127.0.0.1:8045/v1",
+      "api_key": "sk-e04b11626651452c83f1d7848c248505",
+      "models": [
+        "gemini-3.8-flash-high"
+      ],
+      "is_custom": true,
+      "status": "connected"
+    }
+  ]
 }

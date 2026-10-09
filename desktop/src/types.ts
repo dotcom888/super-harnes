@@ -1,3 +1,13 @@
+export interface AttachmentItem {
+  id: string;
+  name: string;
+  size: number;
+  type: 'text' | 'word' | 'pdf' | 'excel' | 'image' | 'other' | string;
+  path: string;
+  url?: string;
+  dataUrl?: string;
+}
+
 export interface ToolAction {
   id: string;
   tool: string;
@@ -36,6 +46,7 @@ export interface TrajectoryStep {
 export interface TurnData {
   turn_id: number;
   user_prompt: string;
+  attachments?: AttachmentItem[];
   thought?: string;
   assistant_response?: string;
   actions: ToolAction[];
