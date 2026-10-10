@@ -13,30 +13,30 @@ export const WindowControls: React.FC = () => {
   };
 
   return (
-    <div className="flex items-center titlebar-no-drag select-none">
+    <div className="h-8 flex items-stretch titlebar-no-drag select-none shrink-0">
       <button 
         type="button"
         onClick={handleMinimize} 
-        className="w-8 h-8 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-100 transition rounded cursor-pointer"
+        className="w-[46px] h-8 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:bg-black/5 dark:hover:bg-white/10 hover:text-gray-900 dark:hover:text-gray-100 transition-colors cursor-pointer"
         title="最小化"
       >
-        <Minus size={14} />
+        <Minus size={13} strokeWidth={1.5} />
       </button>
       <button 
         type="button"
         onClick={handleMaximize} 
-        className="w-8 h-8 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-100 transition rounded cursor-pointer"
+        className="w-[46px] h-8 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:bg-black/5 dark:hover:bg-white/10 hover:text-gray-900 dark:hover:text-gray-100 transition-colors cursor-pointer"
         title="最大化"
       >
-        <Square size={12} />
+        <Square size={11} strokeWidth={1.5} />
       </button>
       <button 
         type="button"
         onClick={handleClose} 
-        className="w-8 h-8 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:bg-red-500 hover:text-white dark:hover:bg-red-600 dark:hover:text-white transition rounded cursor-pointer"
+        className="w-[46px] h-8 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:bg-[#e81123] hover:text-white dark:hover:bg-[#e81123] dark:hover:text-white transition-colors cursor-pointer"
         title="关闭"
       >
-        <X size={15} />
+        <X size={14} strokeWidth={1.5} />
       </button>
     </div>
   );

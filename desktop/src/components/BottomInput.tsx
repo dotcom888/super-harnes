@@ -38,6 +38,8 @@ interface BottomInputProps {
   onPause?: () => void;
   projectName?: string;
   sessionId?: string;
+  permissionMode?: string;
+  onPermissionChange?: (newMode: string) => void;
 }
 
 interface CommandItem {
@@ -61,11 +63,19 @@ export const BottomInput: React.FC<BottomInputProps> = ({
   onDraftConsumed,
   onPause,
   projectName,
-  sessionId
+  sessionId,
+  permissionMode,
+  onPermissionChange
 }) => {
   const [input, setInput] = useState("");
   const [model, setModel] = useState(selectedModel || models[0] || "");
-  const [permission, setPermission] = useState("AUTO 模式");
+  const [permission, setPermission] = useState(permissionMode || "AUTO 模式");
+
+  useEffect(() => {
+    if (permissionMode) {
+      setPermission(permissionMode);
+    }
+  }, [permissionMode]);
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showPermMenu, setShowPermMenu] = useState(false);
   const [showCommandMenu, setShowCommandMenu] = useState(false);
@@ -421,7 +431,11 @@ export const BottomInput: React.FC<BottomInputProps> = ({
                     ].map((item) => (
                       <div
                         key={item.id}
-                        onClick={() => { setPermission(item.id); setShowPermMenu(false); }}
+                        onClick={() => {
+                          setPermission(item.id);
+                          setShowPermMenu(false);
+                          onPermissionChange?.(item.id);
+                        }}
                         className={`px-3 py-2 hover:bg-gray-50 dark:hover:bg-[#222534] cursor-pointer flex flex-col transition ${
                           permission === item.id ? "text-blue-600 font-semibold bg-blue-50/50" : "text-gray-700"
                         }`}

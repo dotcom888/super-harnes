@@ -116,3 +116,12 @@ export interface SystemStatus {
   tools_count: number;
   mcp_clients_count: number;
 }
+export interface UserInputRequest {
+  request_id: string;
+  question: string;
+  header?: string;
+  options?: string[];
+  allow_custom?: boolean;
+  session_id?: string;
+  project?: string;
+}

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -7,6 +7,7 @@ const http = require('http');
 let mainWindow = null;
 let pythonProcess = null;
 const BACKEND_PORT = 8765;
+const terminalSessions = new Map();
 
 function checkBackendReady(callback) {
   const req = http.get(`http://127.0.0.1:${BACKEND_PORT}/api/status`, (res) => {
@@ -22,12 +23,10 @@ function checkBackendReady(callback) {
 
 function getBundledServerExe() {
   const exeName = process.platform === 'win32' ? 'super-server.exe' : 'super-server';
-  // 1. 打包生产环境: process.resourcesPath/bin/super-server/super-server.exe
   const packagedPath = path.join(process.resourcesPath, 'bin', 'super-server', exeName);
   if (fs.existsSync(packagedPath)) {
     return packagedPath;
   }
-  // 2. 本地开发环境: desktop/bin/super-server/super-server.exe
   const devPath = path.resolve(__dirname, '../bin/super-server', exeName);
   if (fs.existsSync(devPath)) {
     return devPath;
@@ -99,7 +98,21 @@ function startBackendDaemon() {
   });
 }
 
+function killAllTerminals() {
+  for (const [id, proc] of terminalSessions.entries()) {
+    try {
+      if (process.platform === 'win32') {
+        spawn('taskkill', ['/pid', String(proc.pid), '/f', '/t']);
+      } else {
+        proc.kill('SIGTERM');
+      }
+    } catch (e) {}
+  }
+  terminalSessions.clear();
+}
+
 function killBackend() {
+  killAllTerminals();
   if (pythonProcess) {
     console.log('Terminating backend daemon...');
     try {
@@ -128,20 +141,19 @@ function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
-      contextIsolation: true
+      contextIsolation: true,
+      webviewTag: true
     }
   });
 
   const prodPath = path.join(__dirname, '../dist/index.html');
   const devUrl = process.env.VITE_DEV_SERVER_URL || null;
 
-  // 生产模式或已构建模式：直接加载本地离线静态资源，完全不占用、不依赖任何 5173 端口，彻底避免端口冲突
   if (app.isPackaged || (!devUrl && fs.existsSync(prodPath))) {
     mainWindow.loadFile(prodPath);
   } else if (devUrl) {
     mainWindow.loadURL(devUrl);
   } else {
-    // 仅在无本地 dist 且显式处于开发态时，尝试连接本地开发服务器
     const testReq = http.get('http://localhost:5173', () => {
       mainWindow.loadURL('http://localhost:5173');
     });
@@ -150,7 +162,6 @@ function createWindow() {
     });
   }
 
-  // 支持按 F12 或 Ctrl+Shift+I 快速开启/切换开发者工具调试
   mainWindow.webContents.on('before-input-event', (event, input) => {
     if (input.key === 'F12' || (input.control && input.shift && input.key.toLowerCase() === 'i')) {
       mainWindow.webContents.toggleDevTools();
@@ -168,7 +179,14 @@ function createWindow() {
   });
   ipcMain.on('window-close', () => mainWindow?.close());
 
-  // 文件夹选择对话框 (支持选择磁盘项目作为新工作区)
+  // 外部浏览器打开 URL
+  ipcMain.on('shell:open-external', (_event, url) => {
+    if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
+      shell.openExternal(url);
+    }
+  });
+
+  // 文件夹选择对话框
   ipcMain.handle('dialog:select-directory', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       title: '选择本地项目作为工作区',
@@ -178,6 +196,60 @@ function createWindow() {
       return null;
     }
     return result.filePaths[0];
+  });
+
+  // 终端会话 IPC 处理 (用于右侧调试侧边栏运行 PowerShell / 终端)
+  ipcMain.handle('terminal:create', (event, { id, cwd }) => {
+    const shellCmd = process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || 'bash');
+    const shellArgs = process.platform === 'win32' ? ['-NoLogo', '-ExecutionPolicy', 'Bypass'] : [];
+    const targetCwd = cwd || path.resolve(__dirname, '../..');
+
+    try {
+      const proc = spawn(shellCmd, shellArgs, {
+        cwd: targetCwd,
+        env: { ...process.env, TERM: 'xterm-256color' },
+        windowsHide: true
+      });
+
+      proc.stdout.on('data', (data) => {
+        event.sender.send(`terminal:data:${id}`, data.toString('utf8'));
+      });
+
+      proc.stderr.on('data', (data) => {
+        event.sender.send(`terminal:data:${id}`, data.toString('utf8'));
+      });
+
+      proc.on('exit', (code) => {
+        event.sender.send(`terminal:exit:${id}`, code);
+        terminalSessions.delete(id);
+      });
+
+      terminalSessions.set(id, proc);
+      return { success: true, cwd: targetCwd };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.on('terminal:write', (_event, { id, data }) => {
+    const proc = terminalSessions.get(id);
+    if (proc && proc.stdin && proc.stdin.writable) {
+      proc.stdin.write(data);
+    }
+  });
+
+  ipcMain.on('terminal:kill', (_event, { id }) => {
+    const proc = terminalSessions.get(id);
+    if (proc) {
+      try {
+        if (process.platform === 'win32') {
+          spawn('taskkill', ['/pid', String(proc.pid), '/f', '/t']);
+        } else {
+          proc.kill('SIGTERM');
+        }
+      } catch (e) {}
+      terminalSessions.delete(id);
+    }
   });
 }
 

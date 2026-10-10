@@ -62,6 +62,19 @@ else:
     HISTORY_ROOT = ROOT_DIR / "history" 
 
 # ================= 数据模型定义 =================
+class ApprovalResponseModel(BaseModel):
+    ticket_id: str
+    approved: bool
+    trust_session: Optional[bool] = False
+
+class UserInputResponseModel(BaseModel):
+    request_id: str
+    selected_option: Optional[str] = ""
+    custom_input: Optional[str] = ""
+
+class PermissionModeModel(BaseModel):
+    mode: str
+
 class PromptRequest(BaseModel):
     prompt: str
     model: Optional[str] = None
@@ -947,6 +960,24 @@ def get_attachment_raw(path: str):
         raise HTTPException(status_code=404, detail="附件不存在")
     return FileResponse(path=str(target), filename=target.name)
 
+@app.post("/api/approval")
+def resolve_approval_api(req: ApprovalResponseModel):
+    ok = bridge.resolve_approval(req.ticket_id, approved=req.approved, trust_session=req.trust_session or False)
+    return {"success": ok}
+
+@app.post("/api/user_input")
+def resolve_user_input_api(req: UserInputResponseModel):
+    ok = bridge.resolve_user_input(req.request_id, selected_option=req.selected_option or "", custom_input=req.custom_input or "")
+    return {"success": ok}
+
+@app.post("/api/permission_mode")
+def set_permission_mode_api(req: PermissionModeModel):
+    new_mode = "ask" if "ask" in req.mode.lower() else "auto"
+    default_policy.mode = new_mode
+    if new_mode == "auto":
+        bridge.unblock_all_pending_approvals(approved=True)
+    return {"success": True, "mode": default_policy.mode}
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """全双工实时通信：接收 Prompt 并向前端持续广播工具流与执行结果"""
@@ -1030,6 +1061,34 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 task = asyncio.create_task(run_prompt_task())
                 active_tasks[session_key] = task
+
+            elif msg_type == "set_permission_mode":
+                perm_mode = payload.get("permission_mode", "auto")
+                new_mode = "ask" if "ask" in perm_mode.lower() else "auto"
+                default_policy.mode = new_mode
+                if new_mode == "auto":
+                    bridge.unblock_all_pending_approvals(approved=True)
+                logger.info(f"WebSocket updated permission mode: {default_policy.mode}")
+                await websocket.send_json({
+                    "event": "permission_mode_updated",
+                    "mode": default_policy.mode,
+                    "session_id": payload.get("session_id", "default"),
+                    "project": payload.get("project_name", "")
+                })
+
+            elif msg_type == "approval_response":
+                ticket_id = payload.get("ticket_id")
+                approved = payload.get("approved", False)
+                trust = payload.get("trust_session", False)
+                ok = bridge.resolve_approval(ticket_id, approved=approved, trust_session=trust)
+                logger.info(f"WebSocket handled approval response: ticket={ticket_id}, approved={approved}, trust={trust}, resolved={ok}")
+
+            elif msg_type == "user_input_response":
+                req_id = payload.get("request_id")
+                sel = payload.get("selected_option", "")
+                cust = payload.get("custom_input", "")
+                ok = bridge.resolve_user_input(req_id, selected_option=sel, custom_input=cust)
+                logger.info(f"WebSocket handled user input response: req_id={req_id}, selected='{sel}', resolved={ok}")
 
             elif msg_type == "abort":
                 session_id = payload.get("session_id", "default")

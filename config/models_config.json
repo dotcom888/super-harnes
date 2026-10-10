@@ -1,18 +1,6 @@
 {
-  "current_model": "deepseek-chat",
+  "current_model": "gemini-3.8-flash-high",
   "providers": [
-    {
-      "id": "provider_1791554784",
-      "name": "DeepSeek",
-      "base_url": "https://api.deepseek.com/v1",
-      "api_key": "sk-7ff889c5b449432a94765dcce26bd8b8",
-      "models": [
-        "deepseek-chat",
-        "deepseek-reasoner"
-      ],
-      "is_custom": false,
-      "status": "connected"
-    },
     {
       "id": "provider_1791555024",
       "name": "gemini",

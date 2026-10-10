@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
+import { PanelRight } from "lucide-react";
+import { DevToolsSidebar } from "./components/DevToolsSidebar";
 import { WindowControls } from "./components/WindowControls";
 import { EmptyState } from "./components/EmptyState";
 import { ActionItem } from "./components/ActionItem";
@@ -12,7 +14,9 @@ import { SettingsModal } from "./components/SettingsModal";
 import { PluginsModal } from "./components/PluginsModal";
 import { ApprovalModal } from "./components/ApprovalModal";
 import { ConfirmModal } from "./components/ConfirmModal";
-import { SessionInfo, ProjectInfo, ToolAction, TaskItem, TurnData, TelemetryMetrics, TrajectoryStep, AttachmentItem } from "./types";
+import { SessionInfo, ProjectInfo, ToolAction, TaskItem, TurnData, TelemetryMetrics, TrajectoryStep, AttachmentItem, UserInputRequest } from "./types";
+import { TurnRuler } from "./components/TurnRuler";
+import { UserInputModal } from "./components/UserInputModal";
 import { TrajectoryTimeline } from "./components/TrajectoryTimeline";
 import { LOGO_DATA_URI } from "./assets/logoData";
 
@@ -23,10 +27,20 @@ export const App: React.FC = () => {
   // 侧边栏与弹窗状态
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeTab, setActiveTab] = useState<"chat" | "trace">("chat");
+
+  // 调试侧边栏会话级隔离状态 (对标需求 5：侧边栏归属于当前对话框，切换会话时自动隔离并记忆)
+  const [sessionDevToolsOpenMap, setSessionDevToolsOpenMap] = useState<Record<string, boolean>>({});
+  const [sessionDevToolsTabsMap, setSessionDevToolsTabsMap] = useState<Record<string, any[]>>({});
+  const [sessionDevToolsActiveTabMap, setSessionDevToolsActiveTabMap] = useState<Record<string, string | null>>({});
+  const [sessionTerminalOutputsMap, setSessionTerminalOutputsMap] = useState<Record<string, Record<string, string[]>>>({});
+  const [sessionDevToolsMaximizedMap, setSessionDevToolsMaximizedMap] = useState<Record<string, boolean>>({});
+
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showPlugins, setShowPlugins] = useState(false);
   const [approvalReq, setApprovalReq] = useState<{ ticket_id: string; command: string; reason: string } | null>(null);
+  const [userInputReq, setUserInputReq] = useState<UserInputRequest | null>(null);
+  const isAtBottomRef = useRef<boolean>(true);
   const [confirmDialog, setConfirmDialog] = useState<{
     isOpen: boolean;
     title: string;
@@ -87,6 +101,28 @@ export const App: React.FC = () => {
 
   // 当前激活会话的复合键与派生状态
   const currentSessionKey = getSessionKey(projectName, activeSessionId);
+
+  // 调试侧边栏当前激活状态派生 (归属于当前对话框，对标需求 5)
+  const isDevToolsOpen = Boolean(sessionDevToolsOpenMap[currentSessionKey]);
+  const isDevToolsMaximized = Boolean(sessionDevToolsMaximizedMap[currentSessionKey]);
+  const currentDevToolsTabs = sessionDevToolsTabsMap[currentSessionKey] || [];
+  const currentDevToolsActiveTabId = sessionDevToolsActiveTabMap[currentSessionKey] || null;
+  const currentTerminalOutputs = sessionTerminalOutputsMap[currentSessionKey] || {};
+
+  const handleToggleDevTools = () => {
+    const nextOpen = !sessionDevToolsOpenMap[currentSessionKey];
+    setSessionDevToolsOpenMap((prev) => ({
+      ...prev,
+      [currentSessionKey]: nextOpen
+    }));
+    // 每次点击打开侧边栏时，统一重置为默认大小 (非放大全屏状态)
+    if (nextOpen) {
+      setSessionDevToolsMaximizedMap((prev) => ({
+        ...prev,
+        [currentSessionKey]: false
+      }));
+    }
+  };
   const turns = sessionTurnsMap[currentSessionKey] || [];
   const actions = sessionActionsMap[currentSessionKey] || [];
   const thoughtText = sessionThoughtMap[currentSessionKey] || "";
@@ -108,6 +144,97 @@ export const App: React.FC = () => {
   useEffect(() => {
     runningSessionsRef.current = runningSessions;
   }, [runningSessions]);
+
+  // 吸底滚动：仅当用户确实停留在页面最底部时随思考步骤/工具调用同步下移，在翻看历史时严格保持视图不动 (对标需求 3)
+  const autoScrollIfAtBottom = () => {
+    if (!isAtBottomRef.current || !chatContainerRef.current) return;
+    requestAnimationFrame(() => {
+      if (isAtBottomRef.current && chatContainerRef.current) {
+        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+      }
+    });
+  };
+
+  // 轮次尺点击定位平滑跳转
+  const handleScrollToTurn = (turnId: number) => {
+    const el = document.getElementById(`turn-user-${turnId}`) || document.getElementById(`turn-container-${turnId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      if (chatContainerRef.current) {
+        const c = chatContainerRef.current;
+        isAtBottomRef.current = c.scrollHeight - c.scrollTop - c.clientHeight <= 150;
+      }
+    }
+  };
+
+  // 动态切换运行安全模式 (支持在思考执行过程中即时生效)
+  const handlePermissionChange = (newMode: string) => {
+    setModeName(newMode);
+    const permVal = newMode.toLowerCase().includes("ask") ? "ask" : "auto";
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: "set_permission_mode",
+          permission_mode: permVal,
+          session_id: activeSessionId,
+          project_name: projectName
+        })
+      );
+    }
+    fetch("http://127.0.0.1:8765/api/permission_mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: permVal })
+    }).catch(() => {});
+  };
+
+  // 敏感命令人工审批提交
+  const handleResolveApproval = (ticketId: string, approved: boolean, trustSession: boolean) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: "approval_response",
+          ticket_id: ticketId,
+          approved: approved,
+          trust_session: trustSession,
+          session_id: activeSessionId,
+          project_name: projectName
+        })
+      );
+    }
+    fetch("http://127.0.0.1:8765/api/approval", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ticket_id: ticketId, approved, trust_session: trustSession })
+    }).catch(() => {});
+    setApprovalReq(null);
+  };
+
+  // 用户交互方案确认提交
+  const handleResolveUserInput = (requestId: string, selectedOption: string, customInput: string) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: "user_input_response",
+          request_id: requestId,
+          selected_option: selectedOption,
+          custom_input: customInput,
+          session_id: activeSessionId,
+          project_name: projectName
+        })
+      );
+    }
+    fetch("http://127.0.0.1:8765/api/user_input", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request_id: requestId, selected_option: selectedOption, custom_input: customInput })
+    }).catch(() => {});
+    setUserInputReq(null);
+  };
+
+  const handleCancelUserInput = (requestId: string) => {
+    handleResolveUserInput(requestId, "", "【用户取消操作】");
+  };
 
   // 遥测性能指标
   const [metrics, setMetrics] = useState<TelemetryMetrics>({
@@ -363,6 +490,22 @@ export const App: React.FC = () => {
                 };
                 return { ...prev, [targetKey]: updated };
               });
+              if (targetKey === getSessionKey(projectNameRef.current, activeSessionIdRef.current)) {
+                autoScrollIfAtBottom();
+              }
+            } else if (payload.event === "user_input_request") {
+              setUserInputReq({
+                request_id: payload.request_id,
+                question: payload.question,
+                header: payload.header,
+                options: payload.options,
+                allow_custom: payload.allow_custom,
+                session_id: payload.session_id,
+                project: payload.project
+              });
+              if (targetKey === getSessionKey(projectNameRef.current, activeSessionIdRef.current)) {
+                autoScrollIfAtBottom();
+              }
             } else if (payload.event === "tool_start" || payload.event === "tool_call_start") {
               const newAction: ToolAction = {
                 id: payload.id || payload.tool_call_id || `act_${Date.now()}`,
@@ -390,6 +533,9 @@ export const App: React.FC = () => {
                 status: "running",
                 timestamp: Date.now()
               };
+              if (targetKey === getSessionKey(projectNameRef.current, activeSessionIdRef.current)) {
+                autoScrollIfAtBottom();
+              }
               setSessionTurnsMap((prev) => {
                 const list = prev[targetKey] || [];
                 if (list.length === 0) return prev;
@@ -452,6 +598,9 @@ export const App: React.FC = () => {
                 };
                 return { ...prev, [targetKey]: updated };
               });
+              if (targetKey === getSessionKey(projectNameRef.current, activeSessionIdRef.current)) {
+                autoScrollIfAtBottom();
+              }
             } else if (payload.event === "stream_chunk") {
               const delta = payload.delta || "";
               setSessionThoughtMap((prev) => ({
@@ -473,7 +622,7 @@ export const App: React.FC = () => {
               });
 
               if (targetKey === getSessionKey(projectNameRef.current, activeSessionIdRef.current)) {
-                scrollEndRef.current?.scrollIntoView({ behavior: "smooth" });
+                autoScrollIfAtBottom();
               }
             } else if (payload.event === "assistant_response") {
               // 精准释放目标会话的运行态
@@ -568,11 +717,14 @@ export const App: React.FC = () => {
     }
   };
 
-  // 视口滚动监听：实时记录当前会话停留的滚动位置
+  // 视口滚动监听：实时记录当前会话停留的滚动位置，并判断是否处于最底部 (严格容差 <= 25px，杜绝翻看历史时的视图平移)
   const handleViewportScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    const top = e.currentTarget.scrollTop;
+    const el = e.currentTarget;
+    const top = el.scrollTop;
     const currentKey = getSessionKey(projectNameRef.current, activeSessionIdRef.current);
     sessionScrollMap.current[currentKey] = top;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    isAtBottomRef.current = distanceFromBottom <= 25;
   };
 
   // 切换会话时，精准恢复上次停留的滚动位置，杜绝卡顿与跳动刷新
@@ -687,7 +839,8 @@ export const App: React.FC = () => {
       }));
       setSessionThoughtMap((prev) => ({ ...prev, [targetKey]: "正在深度思考与执行下一步排查..." }));
 
-      // 发送消息后模拟鼠标平滑下滑至最新消息处 (对标需求 1)
+      // 发送消息后重置吸底锁定并模拟鼠标平滑下滑至最新消息处
+      isAtBottomRef.current = true;
       setTimeout(() => {
         if (chatContainerRef.current) {
           chatContainerRef.current.scrollTo({
@@ -1006,9 +1159,16 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div className={`flex h-screen w-screen overflow-hidden font-sans select-text transition-colors duration-150 ${
+    <div className={`flex h-screen w-screen overflow-hidden font-sans select-text pt-8 transition-colors duration-150 relative ${
       theme === "dark" ? "bg-[#0f1117] text-gray-100 dark" : "bg-white text-gray-900"
     }`}>
+      {/* 顶层 32px 全局窗口拖拽与控制栏 (对标需求 1、2、4) */}
+      <div className="fixed top-0 left-0 right-0 h-8 flex items-center justify-between z-50 titlebar-drag-region select-none bg-white/95 dark:bg-[#11131a]/95 backdrop-blur-xs border-b border-gray-100 dark:border-[#1d202b]">
+        <div className="flex items-center pl-3 gap-2 text-[11px] text-gray-400 dark:text-gray-500 font-medium">
+          {/* 窗口拖拽留白区 */}
+        </div>
+        <WindowControls />
+      </div>
       {/* 1. 左侧工作区导航栏 (展示 4 个项目的全部聊天历史，透明图形 Logo) */}
       <Sidebar
         collapsed={sidebarCollapsed}
@@ -1031,8 +1191,10 @@ export const App: React.FC = () => {
         onDeleteSession={handleDeleteSession}
       />
 
-      {/* 2. 主操作区 */}
-      <div className="flex-1 h-full flex flex-col bg-white dark:bg-[#0f1117] overflow-hidden relative transition-colors">
+      {/* 2. 主工作区视口 (包含主操作区与当前会话专属调试侧边栏，支持最大化完全覆盖) */}
+      <div className="flex-1 h-full flex flex-row overflow-hidden relative">
+        {/* 2.1 主操作区 (设置 min-w-[380px] 保障窗口还原/缩小时对话区绝对不会被压缩消失) */}
+        <div className="flex-1 h-full flex flex-col min-w-[380px] bg-white dark:bg-[#0f1117] overflow-hidden relative transition-colors">
         {!isWsConnected && (
           <div className="w-full bg-amber-500/10 border-b border-amber-500/20 px-4 py-1.5 flex items-center justify-center gap-2 text-xs text-amber-600 dark:text-amber-400 select-none animate-pulse z-50">
             <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
@@ -1048,19 +1210,31 @@ export const App: React.FC = () => {
             activeTab={activeTab}
             onTabChange={(tab) => setActiveTab(tab)}
             onExportLog={() => {}}
+            isDevToolsOpen={isDevToolsOpen}
+            onToggleDevTools={handleToggleDevTools}
           />
         ) : (
-          <div className="h-16 flex items-center justify-end px-5 titlebar-drag-region select-none shrink-0 bg-transparent transition-colors">
-            <div className="titlebar-no-drag">
-              <WindowControls />
-            </div>
+          <div className="h-12 flex items-center justify-end px-5 titlebar-drag-region select-none shrink-0 bg-transparent transition-colors">
+            <button
+              type="button"
+              onClick={handleToggleDevTools}
+              className={`p-1.5 rounded-lg border transition cursor-pointer titlebar-no-drag ${
+                isDevToolsOpen
+                  ? "bg-blue-50 dark:bg-[#1a2333] border-blue-200 dark:border-blue-800/60 text-blue-600 dark:text-blue-400"
+                  : "text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-[#1f2230] border-gray-200/80 dark:border-[#262a38]"
+              }`}
+              title="调试侧边栏 (内置终端 & 浏览器)"
+            >
+              <PanelRight size={15} />
+            </button>
           </div>
         )}
 
-        {/* 主视口内容区 */}
+        {/* 主视口内容区 (overflowAnchor: none 彻底禁用浏览器在历史浏览时的默认元素位移抖动) */}
         <div
           ref={chatContainerRef}
           onScroll={handleViewportScroll}
+          style={{ overflowAnchor: "none" }}
           className="flex-1 overflow-y-auto px-6 py-4 flex flex-col"
         >
           {!hasStarted ? (
@@ -1080,6 +1254,7 @@ export const App: React.FC = () => {
               onSelectProject={handleSelectProjectInEmptyState}
               onAddWorkspace={handleAddWorkspace}
               onPause={handlePause}
+              onPermissionChange={handlePermissionChange}
             />
           ) : (
             /* 会话执行态：支持“对话”与“轨迹”双模自由切换，流式逐字输出 */
@@ -1087,7 +1262,7 @@ export const App: React.FC = () => {
 
               {activeTab === "chat" ? (
                 /* 对话流视图：展示完整历史问答轮次、实时流式思考与折叠步骤 (对标图四) */
-                <div className="space-y-2 flex-1">
+                <div className="space-y-2 flex-1 relative">
                   {turns.length === 0 ? (
                     <div className="flex-1 flex items-center justify-center text-gray-400 dark:text-gray-500 py-24 select-none">
                       <div className="flex items-center gap-2.5 text-xs">
@@ -1134,6 +1309,13 @@ export const App: React.FC = () => {
           )}
         </div>
 
+        {/* 对话轮次记录导航尺 (贴近左侧边栏，垂直居中固定，绝对不随页面滚动，完全避免与 super 头像重叠) */}
+        {hasStarted && activeTab === "chat" && turns.length > 0 && (
+          <div className="absolute left-2.5 top-1/2 -translate-y-1/2 z-30 pointer-events-auto">
+            <TurnRuler turns={turns} onScrollToTurn={handleScrollToTurn} />
+          </div>
+        )}
+
         {/* 底部吸附输入栏 (带 '+' 快捷指令菜单、📎 附件上传、AUTO 模式、点击空白关闭下拉) */}
         {hasStarted && (
           <BottomInput
@@ -1151,9 +1333,30 @@ export const App: React.FC = () => {
             onPause={handlePause}
             projectName={projectName}
             sessionId={activeSessionId}
+            permissionMode={modeName}
+            onPermissionChange={handlePermissionChange}
           />
         )}
       </div>
+
+      {/* 2.2 右侧调试侧边栏 (归属于当前对话框，支持最大化完全覆盖，对标需求 4 & 5) */}
+      <DevToolsSidebar
+        isOpen={isDevToolsOpen}
+        onClose={handleToggleDevTools}
+        workspacePath={projects.find((p) => p.name === projectName)?.path || "E:\\study\\super-harnes"}
+        sessionKey={currentSessionKey}
+        tabs={currentDevToolsTabs}
+        onTabsChange={(tabs) => setSessionDevToolsTabsMap((prev) => ({ ...prev, [currentSessionKey]: tabs }))}
+        activeTabId={currentDevToolsActiveTabId}
+        onActiveTabChange={(id) => setSessionDevToolsActiveTabMap((prev) => ({ ...prev, [currentSessionKey]: id }))}
+        terminalOutputs={currentTerminalOutputs}
+        onTerminalOutputsChange={(outputs) => setSessionTerminalOutputsMap((prev) => ({ ...prev, [currentSessionKey]: outputs }))}
+        isMaximized={isDevToolsMaximized}
+        onToggleMaximize={(max) => setSessionDevToolsMaximizedMap((prev) => ({ ...prev, [currentSessionKey]: max }))}
+      />
+    </div>
+
+      
 
       {/* 3. 模态框与抽屉组件 */}
       <FileViewerModal filePath={selectedFile} onClose={() => setSelectedFile(null)} />
@@ -1171,8 +1374,13 @@ export const App: React.FC = () => {
       <PluginsModal isOpen={showPlugins} onClose={() => setShowPlugins(false)} />
       <ApprovalModal
         request={approvalReq}
-        onApprove={() => setApprovalReq(null)}
-        onReject={() => setApprovalReq(null)}
+        onApprove={(tid, trust) => handleResolveApproval(tid, true, trust)}
+        onReject={(tid) => handleResolveApproval(tid, false, false)}
+      />
+      <UserInputModal
+        request={userInputReq}
+        onSubmit={handleResolveUserInput}
+        onCancel={handleCancelUserInput}
       />
       <ConfirmModal
         isOpen={Boolean(confirmDialog?.isOpen)}

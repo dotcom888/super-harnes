@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from "react";
-import { 
-  X, 
+import {
+  X,
+  RefreshCw,
+  Download, 
   Settings, 
   Cpu, 
   ShieldCheck, 
@@ -52,6 +54,75 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [editingProvider, setEditingProvider] = useState<ModelProvider | null>(null);
   const [isAddingCustom, setIsAddingCustom] = useState(false);
   const [pendingDeleteProviderId, setPendingDeleteProviderId] = useState<string | null>(null);
+
+  // 版本检测状态
+  const [checkVersionStatus, setCheckVersionStatus] = useState<"idle" | "checking" | "latest" | "has_update" | "error">("idle");
+  const [latestVersion, setLatestVersion] = useState<string>("");
+  const [releaseUrl, setReleaseUrl] = useState<string>("https://github.com/dotcom888/super-harnes/releases");
+  const [downloadAssetUrl, setDownloadAssetUrl] = useState<string>("");
+  const [updateNote, setUpdateNote] = useState<string>("");
+
+    // 自动检测版本 (当切换或打开“关于 super”时自动执行一次并呈现动态效果)
+  useEffect(() => {
+    if (isOpen && activeTab === "about") {
+      handleCheckVersion();
+    }
+  }, [isOpen, activeTab]);
+
+  const handleCheckVersion = async () => {
+    setCheckVersionStatus("checking");
+    const startTime = Date.now();
+    try {
+      const res = await fetch("https://api.github.com/repos/dotcom888/super-harnes/releases/latest", {
+        headers: { Accept: "application/vnd.github.v3+json" }
+      });
+      if (!res.ok) {
+        throw new Error("HTTP " + res.status);
+      }
+      const data = await res.json();
+      const tag = (data.tag_name || data.name || "").trim();
+      const currentVer = "v5.7.5";
+      setLatestVersion(tag || "未知");
+      const htmlUrl = data.html_url || "https://github.com/dotcom888/super-harnes/releases";
+      setReleaseUrl(htmlUrl);
+      setUpdateNote(data.body ? data.body.slice(0, 180) : "");
+
+      const exeAsset = (data.assets || []).find((a) =>
+        a.name && (a.name.endsWith(".exe") || a.name.endsWith(".zip"))
+      );
+      if (exeAsset) {
+        setDownloadAssetUrl(exeAsset.browser_download_url);
+      } else {
+        setDownloadAssetUrl(htmlUrl);
+      }
+
+      const cleanTag = tag.replace(/^v/i, "");
+      const cleanCurrent = currentVer.replace(/^v/i, "");
+
+      // 确保至少有 500ms 动态转圈过程，提供清晰视觉反馈
+      const elapsed = Date.now() - startTime;
+      if (elapsed < 500) {
+        await new Promise((r) => setTimeout(r, 500 - elapsed));
+      }
+
+      if (cleanTag === cleanCurrent || !cleanTag) {
+        setCheckVersionStatus("latest");
+      } else {
+        setCheckVersionStatus("has_update");
+      }
+    } catch (e) {
+      setCheckVersionStatus("error");
+    }
+  };
+
+  const handleOpenRelease = (url) => {
+    const target = url || downloadAssetUrl || releaseUrl;
+    if (window.electronAPI && window.electronAPI.openExternal) {
+      window.electronAPI.openExternal(target);
+    } else {
+      window.open(target, "_blank");
+    }
+  };
 
   // 编辑表单字段
   const [formName, setFormName] = useState("");
@@ -314,16 +385,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </nav>
           </div>
 
-          {/* 左下角关闭设置按钮 */}
-          <div className="pt-2 border-t border-gray-200/60 dark:border-[#1e222f] px-1">
-            <button
-              type="button"
-              onClick={onClose}
-              className="w-full py-2 bg-white dark:bg-[#1a1d27] hover:bg-gray-100 dark:hover:bg-[#222534] border border-gray-200 dark:border-[#2a2e3f] text-gray-700 dark:text-gray-300 rounded-xl text-xs font-medium transition shadow-2xs cursor-pointer"
-            >
-              关闭设置
-            </button>
-          </div>
+          
         </aside>
 
         {/* 2. 右侧主设置视口区 (自适应宽度，支持全屏展开与和谐深色模式) */}
@@ -337,10 +399,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               {activeTab === "about" && "About super HARNESS Desktop"}
             </span>
             <button 
+              type="button"
               onClick={onClose} 
-              className="p-1.5 text-gray-400 hover:text-gray-700 dark:text-gray-500 dark:hover:text-gray-200 rounded-lg transition cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800"
+              className="w-9 h-9 flex items-center justify-center text-gray-400 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100 rounded-xl transition cursor-pointer hover:bg-gray-100 dark:hover:bg-[#20222f] titlebar-no-drag z-30"
+              title="关闭设置"
             >
-              <X size={16} />
+              <X size={18} />
             </button>
           </div>
 
@@ -387,15 +451,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           >
                             编辑
                           </button>
-                          {p.is_custom && (
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteProvider(p.id)}
-                              className="text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 font-medium px-2 py-1 rounded hover:bg-red-50 dark:hover:bg-red-950/30 transition cursor-pointer"
-                            >
-                              删除
-                            </button>
-                          )}
+                          <button
+      type="button"
+      onClick={() => handleDeleteProvider(p.id)}
+      className="text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 font-medium px-2 py-1 rounded hover:bg-red-50 dark:hover:bg-red-950/30 transition cursor-pointer"
+    >
+      删除
+    </button>
                         </div>
                       </div>
                     );
@@ -710,13 +772,78 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
             {activeTab === "about" && (
               <div className="space-y-4 text-xs max-w-4xl">
-                <div className="flex items-center gap-3">
-                  <img src={LOGO_DATA_URI} alt="super logo" className="w-10 h-10 object-contain" />
-                  <div>
-                    <h2 className="text-base font-bold text-gray-900 dark:text-white">super HARNESS 桌面客户端</h2>
-                    <p className="text-xs text-gray-500 dark:text-gray-400">版本 v5.7.5 · DeepSeek Harness 架构增强版</p>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <img src={LOGO_DATA_URI} alt="super logo" className="w-10 h-10 object-contain" />
+                    <div>
+                      <h2 className="text-base font-bold text-gray-900 dark:text-white">super HARNESS 桌面客户端</h2>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">版本 v5.7.5 · DeepSeek Harness 架构增强版</p>
+                    </div>
                   </div>
+
+                  {/* 检测版本按钮 (对标图五需求 3) */}
+                  <button
+                    type="button"
+                    onClick={handleCheckVersion}
+                    disabled={checkVersionStatus === "checking"}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-white dark:bg-[#181a24] hover:bg-gray-50 dark:hover:bg-[#20222f] border border-gray-200 dark:border-[#2b3042] text-gray-700 dark:text-gray-200 rounded-xl text-xs font-medium transition cursor-pointer shadow-2xs shrink-0"
+                  >
+                    {checkVersionStatus === "checking" ? (
+                      <Loader2 size={13} className="animate-spin text-blue-500" />
+                    ) : (
+                      <RefreshCw size={13} className="text-gray-500 dark:text-gray-400" />
+                    )}
+                    <span>{checkVersionStatus === "checking" ? "正在检测版本..." : "检测版本"}</span>
+                  </button>
                 </div>
+
+                {/* 检测结果状态提示卡片 */}
+                {checkVersionStatus === "latest" && (
+                  <div className="flex items-center gap-2 p-3 bg-emerald-50/80 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800/40 rounded-xl text-emerald-700 dark:text-emerald-400">
+                    <CheckCircle2 size={16} className="shrink-0" />
+                    <span className="font-medium">当前已是最新版本 (v5.7.5)，与 GitHub 官方发布版本一致。</span>
+                  </div>
+                )}
+
+                {checkVersionStatus === "has_update" && (
+                  <div className="p-4 bg-blue-50/70 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800/40 rounded-xl space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 text-blue-800 dark:text-blue-300 font-semibold">
+                        <Sparkles size={16} />
+                        <span>发现新版本: {latestVersion} (当前为 v5.7.5)</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenRelease()}
+                        className="flex items-center gap-1.5 px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium text-xs shadow-xs transition cursor-pointer"
+                      >
+                        <Download size={13} />
+                        <span>下载更新安装最新版</span>
+                      </button>
+                    </div>
+                    {updateNote && (
+                      <p className="text-[11px] text-blue-900/80 dark:text-blue-300/80 line-clamp-2">
+                        更新日志: {updateNote}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {checkVersionStatus === "error" && (
+                  <div className="flex items-center justify-between p-3 bg-amber-50/80 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800/40 rounded-xl text-amber-800 dark:text-amber-300">
+                    <div className="flex items-center gap-2">
+                      <AlertCircle size={15} className="shrink-0" />
+                      <span>检测版本超时或网络未连接，可前往 GitHub Releases 页面查看。</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenRelease("https://github.com/dotcom888/super-harnes/releases")}
+                      className="text-xs text-blue-600 dark:text-blue-400 hover:underline shrink-0"
+                    >
+                      访问 Releases
+                    </button>
+                  </div>
+                )}
 
                 <div className="p-4 bg-gray-50 dark:bg-[#181a24] border border-gray-200 dark:border-[#262a38] rounded-xl space-y-2 text-gray-600 dark:text-gray-300">
                   <p>super HARNESS 是专为智能体工程化研发打造的深度强化工作站。</p>

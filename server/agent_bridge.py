@@ -8,6 +8,8 @@ import sys
 import time
 import json
 import asyncio
+import uuid
+import threading
 import logging
 from typing import Dict, Any, Optional, Callable, List
 from pathlib import Path
@@ -18,6 +20,7 @@ from tools.framework.workspace import default_workspace, WorkspaceContext
 from core.session import SessionManager
 from tools.framework.policies import default_policy, PolicyDecision
 from tools.executor import ToolExecutor, default_executor
+from tools.builtin.interaction_tools import set_user_interaction_handler
 
 logger = logging.getLogger("server.agent_bridge")
 
@@ -52,6 +55,10 @@ def format_tool_display(tool_name: str, args: Dict[str, Any]) -> Dict[str, str]:
         p = args.get("pattern", "*") if isinstance(args, dict) else "*"
         d = args.get("directory", ".") if isinstance(args, dict) else "."
         return {"display": "Glob", "desc": f"pattern '{p}' in {d}", "path": ""}
+    elif tool_name in ("ask_user", "request_user_input"):
+        q = args.get("question", "") if isinstance(args, dict) else str(args)
+        desc = q[:80] if len(q) <= 80 else q[:77] + "..."
+        return {"display": "AskUser", "desc": desc, "path": ""}
     elif tool_name.startswith("mcp__"):
         parts = tool_name.split("__", 2)
         srv = parts[1] if len(parts) > 1 else "mcp"
@@ -121,6 +128,8 @@ class AgentBridge:
     def __init__(self):
         self.default_agent: Optional[ReActAgent] = None
         self.agents: Dict[str, ReActAgent] = {}
+        self.pending_approvals: Dict[str, Dict[str, Any]] = {}
+        self.pending_user_inputs: Dict[str, Dict[str, Any]] = {}
         self._init_agent()
 
     def _init_agent(self):
@@ -215,6 +224,41 @@ class AgentBridge:
         logger.info(f"Created dedicated ReActAgent instance for session '{key}', workspace: {target_workspace.root}, model: {ag_model}")
         return ag
 
+    def resolve_approval(self, ticket_id: str, approved: bool, trust_session: bool = False) -> bool:
+        """解析前端发回的审批结果"""
+        info = self.pending_approvals.get(ticket_id)
+        if info:
+            info["decision"] = approved
+            info["trust_session"] = trust_session
+            if trust_session and approved:
+                default_policy.session_approved = True
+            info["event"].set()
+            logger.info(f"Resolved approval ticket '{ticket_id}': approved={approved}, trust={trust_session}")
+            return True
+        return False
+
+    def unblock_all_pending_approvals(self, approved: bool = True):
+        """解挂所有等待中的审批 (例如切换为 AUTO 模式或中断)"""
+        for ticket_id, info in list(self.pending_approvals.items()):
+            info["decision"] = approved
+            info["event"].set()
+
+    def resolve_user_input(self, req_id: str, selected_option: str = "", custom_input: str = "") -> bool:
+        """解析前端发回的用户方案决策与输入"""
+        info = self.pending_user_inputs.get(req_id)
+        if info:
+            info["result"] = {"selected_option": selected_option, "custom_input": custom_input}
+            info["event"].set()
+            logger.info(f"Resolved user input req '{req_id}': selected='{selected_option}', custom='{custom_input}'")
+            return True
+        return False
+
+    def unblock_all_pending_user_inputs(self):
+        """解挂所有等待中的用户输入卡片"""
+        for req_id, info in list(self.pending_user_inputs.items()):
+            info["result"] = {"selected_option": "", "custom_input": "【已取消】"}
+            info["event"].set()
+
     def abort_session(self, session_id: str, project_name: str):
         """中止指定工作区与会话中正在运行的 Agent 任务"""
         key = f"{project_name}:{session_id}"
@@ -222,6 +266,8 @@ class AgentBridge:
             self.agents[key].abort()
         if self.default_agent:
             self.default_agent.abort()
+        self.unblock_all_pending_approvals(approved=False)
+        self.unblock_all_pending_user_inputs()
         logger.info(f"AgentBridge: abort signal dispatched for session '{key}'")
 
     def get_status(self) -> Dict[str, Any]:
@@ -464,6 +510,65 @@ class AgentBridge:
                         "image_url": {"url": d_url}
                     })
 
+            def ask_approval_callback(cmd: str, rsn: str) -> bool:
+                if default_policy.mode in ("auto", "never") or default_policy.session_approved:
+                    return True
+                ticket_id = f"ticket_{int(time.time()*1000)}_{uuid.uuid4().hex[:6]}"
+                done_evt = threading.Event()
+                entry = {
+                    "event": done_evt,
+                    "command": cmd,
+                    "reason": rsn,
+                    "decision": False,
+                    "trust_session": False,
+                    "session_id": active_sid,
+                    "project": cur_proj
+                }
+                self.pending_approvals[ticket_id] = entry
+                wrapped_callback({
+                    "event": "approval_required",
+                    "ticket_id": ticket_id,
+                    "command": cmd,
+                    "reason": rsn,
+                    "session_id": active_sid,
+                    "project": cur_proj
+                })
+                finished = done_evt.wait(timeout=300)
+                self.pending_approvals.pop(ticket_id, None)
+                if not finished:
+                    logger.warning(f"Approval timed out for ticket {ticket_id}")
+                    return False
+                return bool(entry["decision"])
+
+            def handle_user_interaction(req_data: Dict[str, Any]) -> Dict[str, Any]:
+                req_id = f"req_{int(time.time()*1000)}_{uuid.uuid4().hex[:6]}"
+                done_evt = threading.Event()
+                entry = {
+                    "event": done_evt,
+                    "result": {},
+                    "session_id": active_sid,
+                    "project": cur_proj
+                }
+                self.pending_user_inputs[req_id] = entry
+                wrapped_callback({
+                    "event": "user_input_request",
+                    "request_id": req_id,
+                    "question": req_data.get("question", ""),
+                    "options": req_data.get("options", []),
+                    "header": req_data.get("header", "用户确认与决策"),
+                    "allow_custom": req_data.get("allow_custom", True),
+                    "session_id": active_sid,
+                    "project": cur_proj
+                })
+                finished = done_evt.wait(timeout=600)
+                self.pending_user_inputs.pop(req_id, None)
+                if not finished:
+                    return {"selected_option": "", "custom_input": "【用户未在限定时间内响应】"}
+                return entry["result"]
+
+            default_policy.approval_callback = ask_approval_callback
+            set_user_interaction_handler(handle_user_interaction)
+
             # 在独立工作线程中运行该专属 Agent 的 run() 并挂接流式 Token 回调与实时思考回调
             try:
                 result = await loop.run_in_executor(
@@ -524,6 +629,8 @@ class AgentBridge:
             cur_agent.abort()
             raise
         finally:
+            default_policy.approval_callback = None
+            set_user_interaction_handler(None)
             cur_agent.executor = orig_executor
 
 bridge = AgentBridge()

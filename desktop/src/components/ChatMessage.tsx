@@ -637,10 +637,10 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   const showTrace = isLoading ? true : traceExpanded;
 
   return (
-    <div className="space-y-3.5 mb-6 select-text">
+    <div id={`turn-container-${turn.turn_id}`} className="space-y-3.5 mb-6 select-text">
       {/* 1. 用户提问气泡 (支持气泡原地就地编辑重发与复制，支持附件展示) */}
       {(turn.user_prompt || (turn.attachments && turn.attachments.length > 0)) && (
-        <div className="flex items-start gap-2.5 justify-end group">
+        <div id={`turn-user-${turn.turn_id}`} className="flex items-start gap-2.5 justify-end group scroll-mt-6">
           {!isEditing && (
             <div className="flex items-center gap-1.5 self-end mb-1 text-gray-400 text-xs select-none">
               <span className="text-[11px] font-mono text-gray-400">{timeStr}</span>

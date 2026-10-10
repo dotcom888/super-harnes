@@ -40,6 +40,7 @@ interface EmptyStateProps {
   onSelectProject?: (name: string) => void;
   onAddWorkspace?: () => void;
   onPause?: () => void;
+  onPermissionChange?: (newMode: string) => void;
 }
 
 interface CommandItem {
@@ -63,11 +64,16 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   onOpenModelSettings,
   onSelectProject,
   onAddWorkspace,
-  onPause
+  onPause,
+  onPermissionChange
 }) => {
   const [input, setInput] = useState("");
   const [model, setModel] = useState(selectedModel || models[0] || "");
-  const [permission, setPermission] = useState("AUTO 模式");
+  const [permission, setPermission] = useState(modeName || "AUTO 模式");
+
+  useEffect(() => {
+    if (modeName) setPermission(modeName);
+  }, [modeName]);
   const [showWorkspaceMenu, setShowWorkspaceMenu] = useState(false);
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showPermMenu, setShowPermMenu] = useState(false);
@@ -370,7 +376,11 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
                   ].map((item) => (
                     <div
                       key={item.id}
-                      onClick={() => { setPermission(item.id); setShowPermMenu(false); }}
+                      onClick={() => {
+                        setPermission(item.id);
+                        setShowPermMenu(false);
+                        onPermissionChange?.(item.id);
+                      }}
                       className={`px-3 py-2 hover:bg-gray-50 cursor-pointer flex flex-col transition ${
                         permission === item.id ? "text-blue-600 font-semibold bg-blue-50/50" : "text-gray-700"
                       }`}

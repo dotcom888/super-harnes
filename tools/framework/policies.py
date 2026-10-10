@@ -216,6 +216,7 @@ class CommandPolicy:
             mode = APPROVAL_MODE
         self.mode = mode if mode in ("auto", "never", "ask", "always_ask") else "auto"
         self.session_approved = False  # 会话级全局信任开关
+        self.approval_callback = None  # 外部注入的审批回调函数 Callable[[str, str], bool]
 
     def reset_session_approval(self):
         """重置当前会话的临时放行状态"""
@@ -312,18 +313,32 @@ class CommandPolicy:
 
     def request_approval(self, command: str, reason: str) -> bool:
         """
-        终端交互卡片：Human-in-the-Loop 人工审核
+        终端交互卡片 / 桌面端 GUI 异步审批：Human-in-the-Loop 人工审核
         """
         # 在 AUTO 模式或会话已授权状态下，直接放行，无需终端打扰
         if self.mode in ("auto", "never") or self.session_approved:
             return True
 
+        # 1. 优先调用注册的异步/GUI 交互审批回调 (例如 Desktop 桌面端 WebSocket 审批流)
+        if getattr(self, "approval_callback", None) is not None:
+            try:
+                return bool(self.approval_callback(command, reason))
+            except Exception as err:
+                print(f"[Policy] approval_callback 执行异常: {err}")
+                return False
+
+        # 2. 终端交互 UI
         try:
             from cli.ui import default_ui
             if default_ui.is_active:
                 return default_ui.render_approval_prompt(command, reason)
         except Exception:
             pass
+
+        # 3. 检查是否在交互终端环境 (杜绝非交互后台桌面服务阻塞在 stdin.input 上)
+        import sys
+        if not sys.stdin or not hasattr(sys.stdin, "isatty") or not sys.stdin.isatty():
+            return False
 
         print("\n" + "!" * 55)
         print("【安全提示】Agent 申请执行敏感操作：")

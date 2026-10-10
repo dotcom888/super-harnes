@@ -26,7 +26,7 @@ def _auto_discover_builtin_tools():
             except Exception:
                 pass
     # 显式导入以确保在 PyInstaller 打包脱机环境下核心内置工具 100% 注册
-    for mod in ['file_tools', 'patch_tool', 'search_tools', 'shell_tool', 'skill_tools']:
+    for mod in ['file_tools', 'patch_tool', 'search_tools', 'shell_tool', 'skill_tools', 'interaction_tools']:
         try:
             importlib.import_module(f'tools.builtin.{mod}')
         except Exception:
