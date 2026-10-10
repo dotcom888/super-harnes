@@ -1345,7 +1345,7 @@ export const App: React.FC = () => {
       <DevToolsSidebar
         isOpen={isDevToolsOpen}
         onClose={handleToggleDevTools}
-        workspacePath={projects.find((p) => p.name === projectName)?.path || "E:\\study\\super-harnes"}
+        workspacePath={projects.find((p) => p.name === projectName)?.path || ""}
         sessionKey={currentSessionKey}
         tabs={currentDevToolsTabs}
         onTabsChange={(tabs) => setSessionDevToolsTabsMap((prev) => ({ ...prev, [currentSessionKey]: tabs }))}

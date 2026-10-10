@@ -67,8 +67,15 @@ class ToolRegistry:
         description: Optional[str] = None,
         param_descriptions: Optional[Dict[str, str]] = None,
         immutable: bool = False,
-        is_read_only: bool = False
+        is_read_only: bool = False,
+        parameters: Optional[Dict[str, str]] = None,
+        read_only: Optional[bool] = None,
+        **kwargs
     ):
+        if param_descriptions is None and parameters is not None:
+            param_descriptions = parameters
+        if read_only is not None:
+            is_read_only = read_only
         """
         装饰器：将一个普通的 Python 函数自动注册为 Agent 可调用的工具
         :param name: 工具名称（不传则默认取函数名）

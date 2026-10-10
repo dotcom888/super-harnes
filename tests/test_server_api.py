@@ -77,7 +77,7 @@ class TestServerAPI(unittest.TestCase):
         proj_names = [p["name"] for p in data["projects"]]
         self.assertIn("super-harnes", proj_names)
         self.assertIn("ceshi", proj_names)
-        self.assertIn("openclaw-main", proj_names)
+        self.assertIn("ECoHarvest", proj_names)
         self.assertNotIn("Administrator", proj_names)
 
     def test_session_turns_cross_project(self):

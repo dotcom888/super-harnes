@@ -39,7 +39,7 @@ interface DevToolsSidebarProps {
 export const DevToolsSidebar: React.FC<DevToolsSidebarProps> = ({
   isOpen,
   onClose,
-  workspacePath = "E:\\study\\super-harnes",
+  workspacePath = "",
   sessionKey,
   tabs,
   onTabsChange,

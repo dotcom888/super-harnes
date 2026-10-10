@@ -90,6 +90,7 @@ export interface ModelProvider {
   api_key?: string;
   models: string[];
   is_custom: boolean;
+  protocol?: string;
   status: 'connected' | 'unconfigured';
 }
 

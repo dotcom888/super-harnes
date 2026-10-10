@@ -10,7 +10,20 @@
         "gemini-3.8-flash-high"
       ],
       "is_custom": true,
-      "status": "connected"
+      "status": "connected",
+      "protocol": "openai_chat"
+    },
+    {
+      "id": "provider_1791640614",
+      "name": "deepseek",
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key": "sk-7ff889c5b449432a94765dcce26bd8b8",
+      "models": [
+        "deepseek-v4-flash"
+      ],
+      "is_custom": true,
+      "status": "connected",
+      "protocol": "openai_chat"
     }
   ]
 }

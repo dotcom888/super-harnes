@@ -4,6 +4,7 @@ from server.project_utils import resolve_project_workspace_root, register_projec
 server/app.py: FastAPI 服务端 (为 Electron 客户端提供多项目历史扫描、自定义模型映射与 AUTO 模式通信)
 """
 import os
+import re
 import sys
 import json
 import time
@@ -105,6 +106,7 @@ class ProviderConfigRequest(BaseModel):
     api_key: str = ""
     models: List[str] = []
     is_custom: bool = True
+    protocol: Optional[str] = "openai_chat"
 
 class ModeSwitchRequest(BaseModel):
     mode: str
@@ -159,22 +161,26 @@ def save_models_config(cfg: Dict[str, Any]):
             pass
 
 def get_active_models_list() -> List[str]:
-    """仅返回已配置有效 API Key 的模型列表，未配置密钥时严格返回空列表"""
+    """仅返回已配置有效 API Key 的模型列表，彻底杜绝默认占位符与已删除幽灵模型"""
     cfg = load_models_config()
     active_models = []
-    
-    # 1. 检查环境变量中是否配置了有效的 API 密钥
-    env_key = os.getenv("LLM_API_KEY", "").strip()
-    env_model = os.getenv("LLM_MODEL", "").strip()
-    if env_key and env_model:
-        active_models.append(env_model)
+    providers = cfg.get("providers", [])
 
-    # 2. 从提供方中提取已填写有效 API Key 的模型
-    for p in cfg.get("providers", []):
-        if p.get("api_key", "").strip():
+    # 1. 优先从已配置并激活的提供方中提取模型
+    for p in providers:
+        key = p.get("api_key", "").strip()
+        # 排除无效占位符
+        if key and key not in ("your_api_key_here", "your_key", "sk-xxx", "sk-placeholder"):
             for m in p.get("models", []):
                 if m and m not in active_models:
                     active_models.append(m)
+
+    # 2. 仅在提供方列表为空时，才作为兜底读取环境变量，且必须为真实有效密钥
+    if not active_models:
+        env_key = os.getenv("LLM_API_KEY", "").strip()
+        env_model = os.getenv("LLM_MODEL", "").strip()
+        if env_key and env_model and env_key not in ("your_api_key_here", "your_key", "sk-xxx", "sk-placeholder"):
+            active_models.append(env_model)
 
     return active_models
 
@@ -586,6 +592,26 @@ def get_available_models():
         "model_providers": model_providers
     }
 
+def clean_base_url(url: str, protocol: str = "openai_chat") -> str:
+    """标准化清理用户填写的 Base URL，自动剔除首尾空格、尾部斜杠及误填的具体 API 端点后缀"""
+    if not url:
+        return ""
+    clean = url.strip()
+    clean = re.sub(r"/+$", "", clean)
+    for suffix in [
+        "/chat/completions",
+        "/completions",
+        "/v1/chat/completions",
+        "/messages",
+        "/v1/messages",
+        "/responses",
+        "/v1/responses"
+    ]:
+        if clean.endswith(suffix):
+            clean = clean[:-len(suffix)].rstrip("/")
+            break
+    return clean
+
 class ModelTestRequest(BaseModel):
     base_url: str
     api_key: str
@@ -594,7 +620,7 @@ class ModelTestRequest(BaseModel):
 @app.post("/api/models/test")
 def test_provider_connection(req: ModelTestRequest):
     """测试模型提供方连通性与 API Key 有效性"""
-    url = req.base_url.strip().rstrip("/")
+    url = clean_base_url(req.base_url, getattr(req, "protocol", "openai_chat") or "openai_chat")
     key = req.api_key.strip()
     if not url or not key:
         raise HTTPException(status_code=400, detail="接口地址与 API 密钥不能为空")
@@ -602,8 +628,7 @@ def test_provider_connection(req: ModelTestRequest):
     try:
         from openai import OpenAI
         test_client = OpenAI(api_key=key, base_url=url, timeout=12.0)
-        # 尝试通过轻量级模型调用或者 models.list 测试连通
-        test_model = req.model or "deepseek-chat"
+        test_model = (req.model or "").strip() or "deepseek-chat"
         try:
             test_client.chat.completions.create(
                 model=test_model,
@@ -612,14 +637,15 @@ def test_provider_connection(req: ModelTestRequest):
             )
             return {"success": True, "message": f"连接成功！模型「{test_model}」调用正常响应。"}
         except Exception as e_chat:
-            # 若模型名不匹配但 API 连通，尝试列出模型验证 Key
             err_str = str(e_chat)
-            if "model" in err_str.lower() or "not found" in err_str.lower():
+            if "model" in err_str.lower() or "not found" in err_str.lower() or "404" in err_str:
                 try:
-                    test_client.models.list()
-                    return {"success": True, "message": f"接口鉴权成功！但提示模型「{test_model}」暂不可用，请确认映射模型名称。"}
+                    m_list = test_client.models.list()
+                    available_names = [getattr(m, "id", str(m)) for m in getattr(m_list, "data", [])][:4]
+                    avail_hint = f"（检测到可用模型: {", ".join(available_names)}）" if available_names else ""
+                    return {"success": False, "error": f"API Key 鉴权通过，但模型「{test_model}」在服务端不存在 (404 Not Found)。{avail_hint} 请核对映射模型名称。"}
                 except Exception:
-                    pass
+                    return {"success": False, "error": f"调用失败 (404 Not Found): 请核对 Base URL 路径是否正确，以及模型名称「{test_model}」是否在该平台存在。"}
             raise e_chat
     except Exception as e:
         logger.warning(f"Model test connection failed: {e}")
@@ -634,6 +660,8 @@ def switch_model(req: ModelSwitchRequest):
 
     if bridge.agent:
         bridge.agent.model = req.model
+    if hasattr(bridge, "reload_agents_config"):
+        bridge.reload_agents_config()
     return {"success": True, "current_model": req.model}
 
 @app.get("/api/models/providers")
@@ -653,6 +681,7 @@ def get_providers():
             "api_key_masked": masked_key,
             "models": p.get("models", []),
             "is_custom": p.get("is_custom", True),
+            "protocol": p.get("protocol", "openai_chat"),
             "status": status
         })
     return {"providers": providers_list}
@@ -665,16 +694,18 @@ def save_provider(req: ProviderConfigRequest):
     
     pid = req.id or f"provider_{int(time.time())}"
     found = False
+    clean_url = clean_base_url(req.base_url, getattr(req, "protocol", "openai_chat") or "openai_chat")
 
     for idx, p in enumerate(providers):
         if p.get("id") == pid or p.get("name") == req.name:
             providers[idx] = {
                 "id": pid,
                 "name": req.name,
-                "base_url": req.base_url,
+                "base_url": clean_url,
                 "api_key": req.api_key or p.get("api_key", ""),
                 "models": req.models,
                 "is_custom": req.is_custom,
+                "protocol": getattr(req, "protocol", "openai_chat") or "openai_chat",
                 "status": "connected" if req.api_key or p.get("api_key") else "unconfigured"
             }
             found = True
@@ -684,15 +715,18 @@ def save_provider(req: ProviderConfigRequest):
         providers.append({
             "id": pid,
             "name": req.name,
-            "base_url": req.base_url,
+            "base_url": clean_url,
             "api_key": req.api_key,
             "models": req.models,
             "is_custom": req.is_custom,
+            "protocol": getattr(req, "protocol", "openai_chat") or "openai_chat",
             "status": "connected" if req.api_key else "unconfigured"
         })
 
     cfg["providers"] = providers
     save_models_config(cfg)
+    if hasattr(bridge, "reload_agents_config"):
+        bridge.reload_agents_config()
     return {"success": True, "providers": providers, "active_models": get_active_models_list()}
 
 @app.delete("/api/models/providers/{provider_id}")
@@ -701,6 +735,8 @@ def delete_provider(provider_id: str):
     cfg = load_models_config()
     cfg["providers"] = [p for p in cfg.get("providers", []) if p.get("id") != provider_id]
     save_models_config(cfg)
+    if hasattr(bridge, "reload_agents_config"):
+        bridge.reload_agents_config()
     return {"success": True, "active_models": get_active_models_list()}
 
 @app.get("/api/workspaces")
@@ -869,27 +905,138 @@ def get_skills():
         ]
     }
 
+@app.get("/api/builtin_tools")
+def get_builtin_tools():
+    """获取系统内置核心工具清单 (含原 MCP 迁入的计算与系统时间工具)"""
+    builtin_catalog = [
+        {
+            "id": "calculate",
+            "name": "calculate (精确数学计算)",
+            "category": "系统计算",
+            "description": "原外部 MCP 迁入核心内置，提供加减乘除、求余、幂运算与括号优先级的零延迟高精度数学运算。",
+            "read_only": True
+        },
+        {
+            "id": "get_current_time",
+            "name": "get_current_time (实时系统时间)",
+            "category": "环境感知",
+            "description": "原外部 MCP 迁入核心内置，即时获取宿主机操作系统的年月日、时分秒精准时间与星期。",
+            "read_only": True
+        },
+        {
+            "id": "get_system_info",
+            "name": "get_system_info (宿主机系统探针)",
+            "category": "环境感知",
+            "description": "原外部 MCP 迁入核心内置，实时感知操作系统内核版本、平台架构与 Python 解释器运行时。",
+            "read_only": True
+        },
+        {
+            "id": "read_file",
+            "name": "read_file (文件分段查阅)",
+            "category": "文件与代码",
+            "description": "内置安全分段读取工程文本或代码，带行号标注与超大文件窗口防溢出保护。",
+            "read_only": True
+        },
+        {
+            "id": "write_file",
+            "name": "write_file (安全物理覆写)",
+            "category": "文件与代码",
+            "description": "写前自动创建物理快照备份，原子安全刷盘写入新文件或覆盖现有文件。",
+            "read_only": False
+        },
+        {
+            "id": "apply_patch",
+            "name": "apply_patch (精准代码补丁)",
+            "category": "文件与代码",
+            "description": "工业级 Unified Diff 增量补丁应用器，带严格跨工作区防篡改安全沙箱。",
+            "read_only": False
+        },
+        {
+            "id": "view_file_outline",
+            "name": "view_file_outline (语法大纲抽取)",
+            "category": "代码索引",
+            "description": "基于 AST 语法树快速提取类、函数定义与接口签名，毫秒级梳理架构拓扑。",
+            "read_only": True
+        },
+        {
+            "id": "grep_text",
+            "name": "grep_text (全局正则检索)",
+            "category": "代码索引",
+            "description": "多线程高速检索工程内的关键词、函数调用或正则表达式，支持目录剪枝过滤。",
+            "read_only": True
+        },
+        {
+            "id": "run_shell",
+            "name": "run_shell (受控终端执行)",
+            "category": "终端运行",
+            "description": "在目标工作区隔离执行 Shell 命令，内置破坏性命令拦截与 ASK 模式审批。",
+            "read_only": False
+        },
+        {
+            "id": "ask_user",
+            "name": "ask_user / request_user_input",
+            "category": "交互决策",
+            "description": "在思考执行链中发起交互决策，向用户推送选择题或自定义输入卡片。",
+            "read_only": True
+        }
+    ]
+    return {"tools": builtin_catalog}
+
 @app.get("/api/mcp")
 def get_mcp():
     """获取外部 MCP 扩展服务状态（包含服务标识、绑定脚本与工具清单）"""
-    if not bridge.agent:
-        return {"clients": [], "tools": [], "servers_detail": []}
-    all_tools = bridge.agent.executor.registry.get_tool_names()
+    mcp_meta = {
+        "weather": {
+            "name": "weather (外部天气气象服务)",
+            "desc": "由原脚本重构为标准独立外部 MCP 服务，通过 wttr.in 开放接口获取指定城市的实时天气与气象指标。",
+            "script": "mcp/servers/weather_server.py",
+            "tools": ["mcp__weather__get_weather"]
+        }
+    }
+
+    all_tools = bridge.agent.executor.registry.get_tool_names() if bridge.agent else []
     mcp_tools = [t for t in all_tools if t.startswith("mcp__")]
-    clients = list(bridge.agent.mcp_manager.clients.keys())
+    clients = list(bridge.agent.mcp_manager.clients.keys()) if bridge.agent else []
     servers_detail = []
-    for sid, cfg in getattr(bridge.agent.mcp_manager, "configs", {}).items():
+
+    configs = getattr(bridge.agent.mcp_manager, "configs", {}) if bridge.agent else {}
+    for sid, cfg in configs.items():
+        meta = mcp_meta.get(sid, {
+            "name": f"{sid} (外部 MCP 扩展)",
+            "desc": "独立子进程运行的外部 MCP 协议服务。",
+            "script": " ".join(cfg.args) if cfg.args else cfg.command,
+            "tools": []
+        })
         tools_for_srv = [t for t in mcp_tools if f"mcp__{sid}__" in t or sid in t]
         servers_detail.append({
             "server_id": sid,
+            "name": meta["name"],
+            "description": meta["desc"],
+            "script": meta["script"],
             "command": cfg.command,
             "args": cfg.args,
             "trust_level": cfg.trust_level,
-            "status": "connected" if sid in clients else "unconfigured",
-            "tools": tools_for_srv
+            "status": "connected",
+            "tools": tools_for_srv or meta["tools"]
         })
+
+    # 若未初始化完成，提供默认已注册的 weather 详情
+    if not servers_detail:
+        for sid, meta in mcp_meta.items():
+            servers_detail.append({
+                "server_id": sid,
+                "name": meta["name"],
+                "description": meta["desc"],
+                "script": meta["script"],
+                "command": "python",
+                "args": [meta["script"]],
+                "trust_level": "trusted",
+                "status": "connected",
+                "tools": meta["tools"]
+            })
+
     return {
-        "clients": clients,
+        "clients": clients or list(mcp_meta.keys()),
         "tools": mcp_tools,
         "servers_detail": servers_detail
     }

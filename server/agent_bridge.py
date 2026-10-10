@@ -150,41 +150,54 @@ class AgentBridge:
     def agent(self, val: Optional[ReActAgent]):
         self.default_agent = val
 
-    def _resolve_model_config(self, ag_model: str) -> tuple[str, str]:
-        """严格根据模型名称解析匹配的 (api_key, base_url)，杜绝跨提供方乱借 Key"""
+    def _resolve_model_config(self, ag_model: str) -> tuple[str, str, str]:
         provider_key = ""
         provider_base_url = ""
+        provider_protocol = "openai_chat"
         try:
-            from server.app import load_models_config
+            from server.app import load_models_config, clean_base_url
             cfg = load_models_config()
             for p in cfg.get("providers", []):
                 if ag_model in p.get("models", []):
                     if p.get("api_key", "").strip():
                         provider_key = p.get("api_key", "").strip()
-                        provider_base_url = p.get("base_url", "").strip()
+                        raw_url = p.get("base_url", "").strip()
+                        provider_protocol = p.get("protocol", "openai_chat")
+                        provider_base_url = clean_base_url(raw_url, provider_protocol)
                         break
         except Exception:
             pass
 
         final_key = provider_key or os.getenv("LLM_API_KEY", "")
         final_base_url = provider_base_url or os.getenv("LLM_BASE_URL", "")
-        return final_key, final_base_url
+        return final_key, final_base_url, provider_protocol
 
     def get_or_create_agent(self, project_name: str, session_id: str, model: Optional[str] = None) -> ReActAgent:
         """获取或创建与指定 (project, session) 强绑定的专属独立 Agent 实例，确保多会话并发无串扰"""
         key = f"{project_name}:{session_id}"
+        target_model = model or (self.default_agent.model if self.default_agent else "deepseek-chat")
+        final_key, final_base_url, final_proto = self._resolve_model_config(target_model)
+
         if key in self.agents:
             ag = self.agents[key]
-            if model and model != ag.model:
-                ag.model = model
-                final_key, final_base_url = self._resolve_model_config(model)
+            needs_update = False
+            if target_model != ag.model:
+                ag.model = target_model
+                needs_update = True
+            if getattr(ag, "_resolved_key", None) != final_key or getattr(ag, "_resolved_base_url", None) != final_base_url:
+                needs_update = True
+
+            if needs_update:
                 if not final_key:
-                    raise ValueError(f"未配置模型「{model}」对应的有效 API 密钥！请点击右下角「+ 添加模型」或前往「系统设置 -> 模型」填入 API Key 与接口地址。")
+                    raise ValueError(f"未配置模型「{target_model}」对应的有效 API 密钥！请点击右下角「+ 添加模型」或前往「系统设置 -> 模型」填入 API Key 与接口地址。")
                 ag.api_key = final_key
                 ag.base_url = final_base_url or None
+                ag._resolved_key = final_key
+                ag._resolved_base_url = final_base_url
+                ag._resolved_proto = final_proto
                 from openai import OpenAI
                 ag.client = OpenAI(api_key=final_key, base_url=ag.base_url)
-                logger.info(f"Updated agent for session '{key}' to model '{model}' with baseUrl '{ag.base_url}'")
+                logger.info(f"Hot-reloaded agent client for session '{key}' to model '{target_model}' with baseUrl '{ag.base_url}'")
             return ag
 
         proj_dir = HISTORY_ROOT / project_name
@@ -200,22 +213,28 @@ class AgentBridge:
             project_name=project_name
         )
 
-        ag_model = model or (self.default_agent.model if self.default_agent else "deepseek-chat")
-
-        final_key, final_base_url = self._resolve_model_config(ag_model)
         if not final_key:
-            raise ValueError(f"未配置模型「{ag_model}」对应的有效 API 密钥！请点击右下角「+ 添加模型」或前往「系统设置 -> 模型」填入 API Key 与接口地址。")
+            raise ValueError(f"未配置模型「{target_model}」对应的有效 API 密钥！请点击右下角「+ 添加模型」或前往「系统设置 -> 模型」填入 API Key 与接口地址。")
 
         ag = ReActAgent(
             api_key=final_key or None,
             base_url=final_base_url or None,
-            model=ag_model,
+            model=target_model,
             session_manager=sess_mgr
         )
+        ag._resolved_key = final_key
+        ag._resolved_base_url = final_base_url
+        ag._resolved_proto = final_proto
 
         self.agents[key] = ag
-        logger.info(f"Created dedicated ReActAgent instance for session '{key}', workspace: {target_workspace.root}, model: {ag_model}")
+        logger.info(f"Created dedicated ReActAgent instance for session '{key}', workspace: {target_workspace.root}, model: {target_model}")
         return ag
+
+    def reload_agents_config(self):
+        """当用户在设置页新增、修改、删除提供方或切换配置时，彻底重载并更新 Agent 缓存"""
+        logger.info(f"Reloading agent bridge config, cleared {len(self.agents)} cached agent instances.")
+        self.agents.clear()
+        self._init_agent()
 
     def resolve_approval(self, ticket_id: str, approved: bool, trust_session: bool = False) -> bool:
         """解析前端发回的审批结果"""
@@ -602,7 +621,22 @@ class AgentBridge:
             except Exception as run_err:
                 logger.error(f"Error running agent for prompt: {run_err}", exc_info=True)
                 elapsed_total = round(max(1.0, time.time() - start_time), 1)
-                err_text = f"❌ 模型调用失败: {str(run_err)}\n\n💡 检查建议: 请前往右下角「+ 添加模型」或「系统设置 -> 模型」检查模型「{getattr(cur_agent, 'model', model)}」的 API Key、接口地址 (Base URL) 是否正确有效。"
+                err_str = str(run_err)
+                target_model_name = getattr(cur_agent, 'model', model)
+                actual_base_url = getattr(cur_agent, 'base_url', '') or '默认地址'
+                if "404" in err_str or "notfound" in err_str.lower() or "not found" in err_str.lower():
+                    err_text = (
+                        f"❌ 模型调用失败: 404 Not Found (接口路径或模型未找到)\n\n"
+                        f"🔍 当前请求参数:\n"
+                        f"- 映射模型: `{target_model_name}`\n"
+                        f"- 接口地址 (Base URL): `{actual_base_url}`\n\n"
+                        f"💡 排查建议:\n"
+                        f"1. **模型名称不存在**: 请确认提供方是否真实开放了 `{target_model_name}` 模型（例如 DeepSeek 官方标准模型名为 `deepseek-chat` 或 `deepseek-reasoner`）；\n"
+                        f"2. **Base URL 端点多余或错误**: 接口地址只需填写到域名或版本前缀（例如 `https://api.deepseek.com/v1`），请勿填写 `/chat/completions` 等完整请求后缀；\n"
+                        f"3. 请前往右下角「+ 添加模型」或「系统设置 -> 模型提供方」检查并保存最新配置后重试。"
+                    )
+                else:
+                    err_text = f"❌ 模型调用失败: {str(run_err)}\n\n💡 检查建议: 请前往右下角「+ 添加模型」或「系统设置 -> 模型」检查模型「{target_model_name}」的 API Key、接口地址 (Base URL) 是否正确有效。"
                 wrapped_callback({
                     "event": "assistant_response",
                     "content": err_text,

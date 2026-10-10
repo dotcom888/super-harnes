@@ -75,9 +75,9 @@ class TestMcpIntegration(unittest.TestCase):
 
         try:
             loaded_map = manager.start_and_bridge_all()
-            self.assertIn("calculator", loaded_map)
-            expected_tool_name = "mcp__calculator__mcp_calculate"
-            self.assertIn(expected_tool_name, loaded_map["calculator"])
+            self.assertIn("weather", loaded_map)
+            expected_tool_name = "mcp__weather__get_weather"
+            self.assertIn(expected_tool_name, loaded_map["weather"])
             self.assertIn(expected_tool_name, test_registry.get_tool_names())
             # 验证废除短别名
             self.assertNotIn("mcp_calculate", test_registry.get_tool_names())
@@ -227,16 +227,15 @@ class TestMcpIntegration(unittest.TestCase):
 
             # 2. 验证即便当前工作区无任何配置文件，仍能自动加载内置的 calculator 和 system_info
             loaded = manager.load_configs()
-            self.assertIn("calculator", loaded)
-            self.assertIn("system_info", loaded)
-
+            self.assertIn("weather", loaded)
+            
             # 3. 验证脚本路径双基准解析成功：calc_server.py 被解析为绝对路径且真实存在于磁盘
-            calc_cfg = loaded["calculator"]
+            calc_cfg = loaded["weather"]
             self.assertTrue(len(calc_cfg.args) >= 1)
             resolved_script = Path(calc_cfg.args[0])
             self.assertTrue(resolved_script.is_absolute())
             self.assertTrue(resolved_script.exists())
-            self.assertEqual(resolved_script.name, "calc_server.py")
+            self.assertEqual(resolved_script.name, "weather_server.py")
         finally:
             set_workspace_root(orig_root)
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -274,7 +273,7 @@ class TestMcpIntegration(unittest.TestCase):
             # 项目专属服务成功载入
             self.assertIn("project_custom_srv", loaded)
             # 全局/内置保底服务 (calculator) 同时保留合并
-            self.assertIn("calculator", loaded)
+            self.assertIn("weather", loaded)
         finally:
             set_workspace_root(orig_root)
             shutil.rmtree(temp_dir, ignore_errors=True)

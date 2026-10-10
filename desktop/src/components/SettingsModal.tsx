@@ -81,7 +81,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       }
       const data = await res.json();
       const tag = (data.tag_name || data.name || "").trim();
-      const currentVer = "v5.7.5";
+      const currentVer = "v5.7.6";
       setLatestVersion(tag || "未知");
       const htmlUrl = data.html_url || "https://github.com/dotcom888/super-harnes/releases";
       setReleaseUrl(htmlUrl);
@@ -129,6 +129,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [formBaseUrl, setFormBaseUrl] = useState("");
   const [formApiKey, setFormApiKey] = useState("");
   const [formModels, setFormModels] = useState("");
+  const [formProtocol, setFormProtocol] = useState<string>("openai_chat");
   const [isFormCustom, setIsFormCustom] = useState(true);
   const [showApiKey, setShowApiKey] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
@@ -160,6 +161,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setFormBaseUrl(p.base_url);
     setFormApiKey(p.api_key || "");
     setFormModels((p.models || []).join(", "));
+    setFormProtocol(p.protocol || "openai_chat");
     setIsFormCustom(Boolean(p.is_custom));
     setIsAddingCustom(false);
     setShowApiKey(false);
@@ -175,6 +177,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setFormBaseUrl("");
     setFormApiKey("");
     setFormModels("");
+    setFormProtocol("openai_chat");
     setIsFormCustom(true);
     setShowApiKey(false);
     setTestResult(null);
@@ -208,7 +211,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         body: JSON.stringify({
           base_url: trimmedUrl,
           api_key: trimmedKey,
-          model: firstModel || undefined
+          model: firstModel || undefined,
+          protocol: formProtocol
         })
       });
       const data = await res.json();
@@ -264,6 +268,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       base_url: baseUrl,
       api_key: apiKey,
       models: modelsList,
+      protocol: formProtocol,
       is_custom: isFormCustom
     };
 
@@ -435,6 +440,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               自定义
                             </span>
                           )}
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800/40">
+                            {p.protocol === "openai_responses" ? "/v1/responses" : p.protocol === "anthropic_messages" ? "/v1/messages" : p.protocol === "gemini_v1beta" ? "/v1beta" : "/chat/completions"}
+                          </span>
                           <span
                             className={`w-2.5 h-2.5 rounded-full inline-block ${
                               isConnected ? "bg-green-500 shadow-sm" : "bg-red-500"
@@ -510,6 +518,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         placeholder="例如: https://api.deepseek.com/v1"
                         className="w-full px-3 py-1.5 bg-white dark:bg-[#1f2230] border border-gray-200 dark:border-[#2e344a] text-gray-900 dark:text-gray-100 rounded-lg focus:border-blue-500 outline-none"
                       />
+                    </div>
+
+                    <div>
+                      <label className="block text-gray-600 dark:text-gray-400 font-medium mb-1 flex items-center justify-between">
+                        <span>接口协议 / 报文格式 (Protocol)</span>
+                        <span className="text-[11px] text-blue-600 dark:text-blue-400 font-normal">默认: /chat/completions</span>
+                      </label>
+                      <select
+                        value={formProtocol}
+                        onChange={(e) => setFormProtocol(e.target.value)}
+                        className="w-full px-3 py-1.5 bg-white dark:bg-[#1f2230] border border-gray-200 dark:border-[#2e344a] text-gray-900 dark:text-gray-100 rounded-lg focus:border-blue-500 outline-none cursor-pointer"
+                      >
+                        <option value="openai_chat">OpenAI 兼容 (/chat/completions) (推荐)</option>
+                        <option value="openai_responses">OpenAI Responses (/v1/responses)</option>
+                        <option value="anthropic_messages">Anthropic Claude (/v1/messages)</option>
+                        <option value="gemini_v1beta">Google Gemini (/v1beta)</option>
+                      </select>
+                      <div className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">
+                        市面上绝大多数大模型与中转（DeepSeek、通义千问、Kimi 等）均原生支持 OpenAI /chat/completions。
+                      </div>
                     </div>
 
                     <div>
@@ -777,7 +805,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <img src={LOGO_DATA_URI} alt="super logo" className="w-10 h-10 object-contain" />
                     <div>
                       <h2 className="text-base font-bold text-gray-900 dark:text-white">super HARNESS 桌面客户端</h2>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">版本 v5.7.5 · DeepSeek Harness 架构增强版</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">版本 v5.7.6 · DeepSeek Harness 架构增强版</p>
                     </div>
                   </div>
 
@@ -801,7 +829,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 {checkVersionStatus === "latest" && (
                   <div className="flex items-center gap-2 p-3 bg-emerald-50/80 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800/40 rounded-xl text-emerald-700 dark:text-emerald-400">
                     <CheckCircle2 size={16} className="shrink-0" />
-                    <span className="font-medium">当前已是最新版本 (v5.7.5)，与 GitHub 官方发布版本一致。</span>
+                    <span className="font-medium">当前已是最新版本 (v5.7.6)，与 GitHub 官方发布版本一致。</span>
                   </div>
                 )}
 
@@ -810,7 +838,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2 text-blue-800 dark:text-blue-300 font-semibold">
                         <Sparkles size={16} />
-                        <span>发现新版本: {latestVersion} (当前为 v5.7.5)</span>
+                        <span>发现新版本: {latestVersion} (当前为 v5.7.6)</span>
                       </div>
                       <button
                         type="button"

@@ -42,12 +42,20 @@ class SkillManager:
         3. Codex / Super-Harnes 兼容级：~/.codex/skills, ~/.super-harnes/skills
         """
         candidates: List[Tuple[Path, str]] = []
-        ws = self.workspace_root
-        if ws and ws.exists():
-            candidates.append((ws / ".skills", "workspace"))
-            candidates.append((ws / ".agents" / "skills", "workspace"))
-            candidates.append((ws / ".super-harnes" / "skills", "workspace"))
+        agent_source_root = Path(__file__).resolve().parents[1]
 
+        # 1. super 智能体内核原生搭载的专家技能 SOP (属于系统内置级)
+        candidates.append((agent_source_root / ".skills", "builtin"))
+        candidates.append((agent_source_root / "skills", "builtin"))
+
+        # 2. 当前工程工作区私有级 (排除智能体自身源码目录)
+        ws = self.workspace_root
+        if ws and ws.exists() and ws.resolve() != agent_source_root.resolve():
+            candidates.append((ws / ".skills", "project"))
+            candidates.append((ws / ".agents" / "skills", "project"))
+            candidates.append((ws / ".super-harnes" / "skills", "project"))
+
+        # 3. 用户全局宿主机目录 (跨 Agent 共享技能库)
         home = Path.home()
         candidates.append((home / ".agents" / "skills", "user"))
         candidates.append((home / ".super-harnes" / "skills", "user"))
