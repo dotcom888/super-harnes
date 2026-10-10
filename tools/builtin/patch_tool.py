@@ -77,7 +77,17 @@ def _validate_patch_target(target_path_str: str) -> Path:
                 f"【安全拦截】：目标路径包含受保护资产 '{part}'，禁止写入！"
             )
 
-    # 3. 核心自身源码保护（仅当操作 Agent 自身源码仓库时保护内核）
+    # 3. 跨工作区防篡改保护：当处于非 super-harnes 项目时，绝对禁止修改 super-harnes 自身源码
+    if default_workspace.root.resolve() != AGENT_SOURCE_ROOT.resolve():
+        try:
+            resolved.relative_to(AGENT_SOURCE_ROOT.resolve())
+            raise PermissionError(
+                f"【安全隔离拦截】：当前处于独立工作区 '{default_workspace.root.name}'，禁止修改 super 智能体自身源码目录 ({AGENT_SOURCE_ROOT})！"
+            )
+        except ValueError:
+            pass
+
+    # 4. 核心自身源码保护（仅当操作 Agent 自身源码仓库时保护内核）
     norm_rel = relative_path.as_posix()
     if default_workspace.root == AGENT_SOURCE_ROOT and norm_rel in CORE_PROTECTED_FILES:
         raise PermissionError(

@@ -314,6 +314,13 @@ def write_file(file_path: str, content: str) -> str:
         except ValueError:
             return f"【安全拦截】：目标路径 '{file_path}' 越出工作区范围，禁止写入！"
 
+        if default_workspace.root.resolve() != AGENT_SOURCE_ROOT.resolve():
+            try:
+                safe_path.relative_to(AGENT_SOURCE_ROOT.resolve())
+                return f"【安全隔离拦截】：当前处于独立工作区 '{default_workspace.root.name}'，禁止写入 super 智能体自身源码目录 ({AGENT_SOURCE_ROOT})！"
+            except ValueError:
+                pass
+
         if default_workspace.root == AGENT_SOURCE_ROOT and norm_rel in CORE_PROTECTED_FILES:
             return f"【安全拦截】：'{norm_rel}' 属于 Agent 核心安全引擎文件，已被设为只读保护，禁止写入！"
 

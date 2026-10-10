@@ -14,6 +14,7 @@ import { SettingsModal } from "./components/SettingsModal";
 import { PluginsModal } from "./components/PluginsModal";
 import { ApprovalModal } from "./components/ApprovalModal";
 import { ConfirmModal } from "./components/ConfirmModal";
+import { CreateProjectModal } from "./components/CreateProjectModal";
 import { SessionInfo, ProjectInfo, ToolAction, TaskItem, TurnData, TelemetryMetrics, TrajectoryStep, AttachmentItem, UserInputRequest } from "./types";
 import { TurnRuler } from "./components/TurnRuler";
 import { UserInputModal } from "./components/UserInputModal";
@@ -37,6 +38,7 @@ export const App: React.FC = () => {
 
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [isCreateProjectOpen, setIsCreateProjectOpen] = useState(false);
   const [showPlugins, setShowPlugins] = useState(false);
   const [approvalReq, setApprovalReq] = useState<{ ticket_id: string; command: string; reason: string } | null>(null);
   const [userInputReq, setUserInputReq] = useState<UserInputRequest | null>(null);
@@ -236,17 +238,17 @@ export const App: React.FC = () => {
     handleResolveUserInput(requestId, "", "【用户取消操作】");
   };
 
-  // 遥测性能指标
+  // 遥测性能指标 (真实会话动态遥测)
   const [metrics, setMetrics] = useState<TelemetryMetrics>({
-    turns: 1,
-    steps: 1,
-    total_time: "1.2s",
-    tool_time: "0.4s",
-    tokens_per_sec: 42.5,
-    cache_hit_rate: 0.85,
-    prompt_tokens: 125000,
-    completion_tokens: 3200,
-    total_tokens: 128200
+    turns: 0,
+    steps: 0,
+    total_time: "--",
+    tool_time: "--",
+    tokens_per_sec: 0,
+    cache_hit_rate: 0,
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0
   });
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -1004,33 +1006,27 @@ export const App: React.FC = () => {
       });
   };
 
-  // 选择磁盘项目并添加新工作区
-  const handleAddWorkspace = async () => {
-    let selectedDir: string | null = null;
-    const electronAPI = (window as any).electronAPI;
+  // 打开图三样式的“新建项目工作区”弹窗
+  const handleAddWorkspace = () => {
+    setIsCreateProjectOpen(true);
+  };
 
-    if (electronAPI?.selectDirectory) {
-      try {
-        selectedDir = await electronAPI.selectDirectory();
-      } catch (e) {}
-    } else {
-      selectedDir = window.prompt("请输入本地项目文件夹路径:");
-    }
-
-    if (!selectedDir) return;
-
-    fetch("http://127.0.0.1:8765/api/workspaces/add", {
+  // 确认创建并注册项目工作区
+  const handleConfirmCreateProject = async (name: string, path: string) => {
+    const res = await fetch("http://127.0.0.1:8765/api/workspaces/add", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: selectedDir })
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.name) {
-          handleSelectProjectInEmptyState(data.name);
-        }
-      })
-      .catch(() => {});
+      body: JSON.stringify({ name, path })
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.detail || "创建工作区失败");
+    }
+    const data = await res.json();
+    if (data.name) {
+      await fetchWorkspaceInfo();
+      handleSelectProjectInEmptyState(data.name);
+    }
   };
 
   // 切换大模型
@@ -1277,6 +1273,12 @@ export const App: React.FC = () => {
                         turn={turn}
                         isLoading={isCurrentSessionLoading && idx === turns.length - 1}
                         isLatestTurn={idx === turns.length - 1}
+                        approvalReq={isCurrentSessionLoading && idx === turns.length - 1 ? approvalReq : null}
+                        onApproveApproval={(tid, trust) => handleResolveApproval(tid, true, trust)}
+                        onRejectApproval={(tid) => handleResolveApproval(tid, false, false)}
+                        userInputReq={isCurrentSessionLoading && idx === turns.length - 1 ? userInputReq : null}
+                        onSubmitUserInput={handleResolveUserInput}
+                        onCancelUserInput={handleCancelUserInput}
                         onOpenFile={(p) => setSelectedFile(p)}
                         onEditPrompt={(txt) => setDraftPrompt(txt)}
                         onResendTurn={handleResendTurn}
@@ -1359,6 +1361,11 @@ export const App: React.FC = () => {
       
 
       {/* 3. 模态框与抽屉组件 */}
+      <CreateProjectModal
+        isOpen={isCreateProjectOpen}
+        onClose={() => setIsCreateProjectOpen(false)}
+        onCreate={handleConfirmCreateProject}
+      />
       <FileViewerModal filePath={selectedFile} onClose={() => setSelectedFile(null)} />
       <SettingsModal
         isOpen={showSettings}
@@ -1372,16 +1379,7 @@ export const App: React.FC = () => {
         onSelectFontSize={(lvl) => setFontSizeLevel(lvl)}
       />
       <PluginsModal isOpen={showPlugins} onClose={() => setShowPlugins(false)} />
-      <ApprovalModal
-        request={approvalReq}
-        onApprove={(tid, trust) => handleResolveApproval(tid, true, trust)}
-        onReject={(tid) => handleResolveApproval(tid, false, false)}
-      />
-      <UserInputModal
-        request={userInputReq}
-        onSubmit={handleResolveUserInput}
-        onCancel={handleCancelUserInput}
-      />
+      {/* 敏感操作审批与用户决策卡片已无缝集成至思考与工具执行流内部，消除居中遮罩弹窗 (对标图二) */}
       <ConfirmModal
         isOpen={Boolean(confirmDialog?.isOpen)}
         title={confirmDialog?.title || "操作确认"}

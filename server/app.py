@@ -1,3 +1,4 @@
+from server.project_utils import resolve_project_workspace_root, register_project_path, AGENT_SOURCE_ROOT, get_registered_projects
 # -*- coding: utf-8 -*-
 """
 server/app.py: FastAPI 服务端 (为 Electron 客户端提供多项目历史扫描、自定义模型映射与 AUTO 模式通信)
@@ -92,6 +93,7 @@ class WorkspaceSwitchRequest(BaseModel):
 
 class WorkspaceAddRequest(BaseModel):
     path: str
+    name: Optional[str] = None
 
 class ModelSwitchRequest(BaseModel):
     model: str
@@ -247,70 +249,68 @@ def scan_project_sessions(proj_dir: Path) -> List[Dict[str, Any]]:
     return sessions
 
 def get_all_projects_metadata() -> List[Dict[str, Any]]:
-    """扫描 history/ 目录，自动发现包含聊天历史的全部项目 (过滤已删除项目)"""
+    """扫描 history/ 目录，自动发现包含聊天历史的全部项目 (过滤已删除项目并严格绑定真实磁盘路径)"""
     projects = []
-    known_names = set()
+    known_lower = set()
 
     pins = load_pins_config()
     deleted_names = set(pins.get("deleted_projects", []))
 
-    # 1. 扫描 history/ 下的所有目录
+    # 0. 清理已在删除黑名单中残留的磁盘物理空目录，确保磁盘目录与界面绝对一致
+    if HISTORY_ROOT.exists():
+        for d in list(HISTORY_ROOT.iterdir()):
+            if d.is_dir() and d.name in deleted_names:
+                try:
+                    shutil.rmtree(d, ignore_errors=True)
+                except Exception:
+                    pass
+
+    # 1. 扫描 history/ 下的所有活跃项目目录
     if HISTORY_ROOT.exists():
         for d in HISTORY_ROOT.iterdir():
             if d.is_dir():
                 pname = d.name
-                if pname in deleted_names:
+                if pname in deleted_names or pname.lower() in [dn.lower() for dn in deleted_names]:
                     continue
-                known_names.add(pname)
+                known_lower.add(pname.lower())
                 proj_sessions = scan_project_sessions(d)
                 
-                # 尝试获取对应工作区根路径
-                proj_path = ""
-                ps_file = d / "project_state.json"
-                if ps_file.exists():
-                    try:
-                        with open(ps_file, "r", encoding="utf-8") as psf:
-                            ps_data = json.load(psf)
-                            proj_path = ps_data.get("workspace_root", "")
-                    except Exception:
-                        pass
+                # 全方位解析真实物理磁盘路径
+                proj_path = str(resolve_project_workspace_root(pname))
 
-                if not proj_path and pname == default_workspace.root.name:
-                    proj_path = str(default_workspace.root)
+                # 优先采用真实物理目录的标准大小写名称
+                display_pname = pname
+                if proj_path and Path(proj_path).exists() and Path(proj_path).name.lower() == pname.lower():
+                    display_pname = Path(proj_path).name
 
                 projects.append({
-                    "name": pname,
+                    "name": display_pname,
                     "path": proj_path,
                     "session_count": len(proj_sessions),
                     "sessions": proj_sessions
                 })
 
-    # 2. 检查注册在 ~/.super-harnes/projects.json 的磁盘工程
-    proj_map_file = Path.home() / ".super-harnes" / "projects.json"
-    if proj_map_file.exists():
-        try:
-            with open(proj_map_file, "r", encoding="utf-8") as f:
-                extra_projects = json.load(f)
-                for ep in extra_projects:
-                    ep_name = ep.get("name")
-                    if ep_name and ep_name not in known_names:
-                        if ep_name in deleted_names:
-                            continue
-                        known_names.add(ep_name)
-                        ep_dir = HISTORY_ROOT / ep_name
-                        ep_sessions = scan_project_sessions(ep_dir)
-                        projects.append({
-                            "name": ep_name,
-                            "path": ep.get("path", ""),
-                            "session_count": len(ep_sessions),
-                            "sessions": ep_sessions
-                        })
-        except Exception:
-            pass
+    # 2. 检查注册在 ~/.super-harnes/projects.json 的磁盘工程 (合并未扫描到的新工程)
+    extra_projects = get_registered_projects()
+    for ep in extra_projects:
+        ep_name = ep.get("name")
+        ep_path = ep.get("path", "")
+        if ep_name and ep_name.lower() not in known_lower:
+            if ep_name in deleted_names or ep_name.lower() in [dn.lower() for dn in deleted_names]:
+                continue
+            known_lower.add(ep_name.lower())
+            ep_dir = HISTORY_ROOT / ep_name
+            ep_sessions = scan_project_sessions(ep_dir) if ep_dir.exists() else []
+            projects.append({
+                "name": ep_name,
+                "path": ep_path,
+                "session_count": len(ep_sessions),
+                "sessions": ep_sessions
+            })
 
-    # 确保当前活跃工作区在列表中 (排除打包内部临时目录)
+    # 3. 确保当前工作区根目录在列表中 (排除打包内部临时目录)
     cur_name = default_workspace.root.name
-    if cur_name.lower() not in ("super-server", "bin", "resources", "_internal", "workspace") and cur_name not in known_names and cur_name not in deleted_names:
+    if cur_name.lower() not in ("super-server", "bin", "resources", "_internal", "workspace") and cur_name.lower() not in known_lower and cur_name not in deleted_names:
         cur_sessions = scan_project_sessions(HISTORY_ROOT / cur_name)
         projects.insert(0, {
             "name": cur_name,
@@ -319,7 +319,6 @@ def get_all_projects_metadata() -> List[Dict[str, Any]]:
             "sessions": cur_sessions
         })
 
-    pins = load_pins_config()
     pinned_projs = pins.get("pinned_projects", [])
     for p in projects:
         p["is_pinned"] = p["name"] in pinned_projs
@@ -756,39 +755,41 @@ def switch_workspace(req: WorkspaceSwitchRequest):
 
 @app.post("/api/workspaces/add")
 def add_workspace(req: WorkspaceAddRequest):
-    """选择磁盘项目并注册为新工作区"""
+    """选择磁盘项目并注册为新工作区 (支持用户自定义工作区名称与路径绑定)"""
     p = Path(req.path).resolve()
     if not p.exists() or not p.is_dir():
         raise HTTPException(status_code=400, detail="指定的磁盘目录不存在或不是文件夹")
 
-    # 注册到 ~/.super-harnes/projects.json
-    proj_map_file = Path.home() / ".super-harnes" / "projects.json"
-    proj_map_file.parent.mkdir(parents=True, exist_ok=True)
-    projects = []
-    if proj_map_file.exists():
-        try:
-            with open(proj_map_file, "r", encoding="utf-8") as f:
-                projects = json.load(f)
-        except Exception:
-            pass
+    proj_name = (req.name or p.name).strip()
+    norm_path = str(p)
 
-    # 避免重复
-    if not any(item.get("path") == str(p) for item in projects):
-        projects.append({"name": p.name, "path": str(p)})
-        with open(proj_map_file, "w", encoding="utf-8") as f:
-            json.dump(projects, f, ensure_ascii=False, indent=2)
+    # 1. 注册到 ~/.super-harnes/projects.json
+    register_project_path(proj_name, norm_path)
 
-    # 自动创建对应项目的历史目录
-    (HISTORY_ROOT / p.name).mkdir(parents=True, exist_ok=True)
+    # 2. 自动创建对应项目的历史目录并持久化 project_state.json
+    target_hist = HISTORY_ROOT / proj_name
+    target_hist.mkdir(parents=True, exist_ok=True)
+    ps_file = target_hist / "project_state.json"
+    ps_data = {"project_name": proj_name, "workspace_root": norm_path}
+    with open(ps_file, "w", encoding="utf-8") as f:
+        json.dump(ps_data, f, ensure_ascii=False, indent=2)
 
-    # 切换到该工作区
+    # 3. 若此前在已删除列表中，解除删除标记
+    pins = load_pins_config()
+    deleted_list = pins.get("deleted_projects", [])
+    if proj_name in deleted_list:
+        pins["deleted_projects"] = [x for x in deleted_list if x.lower() != proj_name.lower()]
+        save_pins_config(pins)
+
+    # 4. 动态切换工作区
+    set_workspace_root(norm_path)
     if bridge.agent:
-        bridge.agent.switch_workspace(str(p))
+        bridge.agent.switch_workspace(norm_path)
 
     return {
         "success": True,
-        "name": p.name,
-        "path": str(p),
+        "name": proj_name,
+        "path": norm_path,
         "projects": get_all_projects_metadata()
     }
 

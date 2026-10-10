@@ -297,8 +297,10 @@ class ContextManager:
         # 真实 API 用量追踪 (Ground-Truth API Usage Feedback)
         self.last_api_prompt_tokens: int = 0
         self.last_api_completion_tokens: int = 0
+        self.last_api_cached_tokens: int = 0
         self.total_api_prompt_tokens: int = 0
         self.total_api_completion_tokens: int = 0
+        self.total_api_cached_tokens: int = 0
 
         self.workspace = default_workspace
         self._base_dir = Path(base_dir).resolve() if base_dir else None
@@ -398,12 +400,21 @@ class ContextManager:
         except Exception as e:
             logger.error(f"持久化日志写入失败 [{record_type}]: {e}")
 
-    def record_api_usage(self, prompt_tokens: int, completion_tokens: int):
+    def record_api_usage(self, prompt_tokens: int, completion_tokens: int, cached_tokens: int = 0):
         """记录模型权威真实 API 消耗，便于监控与动态校准"""
         self.last_api_prompt_tokens = int(prompt_tokens or 0)
         self.last_api_completion_tokens = int(completion_tokens or 0)
+        self.last_api_cached_tokens = int(cached_tokens or 0)
         self.total_api_prompt_tokens += self.last_api_prompt_tokens
         self.total_api_completion_tokens += self.last_api_completion_tokens
+        self.total_api_cached_tokens += self.last_api_cached_tokens
+
+    @property
+    def api_cache_hit_rate(self) -> float:
+        """获取累计真实 API Prompt Cache 命中率 (0.0 至 1.0)"""
+        if self.total_api_prompt_tokens <= 0:
+            return 0.0
+        return round(self.total_api_cached_tokens / self.total_api_prompt_tokens, 4)
 
     @staticmethod
     def _extract_clean_goal(text: str) -> Optional[str]:
@@ -452,10 +463,12 @@ class ContextManager:
             user_msg["llm_content"] = llm_content
         self.current_turn.add_message(user_msg)
 
-        # 存盘使用紧凑版本，不将超大 base64 图像块硬编码写入磁盘历史
+        # 存盘使用紧凑版本，若 llm_content 为纯文本（如提取后的附件正文）同步记录，避免跨轮次历史前缀断层
         disk_msg = {"role": "user", "content": user_content}
         if attachments:
             disk_msg["attachments"] = attachments
+        if llm_content is not None and isinstance(llm_content, str):
+            disk_msg["llm_content"] = llm_content
         self._append_to_disk("user_message", disk_msg)
 
         extracted_goal = self._extract_clean_goal(user_content)
@@ -660,8 +673,10 @@ class ContextManager:
         self.turn_count = 0
         self.last_api_prompt_tokens = 0
         self.last_api_completion_tokens = 0
+        self.last_api_cached_tokens = 0
         self.total_api_prompt_tokens = 0
         self.total_api_completion_tokens = 0
+        self.total_api_cached_tokens = 0
         if hasattr(self, "snapshot_manager") and self.snapshot_manager:
             self.snapshot_manager.clear_session_snapshots(self.session_id)
         self.vacuum()
@@ -913,7 +928,11 @@ class ContextManager:
 
         # 追加活跃历史轮次（无缝衔接：user / assistant / tool，历史前缀稳态命中 Prompt Cache）
         for chunk in active_chunks:
-            final_messages.extend(chunk.messages)
+            for msg in chunk.messages:
+                if msg.get("role") == "user" and msg.get("llm_content") and isinstance(msg["llm_content"], str):
+                    final_messages.append({**msg, "content": msg["llm_content"]})
+                else:
+                    final_messages.append(msg)
 
         # 动态尾部：当前轮次消息
         # 消除 Prompt Cache 破坏：将高频动态变化的 WorkingMemory (融合项目全局与会话私有) 注入到当前轮次首条 user 消息头部

@@ -19,9 +19,10 @@ import {
   ExternalLink,
   Clock
 } from "lucide-react";
-import { TurnData, TrajectoryStep } from "../types";
+import { TurnData, TrajectoryStep, UserInputRequest } from "../types";
 import { LOGO_DATA_URI } from "../assets/logoData";
 import { ChatAttachmentItemCard } from "./AttachmentCards";
+import { InlineApprovalCard, InlineUserInputCard } from "./InlineInteractionCards";
 
 interface ChatMessageProps {
   turn: TurnData;
@@ -31,6 +32,12 @@ interface ChatMessageProps {
   onEditPrompt?: (text: string) => void;
   onResendTurn?: (turnId: number, newPrompt: string) => void;
   onOpenSettings?: () => void;
+  approvalReq?: { ticket_id: string; command: string; reason: string } | null;
+  onApproveApproval?: (ticketId: string, trustSession: boolean) => void;
+  onRejectApproval?: (ticketId: string) => void;
+  userInputReq?: UserInputRequest | null;
+  onSubmitUserInput?: (requestId: string, selectedOption: string, customInput: string) => void;
+  onCancelUserInput?: (requestId: string) => void;
 }
 
 // 格式化时间戳为 20:49 形式
@@ -563,7 +570,13 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   onOpenFile, 
   onEditPrompt,
   onResendTurn,
-  onOpenSettings
+  onOpenSettings,
+  approvalReq,
+  onApproveApproval,
+  onRejectApproval,
+  userInputReq,
+  onSubmitUserInput,
+  onCancelUserInput
 }) => {
   const [traceExpanded, setTraceExpanded] = useState(false);
 
@@ -634,7 +647,9 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   const fullDateTimeStr = formatFullDateTime(turn.timestamp);
   const elapsedStr = formatTurnElapsed(turn);
 
-  const showTrace = isLoading ? true : traceExpanded;
+  // 当存在待人工审批的敏感操作或用户决策卡片时，强制展开思考追踪区展现卡片 (对标需求 1)
+  const hasPendingInteraction = Boolean(approvalReq || userInputReq);
+  const showTrace = isLoading || hasPendingInteraction ? true : traceExpanded;
 
   return (
     <div id={`turn-container-${turn.turn_id}`} className="space-y-3.5 mb-6 select-text">
@@ -792,6 +807,24 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                 }
                 return null;
               })}
+
+              {/* ASK 模式行内安全审批卡片 (置于思考执行流中，对标图二样式，字体加粗区分) */}
+              {approvalReq && onApproveApproval && onRejectApproval && (
+                <InlineApprovalCard
+                  request={approvalReq}
+                  onApprove={onApproveApproval}
+                  onReject={onRejectApproval}
+                />
+              )}
+
+              {/* 用户方案决策行内交互卡片 (置于思考执行流中) */}
+              {userInputReq && onSubmitUserInput && onCancelUserInput && (
+                <InlineUserInputCard
+                  request={userInputReq}
+                  onSubmit={onSubmitUserInput}
+                  onCancel={onCancelUserInput}
+                />
+              )}
 
               {isLoading && (
                 <div className="flex items-center gap-2 text-xs text-blue-600 dark:text-blue-400 py-1.5 animate-pulse font-medium">

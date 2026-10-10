@@ -95,6 +95,14 @@ def build_system_prompt(base_prompt: Optional[str] = None, global_memory: Option
     except Exception:
         pass
 
+    # 3. 注入高阶软件工程规范与实战全流程手册 (构建约 20k Tokens 静态稳态锚点)
+    try:
+        from core.knowledge import ENGINEERING_PLAYBOOK
+        if ENGINEERING_PLAYBOOK:
+            parts.append(ENGINEERING_PLAYBOOK.strip())
+    except Exception:
+        pass
+
     return "\n\n".join(parts)
 
 DEFAULT_SYSTEM_PROMPT = build_system_prompt()

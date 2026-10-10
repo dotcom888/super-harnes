@@ -423,7 +423,8 @@ class ReActAgent:
                 # 若到达最终步或死循环红牌强制收尾，关闭工具接口，迫使模型汇总事实输出最终解答
                 loop_state = self.loop_detector.current_state
                 call_tools = tools_schema if (tools_schema and not is_last_step and not force_wrapup_active and loop_state != LoopState.FORCE_WRAPUP) else None
-                if call_tools:
+                # 为保障大模型 KV Cache 稳态命中 (Prompt Cache Stability)，在非严格掩码模式下保持 tools 列表单调稳定
+                if call_tools and getattr(self.stage_manager, "enable_stage_masking", False):
                     call_tools = self.stage_manager.reorder_or_mask_schemas(call_tools)
                 call_tool_choice = "auto" if call_tools else None
 
@@ -459,11 +460,29 @@ class ReActAgent:
                     prompt_toks = getattr(usage, "prompt_tokens", 0) or 0
                     comp_toks = getattr(usage, "completion_tokens", 0) or 0
                     total_toks = getattr(usage, "total_tokens", prompt_toks + comp_toks) or (prompt_toks + comp_toks)
-                    self.context_manager.record_api_usage(prompt_toks, comp_toks)
+                    
+                    # 权威解析真实 Prompt Cache 命中量 (支持 OpenAI / DeepSeek / Gemini / Claude)
+                    cached_toks = 0
+                    pt_details = getattr(usage, "prompt_tokens_details", None)
+                    if pt_details:
+                        cached_toks = getattr(pt_details, "cached_tokens", 0) or 0
+                    elif hasattr(usage, "cached_tokens"):
+                        cached_toks = getattr(usage, "cached_tokens", 0) or 0
+                    elif hasattr(usage, "cache_read_input_tokens"):
+                        cached_toks = getattr(usage, "cache_read_input_tokens", 0) or 0
+                    elif isinstance(usage, dict):
+                        cached_toks = (
+                            usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
+                            or usage.get("cached_tokens", 0)
+                            or usage.get("cache_read_input_tokens", 0)
+                        )
+
+                    self.context_manager.record_api_usage(prompt_toks, comp_toks, cached_toks)
                     if is_ui:
                         default_ui.render_token_usage(prompt_toks, comp_toks, total_toks, self.model)
                     elif verbose:
-                        print(f"  [API 实际用量] 输入: {prompt_toks} Tokens | 输出: {comp_toks} Tokens | 计费总计: {total_toks} Tokens")
+                        cache_desc = f" (缓存命中: {cached_toks} Tokens)" if cached_toks > 0 else ""
+                        print(f"  [API 实际用量] 输入: {prompt_toks} Tokens{cache_desc} | 输出: {comp_toks} Tokens | 计费总计: {total_toks} Tokens")
 
                 if getattr(self, "abort_requested", False):
                     self.abort_requested = False

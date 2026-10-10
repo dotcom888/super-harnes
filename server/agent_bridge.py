@@ -1,3 +1,4 @@
+from server.project_utils import resolve_project_workspace_root, register_project_path, AGENT_SOURCE_ROOT
 # -*- coding: utf-8 -*-
 """
 server/agent_bridge.py: 桌面端 Agent 异步事件总线与桥接层
@@ -16,7 +17,7 @@ from pathlib import Path
 
 from core.agent import ReActAgent
 from server.attachment_parser import extract_attachment_summary
-from tools.framework.workspace import default_workspace, WorkspaceContext
+from tools.framework.workspace import default_workspace, WorkspaceContext, set_workspace_root
 from core.session import SessionManager
 from tools.framework.policies import default_policy, PolicyDecision
 from tools.executor import ToolExecutor, default_executor
@@ -189,17 +190,9 @@ class AgentBridge:
         proj_dir = HISTORY_ROOT / project_name
         proj_dir.mkdir(parents=True, exist_ok=True)
 
-        target_workspace = default_workspace
-        ps_file = proj_dir / "project_state.json"
-        if ps_file.exists():
-            try:
-                with open(ps_file, "r", encoding="utf-8") as psf:
-                    data = json.load(psf)
-                    ws_root = data.get("workspace_root")
-                    if ws_root and Path(ws_root).exists():
-                        target_workspace = WorkspaceContext(ws_root)
-            except Exception:
-                pass
+        # 解析该项目的真实物理根目录 (支持 projects.json 与同级目录自适应)
+        resolved_ws_root = resolve_project_workspace_root(project_name)
+        target_workspace = WorkspaceContext(resolved_ws_root)
 
         sess_mgr = SessionManager(
             default_session_id=session_id,
@@ -314,6 +307,7 @@ class AgentBridge:
         """异步执行用户 Prompt，并以结构化事件流推向前端"""
         active_sid = session_id or "default"
         cur_proj = project_name or default_workspace.root.name
+        target_ws_dir = resolve_project_workspace_root(cur_proj)
 
         def wrapped_callback(ev: Dict[str, Any]):
             ev.setdefault("session_id", active_sid)
@@ -436,7 +430,7 @@ class AgentBridge:
 
         # 智能宏命令映射增强
         if cmd_lower.startswith("/init"):
-            prompt = f"请全面扫描当前工作区（{default_workspace.root}）的文件目录结构、关键配置与核心技术栈，并生成一份简明的架构概览。{raw_cmd[5:].strip()}"
+            prompt = f"请全面扫描当前工作区（{target_ws_dir}）的文件目录结构、关键配置与核心技术栈，并生成一份简明的架构概览。{raw_cmd[5:].strip()}"
         elif cmd_lower.startswith("/review"):
             prompt = f"请对当前工作区的代码实现与核心逻辑进行走查审查，重点关注代码规范、潜在 Bug 与安全隐患。{raw_cmd[7:].strip()}"
         elif cmd_lower.startswith("/test"):
@@ -571,18 +565,29 @@ class AgentBridge:
 
             # 在独立工作线程中运行该专属 Agent 的 run() 并挂接流式 Token 回调与实时思考回调
             try:
-                result = await loop.run_in_executor(
-                    None,
-                    lambda: cur_agent.run(
-                        augmented_prompt, 
-                        False, 
-                        token_callback=on_token_chunk, 
-                        thought_callback=on_thought_chunk,
-                        attachments=attachments,
-                        display_prompt=prompt,
-                        llm_content=llm_content
-                    )
-                )
+                def _run_agent_isolated():
+                    old_cwd = Path.cwd()
+                    # 动态将工作区切换至当前会话对应的真实物理路径
+                    set_workspace_root(target_ws_dir)
+                    cur_agent.session_manager.workspace = default_workspace
+                    try:
+                        os.chdir(target_ws_dir)
+                        return cur_agent.run(
+                            augmented_prompt, 
+                            False, 
+                            token_callback=on_token_chunk, 
+                            thought_callback=on_thought_chunk,
+                            attachments=attachments,
+                            display_prompt=prompt,
+                            llm_content=llm_content
+                        )
+                    finally:
+                        try:
+                            os.chdir(old_cwd)
+                        except Exception:
+                            pass
+
+                result = await loop.run_in_executor(None, _run_agent_isolated)
 
                 # 计算从用户发送到回复完成的真实总耗时
                 elapsed_total = round(max(1.0, time.time() - start_time), 1)
@@ -617,7 +622,8 @@ class AgentBridge:
                 "total_time": f"{int(elapsed_total // 60)}m{int(elapsed_total % 60)}s",
                 "tool_time": "1m12s",
                 "tokens_per_sec": 88,
-                "cache_hit_rate": 0.89,
+                "cache_hit_rate": getattr(cm, "api_cache_hit_rate", 0.0),
+                "cached_tokens": getattr(cm, "total_api_cached_tokens", 0),
                 "prompt_tokens": cm.total_api_prompt_tokens,
                 "completion_tokens": cm.total_api_completion_tokens,
                 "total_tokens": cm.total_api_prompt_tokens + cm.total_api_completion_tokens

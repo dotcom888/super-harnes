@@ -967,7 +967,7 @@ line 3
                 min_history_budget=20
             )
             agent_mgr = ContextManager("test_agent_expand", budget_ledger=agent_ledger, base_dir=Path(temp_dir))
-            agent = ReActAgent(context_manager=agent_mgr, max_steps=5)
+            agent = ReActAgent(api_key="mock_test_key", context_manager=agent_mgr, max_steps=5)
 
             test_messages = [
                 {"role": "system", "content": "sys"},
