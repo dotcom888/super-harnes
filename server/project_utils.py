@@ -128,7 +128,7 @@ def _persist_project_state(proj_dir: Path, proj_name: str, ws_path: str):
         logger.warning(f"Failed to persist project_state for {proj_name}: {e}")
 
 def register_project_path(name: str, path: str):
-    """将新项目或更新路径登记到 ~/.super-harnes/projects.json"""
+    """将新项目或更新路径登记到 ~/.super-harnes/projects.json 并确保 history/ 目录与 project_state.json 同步"""
     projects = get_registered_projects()
     norm_path = str(Path(path).resolve())
     updated = False
@@ -141,3 +141,7 @@ def register_project_path(name: str, path: str):
     if not updated:
         projects.append({"name": name, "path": norm_path})
     save_registered_projects(projects)
+
+    # 同步确保 HISTORY_ROOT 下对应项目历史目录与 project_state.json 始终存在
+    target_history_dir = HISTORY_ROOT / name
+    _persist_project_state(target_history_dir, name, norm_path)

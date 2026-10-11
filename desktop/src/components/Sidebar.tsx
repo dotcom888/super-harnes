@@ -15,7 +15,10 @@ import {
   Edit2,
   Trash2,
   X,
-  FolderOpen
+  FolderOpen,
+  Edit3,
+  MessageSquare,
+  ArrowRightLeft
 } from "lucide-react";
 import { SessionInfo, ProjectInfo } from "../types";
 import { LOGO_DATA_URI } from "../assets/logoData";
@@ -26,10 +29,12 @@ interface SidebarProps {
   projectName: string;
   projects?: ProjectInfo[];
   sessions: SessionInfo[];
+  recentSessions?: SessionInfo[];
   activeSessionId: string;
   onSelectSession: (id: string, projectName?: string) => void;
   onSelectProject?: (name: string) => void;
   onNewSession: () => void;
+  onNewRecentSession?: () => void;
   onAddWorkspace?: () => void;
   onOpenSettings: () => void;
   onOpenPlugins: () => void;
@@ -39,6 +44,7 @@ interface SidebarProps {
   onRenameSession?: (project: string, sid: string, newTitle: string) => void;
   onPinSession?: (project: string, sid: string, pinned: boolean) => void;
   onDeleteSession?: (project: string, sid: string) => void;
+  onMoveSessionToProject?: (sid: string, fromProj: string, toProj: string) => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -47,10 +53,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
   projectName,
   projects = [],
   sessions,
+  recentSessions = [],
   activeSessionId,
   onSelectSession,
   onSelectProject,
   onNewSession,
+  onNewRecentSession,
   onAddWorkspace,
   onOpenSettings,
   onOpenPlugins,
@@ -59,7 +67,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onDeleteProject,
   onRenameSession,
   onPinSession,
-  onDeleteSession
+  onDeleteSession,
+  onMoveSessionToProject
 }) => {
   const [isProjectsExpanded, setIsProjectsExpanded] = useState<boolean>(true);
   const [isRecentExpanded, setIsRecentExpanded] = useState<boolean>(true);

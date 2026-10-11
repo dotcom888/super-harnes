@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 core/session.py: 项目级多会话（对话框）生命周期管理与隔离中枢
 支持项目物理分箱、多会话并行、会话切换、自动反序列化唤醒、会话增删重命名与上下文严格隔离。
@@ -39,16 +39,12 @@ class SessionManager:
             b_path = Path(base_dir).resolve()
             if b_path.name == self.project_name:
                 self.history_dir = b_path
-            elif b_path.name == "history":
-                self.history_dir = b_path / self.project_name
-            elif (b_path / "history").exists():
-                self.history_dir = b_path / "history" / self.project_name
             else:
+                # 自定义测试沙箱或独立历史根目录：分箱落盘于 base_dir / <project_name>
                 self.history_dir = b_path / self.project_name
         else:
-            # 默认建立项目独立子目录: history/<project_name>/
+            # 默认统一建立在用户中央数据目录: ~/.super-harnes/history/<project_name>/
             self.history_dir = (HISTORY_DIR / self.project_name).resolve()
-
         self.history_dir.mkdir(parents=True, exist_ok=True)
         self.base_dir = self.history_dir
         self.active_session_id = default_session_id

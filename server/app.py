@@ -305,8 +305,21 @@ def get_all_projects_metadata() -> List[Dict[str, Any]]:
         if ep_name and ep_name.lower() not in known_lower:
             if ep_name in deleted_names or ep_name.lower() in [dn.lower() for dn in deleted_names]:
                 continue
-            known_lower.add(ep_name.lower())
             ep_dir = HISTORY_ROOT / ep_name
+            # 若磁盘路径已失效且本地无任何历史会话，跳过该孤儿条目
+            if ep_path and not Path(ep_path).exists() and not ep_dir.exists():
+                continue
+            known_lower.add(ep_name.lower())
+            # 确保注册的有效项目在 ~/.super-harnes/history 下始终具备物理目录与 project_state.json，保证界面与磁盘完全一致
+            if not ep_dir.exists() and ep_path and Path(ep_path).exists():
+                try:
+                    ep_dir.mkdir(parents=True, exist_ok=True)
+                    ps_file = ep_dir / "project_state.json"
+                    if not ps_file.exists():
+                        with open(ps_file, "w", encoding="utf-8") as f:
+                            json.dump({"project_name": ep_name, "workspace_root": ep_path}, f, ensure_ascii=False, indent=2)
+                except Exception:
+                    pass
             ep_sessions = scan_project_sessions(ep_dir) if ep_dir.exists() else []
             projects.append({
                 "name": ep_name,
