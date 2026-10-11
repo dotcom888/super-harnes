@@ -51,7 +51,7 @@ export const App: React.FC = () => {
   } | null>(null);
 
   // 多工程工作区状态 (扫描包含 4 个项目的全部历史消息)
-  const [projectName, setProjectName] = useState("super-harnes");
+  const [projectName, setProjectName] = useState("");
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [activeSessionId, setActiveSessionId] = useState("default");
   const [sessionTitle, setSessionTitle] = useState("默认会话");
@@ -316,18 +316,32 @@ export const App: React.FC = () => {
         const projs: ProjectInfo[] = data.projects || [];
         setProjects(projs);
 
-        const currentProj = targetProject || data.name || (projs.length > 0 ? projs[0].name : "super-harnes");
+        if (projs.length === 0) {
+          setProjectName("");
+          setSessions([]);
+          setActiveSessionId("default");
+          setHasStarted(false);
+          return;
+        }
+
+        const currentProj = (targetProject && projs.some((p) => p.name === targetProject))
+          ? targetProject
+          : (data.name && projs.some((p) => p.name === data.name))
+          ? data.name
+          : projs[0].name;
         setProjectName(currentProj);
 
-        const matchedProj = projs.find((p) => p.name === currentProj) || (projs.length > 0 ? projs[0] : undefined);
+        const matchedProj = projs.find((p) => p.name === currentProj) || projs[0];
         const projSessions = matchedProj?.sessions || [];
         setSessions(projSessions);
 
         const sid = targetSession || (projSessions.length > 0 ? projSessions[0].session_id : "default");
         setActiveSessionId(sid);
 
-        if (shouldLoadSession) {
+        if (shouldLoadSession && projSessions.length > 0) {
           loadSessionTurns(sid, matchedProj ? matchedProj.name : currentProj);
+        } else {
+          setHasStarted(false);
         }
       })
       .catch(() => {});
@@ -774,6 +788,15 @@ export const App: React.FC = () => {
     const trimmed = text.trim();
     if (!trimmed && attachments.length === 0) return;
 
+    if (!projectName) {
+      if (projects.length > 0) {
+        setProjectName(projects[0].name);
+      } else {
+        setIsCreateProjectOpen(true);
+        return;
+      }
+    }
+
     const targetKey = getSessionKey(projectName, activeSessionId);
     const isFirstTurn = !hasStarted || (sessionTurnsMap[targetKey] || []).length === 0;
 
@@ -1091,12 +1114,9 @@ export const App: React.FC = () => {
           body: JSON.stringify({ name })
         })
           .then(() => {
-            if (name === projectName) {
-              const fallbackProj = projects.find((p) => p.name !== name)?.name || "super-harnes";
-              fetchWorkspaces(fallbackProj);
-            } else {
-              fetchWorkspaces(projectName);
-            }
+            const remaining = projects.filter((p) => p.name !== name);
+            const fallbackProj = remaining.length > 0 ? remaining[0].name : "";
+            fetchWorkspaces(fallbackProj, undefined, remaining.length > 0);
           })
           .catch(() => {});
       }

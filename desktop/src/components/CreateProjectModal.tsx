@@ -17,6 +17,23 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>("");
 
+  React.useEffect(() => {
+    if (isOpen) {
+      setProjectName("");
+      setSelectedPath("");
+      setIsSubmitting(false);
+      setErrorMsg("");
+    }
+  }, [isOpen]);
+
+  const handleClose = () => {
+    setProjectName("");
+    setSelectedPath("");
+    setIsSubmitting(false);
+    setErrorMsg("");
+    onClose();
+  };
+
   if (!isOpen) return null;
 
   // 调起系统原生文件夹选择器
@@ -91,7 +108,7 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
             className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-[#252835] transition cursor-pointer"
             title="关闭"
           >
@@ -183,7 +200,7 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
         <div className="px-6 py-4 bg-gray-50/60 dark:bg-[#12141c] border-t border-gray-100 dark:border-[#222533] flex items-center justify-end gap-2.5">
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
             className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#252838] rounded-xl text-xs font-semibold transition cursor-pointer"
           >
             取消

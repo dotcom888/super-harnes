@@ -253,9 +253,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
     }
   };
 
-  const displayProjects = projects.length > 0 ? projects : [
-    { name: projectName || "super-harnes", session_count: 1, sessions: [] }
-  ];
+  const displayProjects = projects;
 
   return (
     <div className="flex-1 h-full flex flex-col items-center justify-center px-4 bg-white dark:bg-[#0f1117] select-none transition-colors duration-150">
@@ -287,7 +285,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
               title="切换工作区或添加磁盘项目"
             >
               <Folder size={13} className="text-blue-600" />
-              <span>{projectName || "super-harnes"}</span>
+              <span>{projectName || (displayProjects.length > 0 ? "选择工作区" : "未添加工作区")}</span>
               <ChevronDown size={12} className="text-gray-400" />
             </button>
 
@@ -304,7 +302,12 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
                     <span className="text-[10px] text-gray-400">{displayProjects.length} 个项目</span>
                   </div>
                   <div className="max-h-56 overflow-y-auto py-1">
-                    {displayProjects.map((p) => {
+                    {displayProjects.length === 0 ? (
+                      <div className="px-3 py-4 text-center text-xs text-gray-400 dark:text-gray-500">
+                        暂无已添加的工作区，请点击下方添加
+                      </div>
+                    ) : (
+                      displayProjects.map((p) => {
                       const isCur = p.name === projectName;
                       return (
                         <div
@@ -326,7 +329,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
                           </div>
                         </div>
                       );
-                    })}
+                    }))}
                   </div>
                   
                   {/* 添加新的工作区（选择磁盘项目）按钮 */}
@@ -434,7 +437,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={`描述你想让 super 智能体在 "${projectName || "super-harnes"}" 中构建或排查的任务...`}
+            placeholder={projectName ? `描述你想让 super 智能体在 "${projectName}" 中构建或排查的任务...` : (displayProjects.length > 0 ? "请先在上方选择一个项目工作区，然后输入任务..." : "请先在上方点击添加项目工作区，然后输入任务...")}
             rows={3}
             className="w-full resize-none border-none outline-none text-gray-800 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 text-sm leading-relaxed bg-transparent"
           />

@@ -195,8 +195,8 @@ class AgentBridge:
                 ag._resolved_key = final_key
                 ag._resolved_base_url = final_base_url
                 ag._resolved_proto = final_proto
-                from openai import OpenAI
-                ag.client = OpenAI(api_key=final_key, base_url=ag.base_url)
+                from core.client_utils import create_resilient_openai_client
+                ag.client = create_resilient_openai_client(api_key=final_key, base_url=ag.base_url)
                 logger.info(f"Hot-reloaded agent client for session '{key}' to model '{target_model}' with baseUrl '{ag.base_url}'")
             return ag
 

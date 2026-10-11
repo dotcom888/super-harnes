@@ -72,6 +72,7 @@ args = [
     "--hidden-import=tools.builtin.interaction_tools",
     "--hidden-import=server.project_utils",
     "--hidden-import=server.attachment_parser",
+    "--hidden-import=core.client_utils",
     "--hidden-import=core.agent",
     "--hidden-import=core.session",
     "--hidden-import=core.loop_detector",

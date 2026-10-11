@@ -33,7 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from server.attachment_parser import detect_attachment_type, extract_attachment_summary
 
 from server.agent_bridge import bridge, format_tool_display
-from tools.framework.workspace import default_workspace
+from tools.framework.workspace import default_workspace, set_workspace_root
 from tools.framework.policies import default_policy
 from skills import default_skill_manager
 
@@ -314,21 +314,32 @@ def get_all_projects_metadata() -> List[Dict[str, Any]]:
                 "sessions": ep_sessions
             })
 
-    # 3. 确保当前工作区根目录在列表中 (排除打包内部临时目录)
-    cur_name = default_workspace.root.name
-    if cur_name.lower() not in ("super-server", "bin", "resources", "_internal", "workspace") and cur_name.lower() not in known_lower and cur_name not in deleted_names:
-        cur_sessions = scan_project_sessions(HISTORY_ROOT / cur_name)
-        projects.insert(0, {
-            "name": cur_name,
-            "path": str(default_workspace.root),
-            "session_count": len(cur_sessions),
-            "sessions": cur_sessions
-        })
+    # 3. 在源码开发模式下，确保当前工作区根目录在列表中 (排除编译内部临时目录与打包程序目录)
+    if not getattr(sys, "frozen", False):
+        cur_name = default_workspace.root.name
+        if cur_name.lower() not in ("super-server", "bin", "resources", "_internal", "workspace", "super-harnes") and cur_name.lower() not in known_lower and cur_name not in deleted_names:
+            cur_sessions = scan_project_sessions(HISTORY_ROOT / cur_name)
+            projects.insert(0, {
+                "name": cur_name,
+                "path": str(default_workspace.root),
+                "session_count": len(cur_sessions),
+                "sessions": cur_sessions
+            })
 
     pinned_projs = pins.get("pinned_projects", [])
+    project_order = pins.get("project_order", [])
     for p in projects:
         p["is_pinned"] = p["name"] in pinned_projs
-    projects.sort(key=lambda x: (1 if x.get("is_pinned") else 0, x.get("session_count", 0)), reverse=True)
+
+    def get_sort_key(item):
+        pname = item.get("name", "")
+        if pname in pinned_projs:
+            return (0, pinned_projs.index(pname))
+        if pname in project_order:
+            return (1, project_order.index(pname))
+        return (2, pname.lower())
+
+    projects.sort(key=get_sort_key)
     return projects
 
 def parse_project_turns_from_disk(project_name: str, session_id: str) -> Dict[str, Any]:
@@ -616,6 +627,7 @@ class ModelTestRequest(BaseModel):
     base_url: str
     api_key: str
     model: Optional[str] = None
+    protocol: Optional[str] = "openai_chat" 
 
 @app.post("/api/models/test")
 def test_provider_connection(req: ModelTestRequest):
@@ -811,11 +823,15 @@ def add_workspace(req: WorkspaceAddRequest):
         json.dump(ps_data, f, ensure_ascii=False, indent=2)
 
     # 3. 若此前在已删除列表中，解除删除标记
+    # 3. 若之前在删除列表中，解除删除标记，并维护稳定的 project_order
     pins = load_pins_config()
     deleted_list = pins.get("deleted_projects", [])
-    if proj_name in deleted_list:
+    if any(x.lower() == proj_name.lower() for x in deleted_list):
         pins["deleted_projects"] = [x for x in deleted_list if x.lower() != proj_name.lower()]
-        save_pins_config(pins)
+    p_order = pins.setdefault("project_order", [])
+    if proj_name not in p_order and not any(x.lower() == proj_name.lower() for x in p_order):
+        p_order.append(proj_name)
+    save_pins_config(pins)
 
     # 4. 动态切换工作区
     set_workspace_root(norm_path)
@@ -1299,7 +1315,7 @@ class SessionClearRequest(BaseModel):
     project: str
     session_id: str
 
-PINS_FILE = ROOT_DIR / "history" / "pins_config.json"
+PINS_FILE = HISTORY_ROOT / "pins_config.json"
 
 def load_pins_config() -> Dict[str, Any]:
     if PINS_FILE.exists():
@@ -1308,7 +1324,7 @@ def load_pins_config() -> Dict[str, Any]:
                 return json.load(f)
         except Exception:
             pass
-    return {"pinned_projects": [], "pinned_sessions": {}, "custom_titles": {}}
+    return {"pinned_projects": [], "project_order": [], "deleted_projects": [], "pinned_sessions": {}, "custom_titles": {}}
 
 def save_pins_config(data: Dict[str, Any]):
     PINS_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -1403,49 +1419,60 @@ def pin_workspace(req: WorkspacePinRequest):
 
 @app.delete("/api/workspaces/delete")
 def delete_workspace(req: WorkspaceDeleteRequest):
-    """彻底删除指定工作区记录及历史数据"""
+    """彻底删除指定工作区记录与历史目录"""
     pins = load_pins_config()
-    
-    # 1. 从置顶列表与自定义元数据中清理
-    if req.name in pins.get("pinned_projects", []):
-        pins["pinned_projects"].remove(req.name)
+    del_name_clean = req.name.strip()
+    del_name_lower = del_name_clean.lower()
+
+    # 1. 清理置顶列表、排序列表与自定义元数据
+    pins["pinned_projects"] = [p for p in pins.get("pinned_projects", []) if p.lower() != del_name_lower]
+    pins["project_order"] = [p for p in pins.get("project_order", []) if p.lower() != del_name_lower]
     pins.setdefault("pinned_sessions", {}).pop(req.name, None)
     pins.setdefault("custom_titles", {}).pop(req.name, None)
 
-    # 2. 登记至已删除黑名单，永久杜绝缓存死灰复燃
+    # 2. 登记到已删除列表，确保后续扫描彻底屏蔽
     deleted_list = pins.setdefault("deleted_projects", [])
-    if req.name not in deleted_list:
-        deleted_list.append(req.name)
+    if del_name_clean not in deleted_list and not any(x.lower() == del_name_lower for x in deleted_list):
+        deleted_list.append(del_name_clean)
     save_pins_config(pins)
 
-    # 3. 从 ~/.super-harnes/projects.json 磁盘注册表移除
+    # 3. 从 ~/.super-harnes/projects.json 磁盘注册表彻底移除 (大小写不敏感匹配)
     proj_map_file = Path.home() / ".super-harnes" / "projects.json"
     if proj_map_file.exists():
         try:
             with open(proj_map_file, "r", encoding="utf-8") as f:
                 projects = json.load(f)
-            projects = [p for p in projects if p.get("name") != req.name]
+            projects = [p for p in projects if str(p.get("name", "")).strip().lower() != del_name_lower]
             with open(proj_map_file, "w", encoding="utf-8") as f:
                 json.dump(projects, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
-    # 4. 彻底物理清除 history/ 下对应的项目子目录
-    target_dir = HISTORY_ROOT / req.name
-    if target_dir.exists():
-        try:
-            shutil.rmtree(target_dir, ignore_errors=True)
-        except Exception as e:
-            pass
+    # 4. 彻底物理删除 history/ 下及 ~/.super-harnes/workspace/ 下对应的项目子目录
+    for h_dir in [HISTORY_ROOT, USER_DATA_ROOT / "workspace"]:
+        if h_dir.exists():
+            for d in list(h_dir.iterdir()):
+                if d.is_dir() and d.name.lower() == del_name_lower:
+                    try:
+                        shutil.rmtree(d, ignore_errors=True)
+                    except Exception:
+                        pass
 
-    # 5. 若删除的是当前正处于的工作区，自动重置激活工作区到主仓库根目录
-    if default_workspace.root.name == req.name:
+    # 5. 若删除的是当前激活工作区，切换到剩余项目或置空
+    remaining_projects = get_all_projects_metadata()
+    if remaining_projects:
+        new_active = remaining_projects[0]
+        new_root = Path(new_active["path"]).resolve() if new_active.get("path") else ROOT_DIR
+        default_workspace.set_root(new_root)
+        if bridge.agent:
+            try:
+                bridge.agent.switch_workspace(str(new_root))
+            except Exception:
+                pass
+    else:
         default_workspace.set_root(ROOT_DIR)
-    if bridge.agent and getattr(bridge.agent, "project_name", "") == req.name:
-        try:
-            bridge.agent.switch_workspace(ROOT_DIR)
-        except Exception:
-            pass
+        if bridge.agent:
+            bridge.agent.session_manager.project_name = ""
 
     return {"success": True, "deleted": req.name}
 

@@ -11,7 +11,8 @@ import logging
 from typing import List, Dict, Any, Optional, Union, Callable
 from pathlib import Path
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import OpenAI, APIConnectionError
+from core.client_utils import create_resilient_openai_client
 from openai.types.chat import ChatCompletionMessage
 
 from tools import registry
@@ -70,7 +71,7 @@ class ReActAgent:
         if not self.api_key or self.api_key == "your_api_key_here":
             raise ValueError("未检测到有效的 LLM_API_KEY，请检查 .env 文件！")
 
-        self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        self.client = create_resilient_openai_client(api_key=self.api_key, base_url=self.base_url)
 
         # 自动挂载来自外部配置的 MCP 工具
         self.abort_requested = False
@@ -446,13 +447,30 @@ class ReActAgent:
                 # User 消息在 Step 1 注入初始 Banner 后终身只读，绝不回溯改写任何历史 User / Tool 消息。
                 # 下一步的进度倒计时与阶段引导将在工具执行完毕后，单调追加至最新 Tool Result 尾部。
 
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    tools=call_tools,
-                    tool_choice=call_tool_choice,
-                    max_tokens=output_reserve
-                )
+                try:
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        tools=call_tools,
+                        tool_choice=call_tool_choice,
+                        max_tokens=output_reserve
+                    )
+                except Exception as e_call:
+                    if isinstance(e_call, APIConnectionError):
+                        logger.warning(f"LLM connection error encountered ({e_call}), retrying with direct connection...")
+                        try:
+                            self.client = create_resilient_openai_client(api_key=self.api_key, base_url=self.base_url, force_direct=True)
+                            response = self.client.chat.completions.create(
+                                model=self.model,
+                                messages=messages,
+                                tools=call_tools,
+                                tool_choice=call_tool_choice,
+                                max_tokens=output_reserve
+                            )
+                        except Exception:
+                            raise e_call
+                    else:
+                        raise e_call
 
                 # 捕获大模型权威真实 API Usage 反馈并记录校准
                 usage = getattr(response, "usage", None)

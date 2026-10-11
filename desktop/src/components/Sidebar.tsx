@@ -61,12 +61,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onPinSession,
   onDeleteSession
 }) => {
-  const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({
-    [projectName]: true,
-    ceshi: true,
-    "openclaw-main": false,
-    Administrator: false
-  });
+  const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
 
   // 操作菜单弹出层状态
   const [activeProjectMenu, setActiveProjectMenu] = useState<{ name: string; x: number; y: number } | null>(null);
@@ -132,9 +127,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     );
   }
 
-  const displayProjects = projects.length > 0 ? projects : [
-    { name: projectName || "super-harnes", session_count: sessions.length, sessions: sessions }
-  ];
+  const displayProjects = projects;
 
   return (
     <aside className="w-64 h-full bg-[#f8f9fa] dark:bg-[#13151b] border-r border-[#e5e7eb] dark:border-[#20222b] flex flex-col justify-between select-none shrink-0 relative transition-colors duration-150">
@@ -186,7 +179,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
 
           <div className="space-y-1 pb-4">
-            {displayProjects.map((proj) => {
+            {displayProjects.length === 0 ? (
+              <div className="px-3 py-6 text-center text-xs text-gray-400 dark:text-gray-500 flex flex-col items-center gap-2">
+                <FolderPlus size={20} className="text-gray-300 dark:text-gray-600 mb-0.5" />
+                <span className="font-medium text-gray-500 dark:text-gray-400">暂无项目工作区</span>
+                <span className="text-[11px] text-gray-400 dark:text-gray-500">点击右上角或下方添加</span>
+                <button
+                  type="button"
+                  onClick={onAddWorkspace}
+                  className="mt-1 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/40 dark:hover:bg-blue-900/40 text-blue-600 dark:text-blue-400 rounded-lg text-xs font-semibold transition cursor-pointer"
+                >
+                  + 添加工作区
+                </button>
+              </div>
+            ) : (
+              displayProjects.map((proj) => {
               const isCurrent = proj.name === projectName;
               const isExpanded = expandedProjects[proj.name] ?? isCurrent;
               const projSessions = proj.sessions || [];
@@ -293,7 +300,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   )}
                 </div>
               );
-            })}
+            }))}
           </div>
         </div>
       </div>

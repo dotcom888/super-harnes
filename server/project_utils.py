@@ -6,8 +6,15 @@ from typing import Dict, Any, Optional
 logger = logging.getLogger("super-server.project_utils")
 
 # 服务端代码自身的物理根目录
-AGENT_SOURCE_ROOT = Path(__file__).resolve().parents[1]
-HISTORY_ROOT = AGENT_SOURCE_ROOT / "history"
+import sys
+if getattr(sys, "frozen", False):
+    AGENT_SOURCE_ROOT = Path(sys.executable).resolve().parent
+    HISTORY_ROOT = Path.home() / ".super-harnes" / "history"
+else:
+    AGENT_SOURCE_ROOT = Path(__file__).resolve().parents[1]
+    HISTORY_ROOT = AGENT_SOURCE_ROOT / "history"
+
+HISTORY_ROOT.mkdir(parents=True, exist_ok=True)
 PROJECTS_CONFIG_FILE = Path.home() / ".super-harnes" / "projects.json"
 PINS_CONFIG_FILE = HISTORY_ROOT / "pins_config.json"
 
@@ -43,7 +50,7 @@ def resolve_project_workspace_root(project_name: str) -> Path:
 
     # 1. 尝试从 history/ 对应的 project_state.json 读取
     target_history_dir = HISTORY_ROOT / pname_clean
-    if not target_history_dir.exists():
+    if not target_history_dir.exists() and HISTORY_ROOT.exists():
         # 在 Windows 上不区分大小写查找对应目录
         for d in HISTORY_ROOT.iterdir():
             if d.is_dir() and d.name.lower() == pname_lower:
@@ -87,7 +94,7 @@ def resolve_project_workspace_root(project_name: str) -> Path:
                 return found_path
 
     # 4. 若名称为 super-harnes 则直接为自身代码根目录
-    if pname_lower in ("super-harnes", "super-server"):
+    if not getattr(sys, "frozen", False) and pname_lower in ("super-harnes", "super-server"):
         return AGENT_SOURCE_ROOT
 
     # 5. 兜底：分配独立的专属用户工程目录，严禁指向 super-harnes 源码
