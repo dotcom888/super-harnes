@@ -104,7 +104,8 @@ class TestServerAPI(unittest.TestCase):
         # 创建一个临时测试工作区目录与历史记录
         import time
         test_proj_name = f"test_del_proj_{int(time.time() * 1000)}"
-        test_history_dir = Path("history") / test_proj_name
+        from server.app import HISTORY_ROOT
+        test_history_dir = HISTORY_ROOT / test_proj_name
         test_history_dir.mkdir(parents=True, exist_ok=True)
         (test_history_dir / "sessions.jsonl").write_text(
             json.dumps({"type": "session_meta", "session_id": "test_s1", "created_at": 1700000000}) + "\n",
@@ -136,7 +137,8 @@ class TestServerAPI(unittest.TestCase):
         import json
         import time
 
-        test_dir = Path("history") / "super-harnes"
+        from server.app import HISTORY_ROOT
+        test_dir = HISTORY_ROOT / "super-harnes"
         test_dir.mkdir(parents=True, exist_ok=True)
         test_sid = f"test_mock_turn0_{int(time.time() * 1000)}"
         mock_file = test_dir / f"{test_sid}.jsonl"

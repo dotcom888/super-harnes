@@ -31,9 +31,15 @@ export const Header: React.FC<HeaderProps> = ({
         >
           {sessionTitle}
         </span>
-        <span className="text-[11px] text-gray-400 dark:text-gray-500 font-mono shrink-0">
-          ({projectName})
-        </span>
+        {projectName && projectName !== "_general" ? (
+          <span className="text-[11px] text-gray-400 dark:text-gray-500 font-mono shrink-0">
+            ({projectName})
+          </span>
+        ) : (
+          <span className="text-[11px] text-blue-500/80 dark:text-blue-400/80 font-mono shrink-0">
+            (自由会话)
+          </span>
+        )}
       </div>
 
       {/* 2. 中部：严格绝对居中的“对话”与“轨迹”选项卡 */}

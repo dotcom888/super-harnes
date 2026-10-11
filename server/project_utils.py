@@ -9,11 +9,10 @@ logger = logging.getLogger("super-server.project_utils")
 import sys
 if getattr(sys, "frozen", False):
     AGENT_SOURCE_ROOT = Path(sys.executable).resolve().parent
-    HISTORY_ROOT = Path.home() / ".super-harnes" / "history"
 else:
     AGENT_SOURCE_ROOT = Path(__file__).resolve().parents[1]
-    HISTORY_ROOT = AGENT_SOURCE_ROOT / "history"
 
+HISTORY_ROOT = Path.home() / ".super-harnes" / "history"
 HISTORY_ROOT.mkdir(parents=True, exist_ok=True)
 PROJECTS_CONFIG_FILE = Path.home() / ".super-harnes" / "projects.json"
 PINS_CONFIG_FILE = HISTORY_ROOT / "pins_config.json"
@@ -97,7 +96,12 @@ def resolve_project_workspace_root(project_name: str) -> Path:
     if not getattr(sys, "frozen", False) and pname_lower in ("super-harnes", "super-server"):
         return AGENT_SOURCE_ROOT
 
-    # 5. 兜底：分配独立的专属用户工程目录，严禁指向 super-harnes 源码
+    # 5. 兜底：独立会话或暂存沙箱，严禁指向 super-harnes 源码
+    if not pname_clean or pname_clean.lower() in ("_general", "scratchpad", "workspace"):
+        fallback_dir = Path.home() / ".super-harnes" / "scratchpad"
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        return fallback_dir
+
     fallback_dir = Path.home() / ".super-harnes" / "workspace" / pname_clean
     fallback_dir.mkdir(parents=True, exist_ok=True)
     register_project_path(pname_clean, str(fallback_dir))

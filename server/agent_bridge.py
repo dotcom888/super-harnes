@@ -26,10 +26,8 @@ from tools.builtin.interaction_tools import set_user_interaction_handler
 logger = logging.getLogger("server.agent_bridge")
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-if getattr(sys, "frozen", False):
-    HISTORY_ROOT = Path.home() / ".super-harnes" / "history"
-else:
-    HISTORY_ROOT = ROOT_DIR / "history" 
+HISTORY_ROOT = Path.home() / ".super-harnes" / "history"
+HISTORY_ROOT.mkdir(parents=True, exist_ok=True)
 
 def format_tool_display(tool_name: str, args: Dict[str, Any]) -> Dict[str, str]:
     """对标 DeepSeek Harness 的工具显示分类 (Pwsh, Read, Edit, Grep 等)"""
@@ -326,7 +324,8 @@ class AgentBridge:
     ) -> str:
         """异步执行用户 Prompt，并以结构化事件流推向前端"""
         active_sid = session_id or "default"
-        cur_proj = project_name or default_workspace.root.name
+        raw_proj = (project_name or "").strip()
+        cur_proj = raw_proj if raw_proj else (default_workspace.root.name if default_workspace.root.name and default_workspace.root.name.lower() not in ("workspace", "scratchpad") else "_general")
         target_ws_dir = resolve_project_workspace_root(cur_proj)
 
         def wrapped_callback(ev: Dict[str, Any]):

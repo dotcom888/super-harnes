@@ -45,13 +45,13 @@ class WorkspaceContext:
             return git_root
         # 2. 降级为当前终端物理工作目录 (若处于打包内置目录则重定向至用户工程区)
         p = Path.cwd().resolve()
-        if p.name.lower() in ("super-server", "bin", "resources", "_internal"):
+        if p.name.lower() in ("super-server", "bin", "resources", "_internal", "workspace"):
             user_proj = Path.home() / "super-harnes"
             if user_proj.exists():
                 return user_proj
-            user_ws = Path.home() / ".super-harnes" / "workspace"
-            user_ws.mkdir(parents=True, exist_ok=True)
-            return user_ws
+            user_scratch = Path.home() / ".super-harnes" / "scratchpad"
+            user_scratch.mkdir(parents=True, exist_ok=True)
+            return user_scratch
         return p
 
     @property

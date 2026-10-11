@@ -29,7 +29,11 @@ FORBIDDEN_PATTERNS = {
     "__pycache__",
 }
 
-AGENT_SOURCE_ROOT = Path(__file__).resolve().parents[2]
+import sys
+if getattr(sys, "frozen", False):
+    AGENT_SOURCE_ROOT = Path(sys.executable).resolve().parent
+else:
+    AGENT_SOURCE_ROOT = Path(__file__).resolve().parents[2]
 
 # 核心自保护名单：防止大模型通过补丁篡改自身的安全沙箱模块
 CORE_PROTECTED_FILES = {

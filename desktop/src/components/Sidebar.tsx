@@ -61,6 +61,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onPinSession,
   onDeleteSession
 }) => {
+  const [isProjectsExpanded, setIsProjectsExpanded] = useState<boolean>(true);
+  const [isRecentExpanded, setIsRecentExpanded] = useState<boolean>(true);
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
 
   // 操作菜单弹出层状态
@@ -165,20 +167,35 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         {/* 工作区多项目目录树（展示全部项目，带置顶与更多操作） */}
         <div className="px-3 pt-1 flex-1 overflow-y-auto">
-          <div className="flex items-center justify-between px-1 mb-2 text-xs text-gray-500 font-medium">
-            <span>工作区 ({displayProjects.length} 个项目)</span>
-            <div className="flex items-center gap-1.5 text-gray-400">
-              <button 
-                onClick={onAddWorkspace} 
-                className="hover:text-gray-800 p-0.5 rounded hover:bg-gray-200 transition cursor-pointer"
-                title="选择磁盘项目添加工作区"
-              >
-                <FolderPlus size={14} />
-              </button>
+          <div className="space-y-1">
+            <div 
+              onClick={() => setIsProjectsExpanded(!isProjectsExpanded)}
+              className="flex items-center justify-between px-1.5 py-1 text-xs text-gray-600 dark:text-gray-300 font-semibold rounded-lg hover:bg-gray-100/70 dark:hover:bg-[#1a1d27] transition cursor-pointer"
+            >
+              <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                {isProjectsExpanded ? <ChevronDown size={14} className="text-gray-400 shrink-0" /> : <ChevronRight size={14} className="text-gray-400 shrink-0" />}
+                <span className="font-bold">项目</span>
+                <span className="text-[10px] text-gray-400 dark:text-gray-500 font-normal">
+                  ({displayProjects.length})
+                </span>
+              </div>
+              <div className="flex items-center gap-1 text-gray-400 shrink-0">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (onAddWorkspace) onAddWorkspace();
+                  }}
+                  className="p-1 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-gray-200/60 dark:hover:bg-[#222534] rounded transition cursor-pointer"
+                  title="添加工作区 (选择磁盘项目)"
+                >
+                  <Plus size={14} />
+                </button>
+              </div>
             </div>
-          </div>
 
-          <div className="space-y-1 pb-4">
+          {isProjectsExpanded && (
+            <div className="space-y-1 pb-2 pl-0.5">
             {displayProjects.length === 0 ? (
               <div className="px-3 py-6 text-center text-xs text-gray-400 dark:text-gray-500 flex flex-col items-center gap-2">
                 <FolderPlus size={20} className="text-gray-300 dark:text-gray-600 mb-0.5" />
@@ -302,6 +319,99 @@ export const Sidebar: React.FC<SidebarProps> = ({
               );
             }))}
           </div>
+          )}
+          </div>
+
+          {/* ================= 2. 下半部分：最近 ∨ (带 ... 和 编辑图标，对标图三) ================= */}
+          <div className="space-y-1 border-t border-gray-200/60 dark:border-[#1e222f] pt-2.5">
+            <div 
+              onClick={() => setIsRecentExpanded(!isRecentExpanded)}
+              className="flex items-center justify-between px-1.5 py-1 text-xs text-gray-600 dark:text-gray-300 font-semibold rounded-lg hover:bg-gray-100/70 dark:hover:bg-[#1a1d27] transition cursor-pointer"
+            >
+              <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                {isRecentExpanded ? <ChevronDown size={14} className="text-gray-400 shrink-0" /> : <ChevronRight size={14} className="text-gray-400 shrink-0" />}
+                <span className="font-bold">最近</span>
+                <span className="text-[10px] text-gray-400 dark:text-gray-500 font-normal">
+                  ({recentSessions.length})
+                </span>
+              </div>
+              <div className="flex items-center gap-1 text-gray-400 shrink-0">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (onNewRecentSession) {
+                      onNewRecentSession();
+                    } else {
+                      onNewSession();
+                    }
+                  }}
+                  className="p-1 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-gray-200/60 dark:hover:bg-[#222534] rounded transition cursor-pointer"
+                  title="新建独立对话"
+                >
+                  <Edit3 size={13} />
+                </button>
+              </div>
+            </div>
+
+            {isRecentExpanded && (
+              <div className="space-y-0.5 pl-0.5 pb-2">
+                {recentSessions.length === 0 ? (
+                  <div className="px-3 py-2 text-center text-xs text-gray-400 dark:text-gray-500 italic">
+                    暂无独立对话
+                  </div>
+                ) : (
+                  recentSessions.map((s) => {
+                    const isRecentActive = (projectName === "" || projectName === "_general") && s.session_id === activeSessionId;
+                    const displayTitle = s.current_goal || (s.session_id === "default" ? "独立对话" : s.session_id);
+                    const isSessionPinned = s.is_pinned;
+
+                    return (
+                      <div
+                        key={"recent-" + s.session_id}
+                        onClick={() => onSelectSession(s.session_id, "_general")}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          setActiveSessionMenu({ project: "_general", sid: s.session_id, x: e.clientX, y: e.clientY });
+                        }}
+                        className={"group/recent flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs cursor-pointer transition relative " + (
+                          isRecentActive
+                            ? "bg-blue-100/80 dark:bg-blue-900/40 font-semibold text-blue-900 dark:text-blue-200 shadow-2xs"
+                            : "text-gray-600 dark:text-gray-400 hover:bg-[#eceef0] dark:hover:bg-[#181a24] hover:text-gray-900 dark:hover:text-gray-200"
+                        )}
+                      >
+                        <div className="flex items-center gap-1.5 truncate flex-1 min-w-0 pr-1">
+                          <MessageSquare size={13} className={isRecentActive ? "text-blue-600 shrink-0" : "text-gray-400 shrink-0"} />
+                          {isSessionPinned && <Pin size={10} className="text-blue-600 shrink-0 rotate-45" />}
+                          <span className="truncate max-w-[130px]" title={displayTitle}>
+                            {displayTitle}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              setActiveSessionMenu({ project: "_general", sid: s.session_id, x: rect.right, y: rect.bottom });
+                            }}
+                            className="opacity-0 group-hover/recent:opacity-100 hover:bg-gray-300/60 dark:hover:bg-[#282d3e] p-0.5 rounded text-gray-500 transition cursor-pointer"
+                            title="会话操作"
+                          >
+                            <MoreHorizontal size={14} />
+                          </button>
+                          <span className="text-[10px] text-gray-400 shrink-0">
+                            {s.time_ago || "历史"}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -424,7 +534,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               }}
               className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-100 dark:hover:bg-[#222534] text-gray-700 dark:text-gray-200 text-left transition cursor-pointer"
             >
-              {displayProjects.find((p) => p.name === activeSessionMenu.project)?.sessions.find((s) => s.session_id === activeSessionMenu.sid)?.is_pinned ? (
+              {(activeSessionMenu.project === "_general" ? recentSessions : displayProjects.find((p) => p.name === activeSessionMenu.project)?.sessions || []).find((s) => s.session_id === activeSessionMenu.sid)?.is_pinned ? (
                 <>
                   <PinOff size={13} className="text-gray-500" />
                   <span>取消置顶</span>

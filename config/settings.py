@@ -22,11 +22,8 @@ if not MCP_CONFIG_PATH.exists():
     MCP_CONFIG_PATH = WORKSPACE_ROOT / "mcp_servers.json"
 
 # 历史会话归档目录
-import sys
-if getattr(sys, "frozen", False):
-    HISTORY_DIR = Path.home() / ".super-harnes" / "history"
-else:
-    HISTORY_DIR = WORKSPACE_ROOT / "history"
+# 历史会话归档目录 (全环境统一使用用户中央数据目录，严格杜绝污染本地源码仓库)
+HISTORY_DIR = Path.home() / ".super-harnes" / "history"
 HISTORY_DIR.mkdir(parents=True, exist_ok=True)
 # Agent 运行与预算配置
 AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "0"))  # 0 或 <=0 代表不限步数自主排查

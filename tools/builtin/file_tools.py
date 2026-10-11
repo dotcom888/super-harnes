@@ -22,7 +22,11 @@ SENSITIVE_PATTERNS = {
 MAX_READ_LINES = 1000
 MAX_READ_CHARS = 40000
 
-AGENT_SOURCE_ROOT = Path(__file__).resolve().parents[2]
+import sys
+if getattr(sys, "frozen", False):
+    AGENT_SOURCE_ROOT = Path(sys.executable).resolve().parent
+else:
+    AGENT_SOURCE_ROOT = Path(__file__).resolve().parents[2]
 
 # 核心自身安全防护名单
 CORE_PROTECTED_FILES = {

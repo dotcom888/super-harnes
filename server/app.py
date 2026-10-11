@@ -57,11 +57,8 @@ MODELS_CONFIG_PATH = ROOT_DIR / "config" / "models_config.json"
 USER_HISTORY_ROOT = USER_DATA_ROOT / "history"
 USER_HISTORY_ROOT.mkdir(parents=True, exist_ok=True)
 
-if getattr(sys, "frozen", False):
-    # 打包脱机运行模式：用户聊天历史存储在用户数据目录，初始状态为空白纯净
-    HISTORY_ROOT = USER_HISTORY_ROOT
-else:
-    HISTORY_ROOT = ROOT_DIR / "history" 
+# 全环境统一使用用户中央历史目录，完全防止污染源码库
+HISTORY_ROOT = USER_HISTORY_ROOT
 
 # ================= 数据模型定义 =================
 class ApprovalResponseModel(BaseModel):
@@ -279,6 +276,8 @@ def get_all_projects_metadata() -> List[Dict[str, Any]]:
             if d.is_dir():
                 pname = d.name
                 if pname in deleted_names or pname.lower() in [dn.lower() for dn in deleted_names]:
+                    continue
+                if pname.lower() in ("_general", "workspace", "scratchpad", ".super-harnes", "super-server", "bin", "resources", "_internal"):
                     continue
                 known_lower.add(pname.lower())
                 proj_sessions = scan_project_sessions(d)
@@ -753,25 +752,31 @@ def delete_provider(provider_id: str):
         bridge.reload_agents_config()
     return {"success": True, "active_models": get_active_models_list()}
 
+def get_recent_sessions() -> List[Dict[str, Any]]:
+    """扫描 history/_general 目录，获取未绑定具体工程的独立/最近会话列表"""
+    gen_dir = HISTORY_ROOT / "_general"
+    if not gen_dir.exists():
+        return []
+    return scan_project_sessions(gen_dir)
+
 @app.get("/api/workspaces")
 def get_workspaces():
-    """获取所有已扫描到的项目与工作区列表（包含磁盘项目的全部聊天历史）"""
+    """获取所有已扫描到的项目工作区列表以及最近独立会话列表"""
     all_projects = get_all_projects_metadata()
+    recent_sessions = get_recent_sessions()
     active_name = default_workspace.root.name
-    if active_name.lower() in ("super-server", "bin", "resources", "_internal", "workspace") or not any(p["name"] == active_name for p in all_projects):
-        sh_proj = next((p for p in all_projects if p["name"] == "super-harnes"), None)
-        if sh_proj:
-            active_name = "super-harnes"
-        elif all_projects:
+    if active_name.lower() in ("super-server", "bin", "resources", "_internal", "workspace", "scratchpad", "_general") or not any(p["name"] == active_name for p in all_projects):
+        if all_projects:
             active_name = all_projects[0]["name"]
         else:
             active_name = ""
 
-    current_root = str(default_workspace.root)
+    current_root = str(default_workspace.root) if active_name else ""
     return {
         "current": current_root,
         "name": active_name,
-        "projects": all_projects
+        "projects": all_projects,
+        "recent_sessions": recent_sessions
     }
 
 @app.post("/api/workspaces/switch")
@@ -874,11 +879,29 @@ def get_session_turns(session_id: Optional[str] = None, project: Optional[str] =
     result = parse_project_turns_from_disk(proj_name, sid)
     return result
 
+class SessionMoveRequest(BaseModel):
+    session_id: str
+    from_project: str = "_general"
+    to_project: str
+
+@app.post("/api/sessions/move")
+def move_session(req: SessionMoveRequest):
+    """将会话从最近自由对话移入指定项目工作区"""
+    src_file = HISTORY_ROOT / (req.from_project or "_general") / f"{req.session_id}.jsonl"
+    if not src_file.exists():
+        raise HTTPException(status_code=404, detail="源会话历史文件不存在")
+    dst_dir = HISTORY_ROOT / req.to_project
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    dst_file = dst_dir / f"{req.session_id}.jsonl"
+    shutil.move(str(src_file), str(dst_file))
+    return {"success": True, "session_id": req.session_id, "project": req.to_project}
+
 @app.post("/api/sessions/create")
 def create_session(req: Optional[SessionActionRequest] = None):
-    """创建全新会话"""
-    proj_name = req.project if req and req.project else default_workspace.root.name
-    sid = req.session_id if req and req.session_id else f"session_{int(time.time())}"
+    """创建全新会话 (支持项目会话或最近自由独立会话)"""
+    raw_p = (req.project or "").strip() if req else ""
+    proj_name = raw_p if raw_p else ("_general" if not default_workspace.root.name or default_workspace.root.name.lower() in ("workspace", "scratchpad") else default_workspace.root.name)
+    sid = req.session_id if req and req.session_id else f"session_{int(time.time()*1000)}"
     
     # 确保磁盘目录存在并即时创建会话文件，保障历史扫描器毫秒级发现
     proj_dir = HISTORY_ROOT / proj_name

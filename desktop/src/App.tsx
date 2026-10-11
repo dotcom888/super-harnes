@@ -56,6 +56,7 @@ export const App: React.FC = () => {
   const [activeSessionId, setActiveSessionId] = useState("default");
   const [sessionTitle, setSessionTitle] = useState("默认会话");
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [recentSessions, setRecentSessions] = useState<SessionInfo[]>([]);
 
   // 模型状态 (仅同步有效配置的模型，支持自定义映射)
   const [availableModels, setAvailableModels] = useState<string[]>([]);
@@ -315,14 +316,39 @@ export const App: React.FC = () => {
         return res.json();
       })
       .then((data) => {
-        const projs: ProjectInfo[] = data.projects || [];
+        const projs: ProjectInfo[] = (data.projects || []).filter(
+          (p: ProjectInfo) => !["_general", "workspace", "scratchpad", ".super-harnes", "super-server", "bin", "resources", "_internal"].includes(p.name.toLowerCase())
+        );
+        const recents: SessionInfo[] = data.recent_sessions || [];
         setProjects(projs);
+        setRecentSessions(recents);
+
+        if (targetProject === "_general") {
+          setProjectName("_general");
+          setSessions(recents);
+          const sid = targetSession || (recents.length > 0 ? recents[0].session_id : "default");
+          setActiveSessionId(sid);
+          if (shouldLoadSession && recents.length > 0) {
+            loadSessionTurns(sid, "_general");
+          }
+          return;
+        }
 
         if (projs.length === 0) {
-          setProjectName("");
-          setSessions([]);
-          setActiveSessionId("default");
-          setHasStarted(false);
+          if (recents.length > 0) {
+            setProjectName("_general");
+            setSessions(recents);
+            const sid = targetSession || recents[0].session_id;
+            setActiveSessionId(sid);
+            if (shouldLoadSession) {
+              loadSessionTurns(sid, "_general");
+            }
+          } else {
+            setProjectName("");
+            setSessions([]);
+            setActiveSessionId("default");
+            setHasStarted(false);
+          }
           return;
         }
 
@@ -1009,24 +1035,64 @@ export const App: React.FC = () => {
     loadSessionTurns(sid, targetProj);
   };
 
-  // 新建会话 (注册全新隔离复合键)
-  const handleNewSession = () => {
+  // 新建自由独立会话 (归属于最近)
+  const handleNewRecentSession = () => {
     fetch("http://127.0.0.1:8765/api/sessions/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project: projectName })
+      body: JSON.stringify({ project: "_general" })
     })
       .then((res) => res.json())
       .then((data) => {
-        const newSid = data.session_id || `session_${Date.now()}`;
-        const newKey = getSessionKey(projectName, newSid);
+        const newSid = data.session_id || ("session_" + Date.now());
+        const newKey = getSessionKey("_general", newSid);
+        setProjectName("_general");
         setActiveSessionId(newSid);
         setHasStarted(false);
         setSessionTurnsMap((prev) => ({ ...prev, [newKey]: [] }));
         setSessionActionsMap((prev) => ({ ...prev, [newKey]: [] }));
         setSessionThoughtMap((prev) => ({ ...prev, [newKey]: "" }));
         setSessionTitle("新会话");
-        fetchWorkspaces(projectName, newSid);
+        fetchWorkspaces("_general", newSid);
+      })
+      .catch(() => {
+        setHasStarted(false);
+      });
+  };
+
+  // 自由会话移入项目工作区
+  const handleMoveSessionToProject = async (sid: string, fromProj: string, toProj: string) => {
+    try {
+      await fetch("http://127.0.0.1:8765/api/sessions/move", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sid, from_project: fromProj, to_project: toProj })
+      });
+      fetchWorkspaces(toProj, sid);
+    } catch (e) {
+      console.error("Failed to move session:", e);
+    }
+  };
+
+  // 新建会话 (注册全新隔离复合键)
+  const handleNewSession = () => {
+    const targetP = (projectName && projectName !== "_general" && projects.some((p) => p.name === projectName)) ? projectName : "_general";
+    fetch("http://127.0.0.1:8765/api/sessions/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project: targetP })
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        const newSid = data.session_id || `session_${Date.now()}`;
+        const newKey = getSessionKey(targetP, newSid);
+        setActiveSessionId(newSid);
+        setHasStarted(false);
+        setSessionTurnsMap((prev) => ({ ...prev, [newKey]: [] }));
+        setSessionActionsMap((prev) => ({ ...prev, [newKey]: [] }));
+        setSessionThoughtMap((prev) => ({ ...prev, [newKey]: "" }));
+        setSessionTitle("新会话");
+        fetchWorkspaces(targetP, newSid);
       })
       .catch(() => {
         setHasStarted(false);
@@ -1196,10 +1262,12 @@ export const App: React.FC = () => {
         projectName={projectName}
         projects={projects}
         sessions={sessions}
+        recentSessions={recentSessions}
         activeSessionId={activeSessionId}
         onSelectSession={handleSelectSession}
         onSelectProject={handleSelectProject}
         onNewSession={handleNewSession}
+        onNewRecentSession={handleNewRecentSession}
         onAddWorkspace={handleAddWorkspace}
         onOpenSettings={() => setShowSettings(true)}
         onOpenPlugins={() => setShowPlugins(true)}
@@ -1209,6 +1277,7 @@ export const App: React.FC = () => {
         onRenameSession={handleRenameSession}
         onPinSession={handlePinSession}
         onDeleteSession={handleDeleteSession}
+        onMoveSessionToProject={handleMoveSessionToProject}
       />
 
       {/* 2. 主工作区视口 (包含主操作区与当前会话专属调试侧边栏，支持最大化完全覆盖) */}
