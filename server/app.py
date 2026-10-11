@@ -113,8 +113,9 @@ class ModeSwitchRequest(BaseModel):
 
 # ================= 辅助函数：模型与提供方管理 =================
 def load_models_config() -> Dict[str, Any]:
-    """读取模型与提供方配置 (优先用户数据持久化目录，回退安装包内置配置)"""
-    for p in (USER_MODELS_CONFIG_PATH, MODELS_CONFIG_PATH):
+    """读取模型与提供方配置 (脱机打包模式严格读取用户数据目录，初始为空白纯净；开发模式允许回退本地开发配置)"""
+    candidate_paths = [USER_MODELS_CONFIG_PATH] if getattr(sys, "frozen", False) else [USER_MODELS_CONFIG_PATH, MODELS_CONFIG_PATH]
+    for p in candidate_paths:
         if p.exists():
             try:
                 with open(p, "r", encoding="utf-8") as f:
@@ -151,8 +152,9 @@ def load_models_config() -> Dict[str, Any]:
     }
 
 def save_models_config(cfg: Dict[str, Any]):
-    """持久化保存模型与提供方配置 (双重写入用户目录与本地开发目录)"""
-    for p in (USER_MODELS_CONFIG_PATH, MODELS_CONFIG_PATH):
+    """持久化保存模型与提供方配置 (脱机打包模式写入用户目录，本地开发双重写入)"""
+    target_paths = [USER_MODELS_CONFIG_PATH] if getattr(sys, "frozen", False) else [USER_MODELS_CONFIG_PATH, MODELS_CONFIG_PATH]
+    for p in target_paths:
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
             with open(p, "w", encoding="utf-8") as f:
@@ -763,7 +765,7 @@ def get_workspaces():
         elif all_projects:
             active_name = all_projects[0]["name"]
         else:
-            active_name = "super-harnes"
+            active_name = ""
 
     current_root = str(default_workspace.root)
     return {
@@ -878,8 +880,12 @@ def create_session(req: Optional[SessionActionRequest] = None):
     proj_name = req.project if req and req.project else default_workspace.root.name
     sid = req.session_id if req and req.session_id else f"session_{int(time.time())}"
     
-    # 确保磁盘目录存在
-    (HISTORY_ROOT / proj_name).mkdir(parents=True, exist_ok=True)
+    # 确保磁盘目录存在并即时创建会话文件，保障历史扫描器毫秒级发现
+    proj_dir = HISTORY_ROOT / proj_name
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    target_file = proj_dir / f"{sid}.jsonl"
+    if not target_file.exists():
+        target_file.touch()
 
     if bridge.agent and proj_name == default_workspace.root.name:
         bridge.agent.create_session(sid)

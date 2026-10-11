@@ -62,8 +62,11 @@ class TestDynamicWorkspace(unittest.TestCase):
         # 验证切换工作区后，ContextManager 动态将会话历史落盘到目标工作区的 history/ 目录
         set_workspace_root(self.temp_path)
         mgr = ContextManager(session_id="dynamic_history_test")
-        self.assertEqual(mgr.history_dir, self.temp_path / "history")
-        self.assertEqual(mgr.history_file, self.temp_path / "history" / "dynamic_history_test.jsonl")
+        from config.settings import HISTORY_DIR
+        expected_dir = (HISTORY_DIR / self.temp_path.name).resolve()
+        self.assertEqual(mgr.history_dir, expected_dir)
+        self.assertEqual(mgr.history_file, expected_dir / 'dynamic_history_test.jsonl')
+        self.assertFalse((self.temp_path / 'history').exists())
 
     def test_conditional_core_protected_files(self):
         # 当工作区为外部用户项目时，不应误拦用户工程同名文件 (如 tools/file_tools.py)

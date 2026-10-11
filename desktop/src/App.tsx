@@ -129,6 +129,8 @@ export const App: React.FC = () => {
   const actions = sessionActionsMap[currentSessionKey] || [];
   const thoughtText = sessionThoughtMap[currentSessionKey] || "";
   const isCurrentSessionLoading = Boolean(runningSessions[currentSessionKey]);
+  // 综合判定当前会话是否处于对话态 (在途轮次 > 0 或正在流式运行中时绝对锁定对话视图，杜绝误闪回空态)
+  const isCurrentChatStarted = hasStarted || turns.length > 0 || isCurrentSessionLoading;
 
   // 同步 Refs 供长连 WebSocket 内部安全读取活跃态，消除闭包陈旧
   const activeSessionIdRef = useRef(activeSessionId);
@@ -338,10 +340,12 @@ export const App: React.FC = () => {
         const sid = targetSession || (projSessions.length > 0 ? projSessions[0].session_id : "default");
         setActiveSessionId(sid);
 
-        if (shouldLoadSession && projSessions.length > 0) {
-          loadSessionTurns(sid, matchedProj ? matchedProj.name : currentProj);
-        } else {
-          setHasStarted(false);
+        if (shouldLoadSession) {
+          if (projSessions.length > 0) {
+            loadSessionTurns(sid, matchedProj ? matchedProj.name : currentProj);
+          } else {
+            setHasStarted(false);
+          }
         }
       })
       .catch(() => {});
@@ -1047,7 +1051,7 @@ export const App: React.FC = () => {
     }
     const data = await res.json();
     if (data.name) {
-      await fetchWorkspaceInfo();
+      fetchWorkspaces(data.name);
       handleSelectProjectInEmptyState(data.name);
     }
   };
@@ -1218,7 +1222,7 @@ export const App: React.FC = () => {
           </div>
         )}
         {/* 顶部标题栏 (展示当前工程与对话/轨迹切换，未开始时显示窗口操作按钮) */}
-        {hasStarted ? (
+        {isCurrentChatStarted ? (
           <Header
             sessionTitle={sessionTitle}
             projectName={projectName}
@@ -1253,7 +1257,7 @@ export const App: React.FC = () => {
           style={{ overflowAnchor: "none" }}
           className="flex-1 overflow-y-auto px-6 py-4 flex flex-col"
         >
-          {!hasStarted ? (
+          {!isCurrentChatStarted ? (
             /* 空态居中视图：支持选择工作区、添加磁盘项目、+ 号快捷指令与配置模型 */
             <EmptyState
               projectName={projectName}
@@ -1332,14 +1336,14 @@ export const App: React.FC = () => {
         </div>
 
         {/* 对话轮次记录导航尺 (贴近左侧边栏，垂直居中固定，绝对不随页面滚动，完全避免与 super 头像重叠) */}
-        {hasStarted && activeTab === "chat" && turns.length > 0 && (
+        {isCurrentChatStarted && activeTab === "chat" && turns.length > 0 && (
           <div className="absolute left-2.5 top-1/2 -translate-y-1/2 z-30 pointer-events-auto">
             <TurnRuler turns={turns} onScrollToTurn={handleScrollToTurn} />
           </div>
         )}
 
         {/* 底部吸附输入栏 (带 '+' 快捷指令菜单、📎 附件上传、AUTO 模式、点击空白关闭下拉) */}
-        {hasStarted && (
+        {isCurrentChatStarted && (
           <BottomInput
             onSend={handleSendPrompt}
             isLoading={isCurrentSessionLoading}

@@ -81,7 +81,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       }
       const data = await res.json();
       const tag = (data.tag_name || data.name || "").trim();
-      const currentVer = "v5.7.7";
+      const currentVer = "v5.7.8";
       setLatestVersion(tag || "未知");
       const htmlUrl = data.html_url || "https://github.com/dotcom888/super-harnes/releases";
       setReleaseUrl(htmlUrl);
@@ -805,7 +805,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <img src={LOGO_DATA_URI} alt="super logo" className="w-10 h-10 object-contain" />
                     <div>
                       <h2 className="text-base font-bold text-gray-900 dark:text-white">super HARNESS 桌面客户端</h2>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">版本 v5.7.7 · DeepSeek Harness 架构增强版</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">版本 v5.7.8 · DeepSeek Harness 架构增强版</p>
                     </div>
                   </div>
 
@@ -829,7 +829,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 {checkVersionStatus === "latest" && (
                   <div className="flex items-center gap-2 p-3 bg-emerald-50/80 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800/40 rounded-xl text-emerald-700 dark:text-emerald-400">
                     <CheckCircle2 size={16} className="shrink-0" />
-                    <span className="font-medium">当前已是最新版本 (v5.7.7)，与 GitHub 官方发布版本一致。</span>
+                    <span className="font-medium">当前已是最新版本 (v5.7.8)，与 GitHub 官方发布版本一致。</span>
                   </div>
                 )}
 
@@ -838,7 +838,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2 text-blue-800 dark:text-blue-300 font-semibold">
                         <Sparkles size={16} />
-                        <span>发现新版本: {latestVersion} (当前为 v5.7.7)</span>
+                        <span>发现新版本: {latestVersion} (当前为 v5.7.8)</span>
                       </div>
                       <button
                         type="button"

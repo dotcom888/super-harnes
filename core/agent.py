@@ -140,10 +140,12 @@ class ReActAgent:
         """动态切换目标工程工作区根目录并重载项目级会话管理器"""
         from tools.framework.workspace import default_workspace
         new_root = default_workspace.set_root(workspace_path)
+        from config.settings import HISTORY_DIR
         self.session_manager = SessionManager(
             default_session_id="default",
             workspace=default_workspace,
-            project_name=new_root.name
+            project_name=new_root.name,
+            history_dir=(HISTORY_DIR / new_root.name).resolve()
         )
         return new_root
 

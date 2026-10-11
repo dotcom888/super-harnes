@@ -210,7 +210,8 @@ class AgentBridge:
         sess_mgr = SessionManager(
             default_session_id=session_id,
             workspace=target_workspace,
-            project_name=project_name
+            project_name=project_name,
+            history_dir=HISTORY_ROOT / project_name
         )
 
         if not final_key:
@@ -377,7 +378,7 @@ class AgentBridge:
             
             # 清空磁盘上的当前会话历史记录文件
             try:
-                hfile = ROOT_DIR / "history" / cur_proj / f"{active_sid}.jsonl"
+                hfile = HISTORY_ROOT / cur_proj / f"{active_sid}.jsonl"
                 if hfile.exists():
                     hfile.write_text("", encoding="utf-8")
             except Exception:

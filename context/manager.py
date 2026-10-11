@@ -25,9 +25,8 @@ def __getattr__(name: str):
     if name == "WORKSPACE_ROOT":
         return default_workspace.root
     if name == "HISTORY_DIR":
-        d = default_workspace.root / "history"
-        d.mkdir(parents=True, exist_ok=True)
-        return d
+        from config.settings import HISTORY_DIR
+        return HISTORY_DIR
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 class WatermarkZone:
@@ -341,11 +340,13 @@ class ContextManager:
 
     @property
     def history_dir(self) -> Path:
-        """动态解析历史归档目录，随时随工作区根路径切换而重定向"""
+        """动态解析历史归档目录，统一存放在系统的中央历史归档目录中，绝不污染用户本地源码工作区"""
         if self._base_dir:
             d = self._base_dir
         else:
-            d = self.workspace.root / "history"
+            from config.settings import HISTORY_DIR
+            pname = self.project_name or self.workspace.root.name
+            d = (HISTORY_DIR / pname).resolve()
         d.mkdir(parents=True, exist_ok=True)
         return d
 

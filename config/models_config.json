@@ -22,8 +22,8 @@
         "deepseek-v4-flash"
       ],
       "is_custom": true,
-      "status": "connected",
-      "protocol": "openai_chat"
+      "protocol": "openai_chat",
+      "status": "connected"
     }
   ]
 }
