@@ -149,15 +149,13 @@ def load_models_config() -> Dict[str, Any]:
     }
 
 def save_models_config(cfg: Dict[str, Any]):
-    """持久化保存模型与提供方配置 (脱机打包模式写入用户目录，本地开发双重写入)"""
-    target_paths = [USER_MODELS_CONFIG_PATH] if getattr(sys, "frozen", False) else [USER_MODELS_CONFIG_PATH, MODELS_CONFIG_PATH]
-    for p in target_paths:
-        try:
-            p.parent.mkdir(parents=True, exist_ok=True)
-            with open(p, "w", encoding="utf-8") as f:
-                json.dump(cfg, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+    """持久化保存模型与提供方配置 (严格写入用户中央数据目录，杜绝敏感配置污染源码仓库)"""
+    try:
+        USER_MODELS_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(USER_MODELS_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning(f"保存用户模型配置失败: {e}")
 
 def get_active_models_list() -> List[str]:
     """仅返回已配置有效 API Key 的模型列表，彻底杜绝默认占位符与已删除幽灵模型"""
@@ -167,7 +165,13 @@ def get_active_models_list() -> List[str]:
 
     # 1. 优先从已配置并激活的提供方中提取模型
     for p in providers:
-        key = p.get("api_key", "").strip()
+        raw_key = p.get("api_key", "").strip()
+        if raw_key.startswith("${") and raw_key.endswith("}"):
+            key = os.getenv(raw_key[2:-1], "").strip()
+        elif raw_key.startswith("$"):
+            key = os.getenv(raw_key[1:], "").strip()
+        else:
+            key = raw_key
         # 排除无效占位符
         if key and key not in ("your_api_key_here", "your_key", "sk-xxx", "sk-placeholder"):
             for m in p.get("models", []):

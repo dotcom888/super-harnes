@@ -1,29 +1,30 @@
 {
-  "current_model": "gemini-3.8-flash-high",
+  "current_model": "deepseek-chat",
   "providers": [
     {
-      "id": "provider_1791555024",
+      "id": "provider_deepseek",
+      "name": "deepseek",
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key": "",
+      "models": [
+        "deepseek-chat",
+        "deepseek-reasoner"
+      ],
+      "is_custom": false,
+      "protocol": "openai_chat",
+      "status": "unconfigured"
+    },
+    {
+      "id": "provider_gemini",
       "name": "gemini",
       "base_url": "http://127.0.0.1:8045/v1",
-      "api_key": "sk-e04b11626651452c83f1d7848c248505",
+      "api_key": "",
       "models": [
         "gemini-3.8-flash-high"
       ],
       "is_custom": true,
-      "status": "connected",
-      "protocol": "openai_chat"
-    },
-    {
-      "id": "provider_1791640614",
-      "name": "deepseek",
-      "base_url": "https://api.deepseek.com/v1",
-      "api_key": "sk-7ff889c5b449432a94765dcce26bd8b8",
-      "models": [
-        "deepseek-v4-flash"
-      ],
-      "is_custom": true,
       "protocol": "openai_chat",
-      "status": "connected"
+      "status": "unconfigured"
     }
   ]
 }

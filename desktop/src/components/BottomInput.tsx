@@ -87,6 +87,7 @@ export const BottomInput: React.FC<BottomInputProps> = ({
   const dragCounter = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const lastPasteTimeRef = useRef(0);
 
   const handleUploadFiles = async (files: FileList | File[]) => {
     if (!files || files.length === 0) return;
@@ -156,6 +157,67 @@ export const BottomInput: React.FC<BottomInputProps> = ({
       handleUploadFiles(e.dataTransfer.files);
     }
   };
+
+  // 剪贴板复制粘贴上传 (支持截图/图片/文件 Ctrl+V 粘贴直接上传并附件化，防重防抖与防冒泡)
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    const clipboardData = e.clipboardData;
+    if (!clipboardData) return;
+
+    // 防重防抖：300ms 内禁止重复触发粘贴上传
+    const now = Date.now();
+    if (now - lastPasteTimeRef.current < 300) {
+      return;
+    }
+
+    const filesToUpload: File[] = [];
+
+    // 1. 检查剪贴板中直接复制的文件
+    if (clipboardData.files && clipboardData.files.length > 0) {
+      for (let i = 0; i < clipboardData.files.length; i++) {
+        const file = clipboardData.files[i];
+        if (file && file.size > 0) {
+          filesToUpload.push(file);
+        }
+      }
+    }
+
+    // 2. 检查剪贴板 items 中的文件/图片 Blob (针对微信截图、QQ截图、系统截图 Win+Shift+S)
+    if (filesToUpload.length === 0 && clipboardData.items && clipboardData.items.length > 0) {
+      for (let i = 0; i < clipboardData.items.length; i++) {
+        const item = clipboardData.items[i];
+        if (item.kind === "file") {
+          const blob = item.getAsFile();
+          if (blob) {
+            let filename = blob.name;
+            if (!filename || filename === "image.png") {
+              const ext = (blob.type && blob.type.split("/")[1]) || "png";
+              filename = `screenshot_${Date.now()}.${ext}`;
+            }
+            const namedFile = new File([blob], filename, { type: blob.type || "image/png" });
+            filesToUpload.push(namedFile);
+          }
+        }
+      }
+    }
+
+    if (filesToUpload.length > 0) {
+      e.preventDefault();
+      e.stopPropagation();
+      lastPasteTimeRef.current = now;
+      await handleUploadFiles(filesToUpload);
+    }
+  };
+
+  // 输入框自适应高度调节：换行时随内容动态扩展，范围扩大至 1.5 倍 (约 144px，舒适容纳约 6~7 行输入)
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    const baseHeight = 44; // 基础 2 行高度
+    const maxHeight = 144; // 扩大至 1.5 倍 (144px)
+    const targetHeight = Math.min(Math.max(textarea.scrollHeight, baseHeight), maxHeight);
+    textarea.style.height = `${targetHeight}px`;
+  }, [input]);
 
   useEffect(() => {
     if (selectedModel !== undefined) {
@@ -267,6 +329,9 @@ export const BottomInput: React.FC<BottomInputProps> = ({
 
   return (
     <div className="w-full bg-white dark:bg-[#0f1117] px-4 pb-2 pt-1 border-t border-gray-100 dark:border-gray-800 select-none relative transition-colors duration-150">
+      {/* 渐变遮罩：在输入框上方末尾处形成柔和渐变过渡，避免动态调整高度遮挡聊天内容时产生生硬断层 (对标图一) */}
+      <div className="absolute -top-10 left-0 right-0 h-10 bg-gradient-to-t from-white via-white/85 to-transparent dark:from-[#0f1117] dark:via-[#0f1117]/85 dark:to-transparent pointer-events-none z-20" />
+
       {/* 悬浮回底箭头按钮 */}
       {onScrollToBottom && (
         <button
@@ -278,12 +343,13 @@ export const BottomInput: React.FC<BottomInputProps> = ({
         </button>
       )}
 
-      {/* 底部吸附输入框卡片 (支持拖拽上传) */}
+      {/* 底部吸附输入框卡片 (支持拖拽与复制粘贴上传) */}
       <div 
         onDragEnter={handleDragEnter}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
+        onPaste={handlePaste}
         className={`w-full bg-white dark:bg-[#181920] border ${
           isDragging ? "border-blue-500 ring-2 ring-blue-500/20" : "border-gray-200 dark:border-gray-800"
         } shadow-sm focus-within:shadow-md focus-within:border-gray-300 dark:focus-within:border-gray-700 rounded-2xl p-3 transition relative`}
@@ -315,8 +381,8 @@ export const BottomInput: React.FC<BottomInputProps> = ({
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="给 super 智能体发消息，输入 / 或点击左下角 + 选择快捷指令..."
-          rows={2}
-          className="w-full resize-none border-none outline-none text-gray-800 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 text-sm leading-relaxed bg-transparent"
+          style={{ minHeight: "44px", maxHeight: "144px" }}
+          className="w-full resize-none border-none outline-none text-gray-800 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 text-sm leading-relaxed bg-transparent overflow-y-auto"
         />
 
         {/* 卡片工具条 */}

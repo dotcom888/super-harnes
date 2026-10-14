@@ -156,14 +156,14 @@ function hasBoxDrawing(str: string): boolean {
 // ASCII 流程图 / 终端卡片组件 (对标图二)
 const AsciiDiagramBlock: React.FC<{ content: string; title?: string }> = ({ content, title }) => {
   return (
-    <div className="my-3 rounded-xl overflow-hidden border border-gray-300/80 dark:border-gray-700 bg-gray-50/90 dark:bg-[#181a24] text-gray-800 dark:text-gray-200 shadow-2xs font-mono text-xs">
-      <div className="flex items-center justify-between px-3 py-1.5 bg-gray-100/90 dark:bg-[#20232e] border-b border-gray-200/80 dark:border-gray-700 text-[11px] text-gray-500 select-none">
+    <div className="my-3.5 rounded-xl overflow-hidden border border-gray-300/80 dark:border-gray-700/80 bg-gray-50/90 dark:bg-[#151722] text-gray-800 dark:text-gray-200 shadow-2xs font-mono text-xs">
+      <div className="flex items-center justify-between px-3.5 py-2 bg-gray-100/90 dark:bg-[#1e212d] border-b border-gray-200/80 dark:border-gray-700 text-xs text-gray-500 select-none">
         <span className="font-semibold text-gray-700 dark:text-gray-300">
           {title || "架构 / 流程图 / 终端运行卡片"}
         </span>
-        <span className="text-[10px] text-gray-400">ASCII Diagram</span>
+        <span className="text-[11px] text-gray-400 font-mono">ASCII Diagram</span>
       </div>
-      <pre className="p-3.5 overflow-x-auto text-[12px] leading-relaxed select-text font-mono whitespace-pre text-gray-900 dark:text-gray-100">
+      <pre className="p-4 overflow-x-auto text-[12.5px] leading-snug select-text font-mono whitespace-pre text-gray-900 dark:text-gray-100">
         <code>{content}</code>
       </pre>
     </div>
@@ -185,22 +185,22 @@ const CodeBlock: React.FC<{ code: string; language: string }> = ({ code, languag
   }
 
   return (
-    <div className="my-3 rounded-xl overflow-hidden border border-gray-200/80 dark:border-gray-700/80 bg-[#f8fafc] dark:bg-[#181920] text-gray-800 dark:text-gray-200 font-mono text-xs shadow-2xs">
-      <div className="flex items-center justify-between px-3 py-1.5 bg-[#f1f5f9] dark:bg-[#20222b] border-b border-gray-200/80 dark:border-gray-700/80 select-none text-[11px] text-gray-500 dark:text-gray-400">
+    <div className="my-3.5 rounded-xl overflow-hidden border border-gray-200/90 dark:border-gray-800 bg-[#f8fafc] dark:bg-[#12141c] text-gray-800 dark:text-gray-200 font-mono text-[13px] shadow-2xs">
+      <div className="flex items-center justify-between px-3.5 py-2 bg-[#f1f5f9] dark:bg-[#1a1d27] border-b border-gray-200/80 dark:border-gray-800 select-none text-xs text-gray-500 dark:text-gray-400">
         <div className="flex items-center gap-1.5">
-          <Code size={12} className="text-blue-600 dark:text-blue-400" />
+          <Code size={13} className="text-blue-600 dark:text-blue-400" />
           <span className="font-semibold text-gray-700 dark:text-gray-300 lowercase">{language || "text"}</span>
         </div>
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1 px-2 py-0.5 rounded hover:bg-gray-200/70 dark:hover:bg-[#2d303d] text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white transition cursor-pointer"
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md hover:bg-gray-200/70 dark:hover:bg-[#2d303d] text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white transition cursor-pointer text-xs font-sans font-medium"
           title="复制代码"
         >
-          {copied ? <Check size={12} className="text-green-600 dark:text-green-400" /> : <Copy size={12} />}
+          {copied ? <Check size={13} className="text-green-600 dark:text-green-400" /> : <Copy size={13} />}
           <span>{copied ? "已复制" : "复制代码"}</span>
         </button>
       </div>
-      <pre className="p-3.5 overflow-x-auto text-[12px] leading-relaxed text-[#1e293b] dark:text-[#e2e8f0] bg-[#f8fafc] dark:bg-[#181920] select-text">
+      <pre className="p-4 overflow-x-auto text-[13px] leading-[1.65] text-[#1e293b] dark:text-[#e2e8f0] bg-[#f8fafc] dark:bg-[#12141c] select-text">
         <code>{code}</code>
       </pre>
     </div>
@@ -323,11 +323,11 @@ const TextLinesRenderer: React.FC<{ rawText: string }> = ({ rawText }) => {
       continue;
     }
 
-    // 4. 标题 (H1, H2, H3, H4)
+    // 4. 标题 (H1, H2, H3, H4) 对标 Codex 清晰层次
     if (trimmed.startsWith("#")) {
       if (trimmed.startsWith("#### ")) {
         elements.push(
-          <h4 key={`h4_${i}`} className="text-xs font-semibold text-gray-800 dark:text-gray-200 mt-2.5 mb-1">
+          <h4 key={`h4_${i}`} className="text-sm font-semibold text-gray-800 dark:text-gray-200 mt-3 mb-1">
             <InlineMarkdown text={trimmed.slice(5)} />
           </h4>
         );
@@ -336,7 +336,7 @@ const TextLinesRenderer: React.FC<{ rawText: string }> = ({ rawText }) => {
       }
       if (trimmed.startsWith("### ")) {
         elements.push(
-          <h3 key={`h3_${i}`} className="text-xs font-bold text-gray-900 dark:text-gray-100 mt-3 mb-1">
+          <h3 key={`h3_${i}`} className="text-sm font-bold text-gray-900 dark:text-gray-100 mt-3.5 mb-1.5">
             <InlineMarkdown text={trimmed.slice(4)} />
           </h3>
         );
@@ -345,7 +345,7 @@ const TextLinesRenderer: React.FC<{ rawText: string }> = ({ rawText }) => {
       }
       if (trimmed.startsWith("## ")) {
         elements.push(
-          <h2 key={`h2_${i}`} className="text-sm font-bold text-gray-900 dark:text-white mt-3.5 mb-1.5 pb-0.5 border-b border-gray-100 dark:border-gray-800">
+          <h2 key={`h2_${i}`} className="text-base font-bold text-gray-900 dark:text-white mt-4 mb-2 pb-1 border-b border-gray-100 dark:border-gray-800">
             <InlineMarkdown text={trimmed.slice(3)} />
           </h2>
         );
@@ -354,7 +354,7 @@ const TextLinesRenderer: React.FC<{ rawText: string }> = ({ rawText }) => {
       }
       if (trimmed.startsWith("# ")) {
         elements.push(
-          <h1 key={`h1_${i}`} className="text-base font-bold text-gray-900 dark:text-white mt-4 mb-2 pb-1 border-b border-gray-100 dark:border-gray-800">
+          <h1 key={`h1_${i}`} className="text-lg font-bold text-gray-900 dark:text-white mt-5 mb-2.5 pb-1.5 border-b border-gray-100 dark:border-gray-800">
             <InlineMarkdown text={trimmed.slice(2)} />
           </h1>
         );
@@ -367,8 +367,8 @@ const TextLinesRenderer: React.FC<{ rawText: string }> = ({ rawText }) => {
     if (/^[-*]\s+/.test(trimmed)) {
       const listContent = trimmed.replace(/^[-*]\s+/, "");
       elements.push(
-        <div key={`li_${i}`} className="flex items-start gap-2 my-1 ml-1 text-xs leading-relaxed text-gray-800 dark:text-gray-200">
-          <span className="text-blue-500 font-bold shrink-0 text-sm select-none leading-none mt-0.5">•</span>
+        <div key={`li_${i}`} className="flex items-start gap-2 my-1.5 ml-1 text-sm leading-[1.75] text-gray-800 dark:text-gray-200">
+          <span className="text-gray-400 font-bold shrink-0 text-xs select-none leading-none mt-1.5">•</span>
           <div className="flex-1 min-w-0">
             <InlineMarkdown text={listContent} />
           </div>
@@ -382,7 +382,7 @@ const TextLinesRenderer: React.FC<{ rawText: string }> = ({ rawText }) => {
     const numMatch = trimmed.match(/^(\d+)\.\s+(.*)$/);
     if (numMatch) {
       elements.push(
-        <div key={`numli_${i}`} className="flex items-start gap-1.5 my-1 ml-1 text-xs leading-relaxed text-gray-800 dark:text-gray-200">
+        <div key={`numli_${i}`} className="flex items-start gap-1.5 my-1.5 ml-1 text-sm leading-[1.75] text-gray-800 dark:text-gray-200">
           <span className="font-semibold text-gray-500 dark:text-gray-400 shrink-0 select-none">
             {numMatch[1]}.
           </span>
@@ -398,7 +398,7 @@ const TextLinesRenderer: React.FC<{ rawText: string }> = ({ rawText }) => {
     // 7. 引用块 (> )
     if (trimmed.startsWith("> ")) {
       elements.push(
-        <blockquote key={`bq_${i}`} className="my-2 pl-3 border-l-2 border-blue-500/70 text-gray-600 dark:text-gray-400 text-xs italic bg-blue-50/20 dark:bg-[#1a1d28]/30 py-1 rounded-r-lg">
+        <blockquote key={`bq_${i}`} className="my-2.5 pl-3.5 border-l-2 border-blue-500/70 text-gray-600 dark:text-gray-400 text-sm italic bg-blue-50/20 dark:bg-[#1a1d28]/30 py-1.5 rounded-r-lg">
           <InlineMarkdown text={trimmed.slice(2)} />
         </blockquote>
       );
@@ -406,9 +406,9 @@ const TextLinesRenderer: React.FC<{ rawText: string }> = ({ rawText }) => {
       continue;
     }
 
-    // 8. 普通段落
+    // 8. 普通段落 (对标图一：14px 正文字号，1.75 舒适行距)
     elements.push(
-      <p key={`p_${i}`} className="leading-relaxed my-1 text-xs text-gray-800 dark:text-gray-200 select-text">
+      <p key={`p_${i}`} className="leading-[1.75] my-2 text-sm text-gray-800 dark:text-gray-200 select-text">
         <InlineMarkdown text={trimmed} />
       </p>
     );
@@ -478,7 +478,7 @@ const ThinkStepCard: React.FC<{ thought: string }> = ({ thought }) => {
       </div>
 
       {expanded && (
-        <div className="p-3 border-t border-purple-100/80 dark:border-gray-800 bg-purple-50/20 dark:bg-[#181622] text-xs font-sans text-gray-800 dark:text-gray-200 leading-relaxed whitespace-pre-wrap select-text max-h-60 overflow-y-auto">
+        <div className="p-3.5 border-t border-purple-100/80 dark:border-gray-800 bg-purple-50/20 dark:bg-[#181622] text-[13px] font-sans text-gray-800 dark:text-gray-200 leading-[1.7] whitespace-pre-wrap select-text max-h-64 overflow-y-auto">
           {cleanThought}
         </div>
       )}
@@ -696,7 +696,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                   }
                 }}
                 rows={Math.min(8, Math.max(2, editText.split("\n").length))}
-                className="w-full resize-none border-none outline-none text-xs text-gray-800 dark:text-gray-100 bg-transparent leading-relaxed"
+                className="w-full resize-none border-none outline-none text-sm text-gray-800 dark:text-gray-100 bg-transparent leading-[1.7]"
                 autoFocus
               />
               <div className="flex items-center justify-end gap-2 pt-1 border-t border-gray-100 dark:border-gray-800 text-xs select-none">
@@ -731,8 +731,10 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
               )}
 
               {turn.user_prompt && (
-                <div className="bg-[#f0f4f9] dark:bg-[#1f222e] text-gray-800 dark:text-gray-100 rounded-2xl px-4 py-2.5 text-xs leading-relaxed shadow-2xs border border-gray-100/90 dark:border-gray-800">
-                  <div className="whitespace-pre-wrap break-words">{turn.user_prompt}</div>
+                <div className="bg-[#f0f4f9] dark:bg-[#1f222e] text-gray-800 dark:text-gray-100 rounded-xl px-3.5 py-1.5 text-sm leading-normal shadow-2xs border border-gray-200/60 dark:border-gray-800 min-w-[48px] min-h-[30px] inline-flex items-center justify-center">
+                  <div className={`whitespace-pre-wrap break-words w-full ${turn.user_prompt.trim().length <= 4 && !turn.user_prompt.includes("\n") ? "text-center font-medium" : "text-left"}`}>
+                    {turn.user_prompt}
+                  </div>
                 </div>
               )}
             </div>
@@ -746,20 +748,22 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 
       {/* 2. 思考过程与工具调用过程 (对标图四：执行时流式展开，完成后自动折叠，发消息立即显示动效) */}
       {(hasSteps || isLoading) && (
-        <div className="max-w-3xl mr-auto pl-10">
+        <div className="w-full max-w-full mr-auto pl-10">
           {!isLoading && (turn.assistant_response || hasSteps) && hasSteps && (
-            <div className="mb-2 flex items-center gap-2">
+            <div className="mb-2">
               <button
                 type="button"
                 onClick={() => setTraceExpanded(!traceExpanded)}
-                className="inline-flex items-center gap-2 px-3 py-1.5 bg-gray-50/90 dark:bg-[#181a22] hover:bg-gray-100 dark:hover:bg-[#20232d] border border-gray-200/80 dark:border-gray-700/80 rounded-xl text-xs text-gray-600 dark:text-gray-300 font-medium transition cursor-pointer shadow-2xs"
+                className="group/trace inline-flex items-center gap-1.5 text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200 text-sm py-1 transition cursor-pointer select-none"
               >
-                <Sparkles size={13} className="text-purple-600 dark:text-purple-400 shrink-0" />
-                <span>
-                  {traceExpanded ? "收起思考与执行过程" : `已深度思考与执行 (${steps.length} 项步骤 · 展开查看)`}
-                </span>
-                {traceExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                <span className="font-normal">Worked for {elapsedStr || "数秒"}</span>
+                {traceExpanded ? (
+                  <ChevronDown size={14} className="text-gray-400 group-hover/trace:text-gray-600 dark:group-hover/trace:text-gray-300 transition-transform" />
+                ) : (
+                  <ChevronRight size={14} className="text-gray-400 group-hover/trace:text-gray-600 dark:group-hover/trace:text-gray-300 transition-transform" />
+                )}
               </button>
+              {!traceExpanded && <hr className="my-2.5 border-t border-gray-100 dark:border-gray-800/80" />}
             </div>
           )}
 
@@ -839,21 +843,22 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 
       {/* 3. 智能体正式输出卡片 (对标图一、图二、图三) */}
       {(turn.assistant_response || (!turn.user_prompt && !hasSteps)) && (
-        <div className="flex items-start gap-3 max-w-3xl mr-auto group">
+        <div className="flex items-start gap-3 w-full max-w-full mr-auto group">
           <img 
             src={LOGO_DATA_URI} 
             alt="super avatar" 
             className="w-7 h-7 object-contain rounded-xl shrink-0 mt-1 shadow-2xs select-none" 
           />
-          <div className="flex-1 bg-white dark:bg-[#1a1c24] border border-gray-200 dark:border-gray-800 shadow-2xs rounded-2xl px-4 py-3.5 text-xs text-gray-800 dark:text-gray-200 leading-relaxed select-text">
-            {/* 卡片顶部：品牌标识 + 耗时徽标 (对标图一) */}
-            <div className="flex items-center justify-between pb-2 mb-2 border-b border-gray-100 dark:border-gray-800 text-xs text-gray-500 select-none">
+          <div className="flex-1 bg-white dark:bg-[#1a1c24] border border-gray-200/90 dark:border-gray-800 shadow-2xs rounded-2xl px-5 py-4 sm:px-6 sm:py-5 text-sm text-gray-800 dark:text-gray-200 leading-[1.75] select-text">
+            {/* 卡片顶部：品牌标识 */}
+            <div className="flex items-center justify-between pb-2.5 mb-3 border-b border-gray-100 dark:border-gray-800/80 text-xs text-gray-500 select-none">
               <div className="flex items-center gap-2 font-medium text-gray-700 dark:text-gray-300">
-                <span className="font-bold text-gray-900 dark:text-white">super</span>
-                {/* 耗时徽标 (对标图一: 用时 15秒 / 15分钟 58秒) */}
-                <span className="text-[11px] font-mono text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-[#20232e] px-2 py-0.5 rounded-full border border-gray-100 dark:border-gray-800">
-                  用时 {elapsedStr}
-                </span>
+                <span className="font-bold text-gray-900 dark:text-white text-[13.5px]">super</span>
+                {!hasSteps && elapsedStr && (
+                  <span className="text-[11px] font-mono text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-[#20232e] px-2 py-0.5 rounded-full border border-gray-100 dark:border-gray-800">
+                    用时 {elapsedStr}
+                  </span>
+                )}
               </div>
             </div>
 
@@ -889,7 +894,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 
             {/* 卡片底栏：时间戳 + 复制全文 + 点赞点踩 (对标图三) */}
             {turn.assistant_response && (
-              <div className="flex items-center justify-between pt-3 mt-3 border-t border-gray-100 dark:border-gray-800/80 text-[11px] text-gray-400 select-none">
+              <div className="flex items-center justify-between pt-3.5 mt-4 border-t border-gray-100 dark:border-gray-800/80 text-xs text-gray-400 select-none">
                 <div className="flex items-center gap-1.5 font-mono text-gray-400">
                   <Clock size={11} className="opacity-70" />
                   <span>{fullDateTimeStr}</span>

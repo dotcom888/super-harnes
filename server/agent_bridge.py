@@ -157,12 +157,17 @@ class AgentBridge:
             cfg = load_models_config()
             for p in cfg.get("providers", []):
                 if ag_model in p.get("models", []):
-                    if p.get("api_key", "").strip():
-                        provider_key = p.get("api_key", "").strip()
-                        raw_url = p.get("base_url", "").strip()
-                        provider_protocol = p.get("protocol", "openai_chat")
-                        provider_base_url = clean_base_url(raw_url, provider_protocol)
-                        break
+                    raw_key = p.get("api_key", "").strip()
+                    if raw_key.startswith("${") and raw_key.endswith("}"):
+                        raw_key = os.getenv(raw_key[2:-1], "").strip()
+                    elif raw_key.startswith("$"):
+                        raw_key = os.getenv(raw_key[1:], "").strip()
+                    if raw_key:
+                        provider_key = raw_key
+                    raw_url = p.get("base_url", "").strip()
+                    provider_protocol = p.get("protocol", "openai_chat")
+                    provider_base_url = clean_base_url(raw_url, provider_protocol)
+                    break
         except Exception:
             pass
 

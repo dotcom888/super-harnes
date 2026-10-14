@@ -51,7 +51,7 @@ export function getAttachmentTypeBadge(type: string): { label: string; colorClas
   }
 }
 
-/** 输入框待发送卡片 */
+/** 输入框待发送卡片 (固定统一尺寸 210x48，长文件名省略截断，保持大小严格一致) */
 export const PendingAttachmentChip: React.FC<{
   attachment: AttachmentItem;
   onRemove: (id: string) => void;
@@ -59,25 +59,25 @@ export const PendingAttachmentChip: React.FC<{
   const badge = getAttachmentTypeBadge(attachment.type);
 
   return (
-    <div className="flex items-center gap-2 px-2.5 py-1.5 bg-gray-50 dark:bg-[#20232e] border border-gray-200 dark:border-gray-700/80 rounded-xl text-xs max-w-xs shadow-2xs group relative">
-      {/* 缩略图或类型徽标 */}
+    <div className="flex items-center gap-2 px-2.5 py-1.5 w-[210px] max-w-[210px] min-w-[210px] h-[48px] bg-gray-50 dark:bg-[#20232e] border border-gray-200 dark:border-gray-700/80 rounded-xl text-xs shadow-2xs group relative shrink-0 overflow-hidden select-none">
+      {/* 缩略图或类型徽标 (固定 32x32) */}
       {attachment.type === "image" && (attachment.dataUrl || attachment.url) ? (
         <img 
           src={attachment.dataUrl || attachment.url} 
           alt={attachment.name} 
-          className="w-6 h-6 object-cover rounded-md border border-gray-200 dark:border-gray-700 shrink-0" 
+          className="w-8 h-8 object-cover rounded-lg border border-gray-200 dark:border-gray-700 shrink-0" 
         />
       ) : (
-        <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold border ${badge.colorClass}`}>
+        <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-mono font-bold text-[10px] border shrink-0 ${badge.colorClass}`}>
           {badge.label}
-        </span>
+        </div>
       )}
 
-      <div className="flex flex-col min-w-0 flex-1 pr-1">
-        <span className="truncate font-medium text-gray-800 dark:text-gray-200 text-[11px]" title={attachment.name}>
+      <div className="flex flex-col min-w-0 flex-1 pr-1 overflow-hidden">
+        <span className="truncate block font-medium text-gray-800 dark:text-gray-200 text-xs" title={attachment.name}>
           {attachment.name}
         </span>
-        <span className="text-[10px] text-gray-400 font-mono">
+        <span className="text-[10px] text-gray-400 font-mono truncate">
           {formatFileSize(attachment.size)}
         </span>
       </div>
@@ -85,16 +85,16 @@ export const PendingAttachmentChip: React.FC<{
       <button
         type="button"
         onClick={() => onRemove(attachment.id)}
-        className="p-1 rounded-md text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 transition cursor-pointer"
+        className="p-1 rounded-md text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 transition cursor-pointer shrink-0"
         title="移除此附件"
       >
-        <X size={12} />
+        <X size={13} />
       </button>
     </div>
   );
 };
 
-/** 聊天气泡内展示的附件卡片 */
+/** 聊天气泡内展示的附件卡片 (固定统一规格 220x52，长文件名自动截断，对标图二保持大小一致) */
 export const ChatAttachmentItemCard: React.FC<{
   attachment: AttachmentItem;
 }> = ({ attachment }) => {
@@ -103,33 +103,34 @@ export const ChatAttachmentItemCard: React.FC<{
 
   return (
     <>
-      <div className="flex items-center gap-2 px-3 py-2 bg-white/90 dark:bg-[#1a1d27] border border-gray-200/90 dark:border-gray-700 rounded-xl text-xs shadow-2xs hover:shadow-xs transition select-none">
+      <div className="flex items-center gap-2.5 px-3 py-2 w-[220px] max-w-[220px] min-w-[220px] h-[52px] bg-white/95 dark:bg-[#1a1d27] border border-gray-200/90 dark:border-gray-700/80 rounded-xl text-xs shadow-2xs hover:shadow-xs transition select-none shrink-0 overflow-hidden">
+        {/* 缩略图或类型徽标 (固定 36x36 规格) */}
         {attachment.type === "image" && (attachment.dataUrl || attachment.url) ? (
           <div 
             onClick={() => setPreviewOpen(true)}
-            className="relative cursor-pointer group shrink-0"
+            className="relative cursor-pointer group shrink-0 w-9 h-9"
             title="点击查看原图"
           >
             <img 
               src={attachment.dataUrl || attachment.url} 
               alt={attachment.name} 
-              className="w-8 h-8 object-cover rounded-lg border border-gray-200 dark:border-gray-700" 
+              className="w-9 h-9 object-cover rounded-lg border border-gray-200 dark:border-gray-700" 
             />
             <div className="absolute inset-0 bg-black/30 rounded-lg opacity-0 group-hover:opacity-100 flex items-center justify-center text-white transition">
               <Eye size={12} />
             </div>
           </div>
         ) : (
-          <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold border ${badge.colorClass}`}>
+          <div className={`w-9 h-9 rounded-lg flex items-center justify-center font-mono font-bold text-[11px] border shrink-0 ${badge.colorClass}`}>
             {badge.label}
-          </span>
+          </div>
         )}
 
-        <div className="flex flex-col min-w-0 flex-1">
-          <span className="truncate font-medium text-gray-800 dark:text-gray-100 text-xs" title={attachment.name}>
+        <div className="flex flex-col min-w-0 flex-1 pr-1 overflow-hidden">
+          <span className="truncate block font-medium text-gray-850 dark:text-gray-100 text-xs" title={attachment.name}>
             {attachment.name}
           </span>
-          <div className="flex items-center gap-2 text-[10px] text-gray-400 font-mono">
+          <div className="flex items-center gap-1.5 text-[10px] text-gray-400 font-mono mt-0.5 truncate">
             <span>{formatFileSize(attachment.size)}</span>
             <span className="text-gray-300 dark:text-gray-600">·</span>
             <span className="capitalize">{attachment.type}</span>
@@ -141,10 +142,10 @@ export const ChatAttachmentItemCard: React.FC<{
             href={attachment.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="p-1.5 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40 transition cursor-pointer"
+            className="p-1 rounded-md text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40 transition cursor-pointer shrink-0"
             title="查看或下载文件"
           >
-            <ExternalLink size={12} />
+            <ExternalLink size={13} />
           </a>
         )}
       </div>
@@ -162,7 +163,7 @@ export const ChatAttachmentItemCard: React.FC<{
               className="max-h-[80vh] max-w-full rounded-2xl object-contain shadow-2xl border border-white/10"
             />
             <div className="mt-2.5 px-4 py-1.5 bg-black/60 backdrop-blur-md rounded-full text-white text-xs flex items-center gap-3">
-              <span>{attachment.name}</span>
+              <span className="max-w-xs truncate">{attachment.name}</span>
               <span className="text-white/60 font-mono">{formatFileSize(attachment.size)}</span>
               <button 
                 onClick={() => setPreviewOpen(false)} 

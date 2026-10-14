@@ -1399,7 +1399,7 @@ export const App: React.FC = () => {
                 </div>
               )}
 
-              <div ref={scrollEndRef} className="h-4" />
+              <div ref={scrollEndRef} className="h-8" />
             </div>
           )}
         </div>
