@@ -8,6 +8,7 @@ import {
   ArrowUp, 
   Check, 
   FolderPlus,
+  MessageSquare,
   Terminal,
   FileSearch,
   CheckCircle2,
@@ -23,6 +24,8 @@ import {
 } from "lucide-react";
 import { ProjectInfo, AttachmentItem } from "../types";
 import { PendingAttachmentChip } from "./AttachmentCards";
+import { readMediaFromClipboard, extractFilesFromClipboardEvent, saveDraft, loadDraft, clearDraft } from "../utils/clipboardHelper";
+import { InputContextMenu, ContextMenuPosition } from "./InputContextMenu";
 import { LOGO_DATA_URI } from "../assets/logoData";
 
 interface EmptyStateProps {
@@ -41,6 +44,9 @@ interface EmptyStateProps {
   onAddWorkspace?: () => void;
   onPause?: () => void;
   onPermissionChange?: (newMode: string) => void;
+  draftText?: string;
+  draftAttachments?: AttachmentItem[];
+  onDraftChange?: (text: string, attachments: AttachmentItem[]) => void;
 }
 
 interface CommandItem {
@@ -65,9 +71,15 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   onSelectProject,
   onAddWorkspace,
   onPause,
-  onPermissionChange
+  onPermissionChange,
+  draftText,
+  draftAttachments,
+  onDraftChange
 }) => {
-  const [input, setInput] = useState("");
+  const initialDraft = loadDraft("new_session");
+  const [input, setInput] = useState(initialDraft.text || draftText || "");
+  const lastPasteTimeRef = useRef(0);
+  const [contextMenuPos, setContextMenuPos] = useState<ContextMenuPosition | null>(null);
   const [model, setModel] = useState(selectedModel || models[0] || "");
   const [permission, setPermission] = useState(modeName || "AUTO 模式");
 
@@ -80,10 +92,23 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   const [showCommandMenu, setShowCommandMenu] = useState(false);
 
   // 附件上传与拖拽状态
-  const [attachments, setAttachments] = useState<AttachmentItem[]>([]);
+  const [attachments, setAttachments] = useState<AttachmentItem[]>(initialDraft.attachments.length > 0 ? initialDraft.attachments : (draftAttachments || []));
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const dragCounter = useRef(0);
+  // 草稿实时外部同步与受保护恢复
+  useEffect(() => {
+    if (draftText !== undefined && draftText !== input) {
+      setInput(draftText);
+    }
+  }, [draftText]);
+
+  useEffect(() => {
+    if (draftAttachments !== undefined) {
+      setAttachments(draftAttachments);
+    }
+  }, [draftAttachments]);
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -103,7 +128,12 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
       if (res.ok) {
         const data = await res.json();
         if (data.attachments) {
-          setAttachments((prev) => [...prev, ...data.attachments]);
+          setAttachments((prev) => {
+            const nextAtts = [...prev, ...data.attachments];
+            saveDraft("new_session", input, nextAtts);
+            onDraftChange?.(input, nextAtts);
+            return nextAtts;
+          });
         }
       }
     } catch (err) {
@@ -215,6 +245,99 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
     }
   ];
 
+
+   // 剪贴板复制粘贴上传 (支持 Windows 资源管理器文件 Ctrl+C 复制后在此处 Ctrl+V 粘贴、截图直接粘贴)
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    const now = Date.now();
+    if (now - lastPasteTimeRef.current < 250) {
+      return;
+    }
+
+    // 1. 同步优先检查 Web 标准 clipboardData 中的文件与 Blob (微信截图、QQ截图、系统截图)
+    const filesToUpload = extractFilesFromClipboardEvent(e);
+    if (filesToUpload.length > 0) {
+      e.preventDefault();
+      e.stopPropagation();
+      lastPasteTimeRef.current = now;
+      await handleUploadFiles(filesToUpload);
+      return;
+    }
+
+    // 2. 检查 Electron 原生 IPC 读取操作系统真实文件路径 (针对 Windows 资源管理器复制的文件)
+    try {
+      const mediaFiles = await readMediaFromClipboard();
+      if (mediaFiles && mediaFiles.length > 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        lastPasteTimeRef.current = now;
+        await handleUploadFiles(mediaFiles);
+        return;
+      }
+    } catch (err) {
+      console.warn("readMediaFromClipboard error:", err);
+    }
+  };
+
+  // 右键菜单交互操作 (复制、粘贴、全选)
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenuPos({ x: e.clientX, y: e.clientY });
+  };
+
+  const handleMenuCopy = () => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const selected = textarea.value.substring(textarea.selectionStart, textarea.selectionEnd);
+    const toCopy = selected || textarea.value;
+    if (toCopy) {
+      navigator.clipboard.writeText(toCopy);
+    }
+  };
+
+  const handleMenuPaste = async () => {
+    const textarea = textareaRef.current;
+
+    // 1. 检查操作系统剪贴板文件或图片
+    try {
+      const mediaFiles = await readMediaFromClipboard();
+      if (mediaFiles && mediaFiles.length > 0) {
+        await handleUploadFiles(mediaFiles);
+        return;
+      }
+    } catch (err) {}
+
+    // 2. 文本粘贴
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text && textarea) {
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        const current = textarea.value;
+        const updated = current.substring(0, start) + text + current.substring(end);
+        setInput(updated);
+        saveDraft("new_session", updated, attachments);
+        onDraftChange?.(updated, attachments);
+        setTimeout(() => {
+          textarea.selectionStart = textarea.selectionEnd = start + text.length;
+          textarea.focus();
+        }, 0);
+      }
+    } catch {
+      if (textarea) {
+        textarea.focus();
+        document.execCommand("paste");
+      }
+    }
+  };
+
+  const handleMenuSelectAll = () => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    textarea.select();
+  };
+
   const handleSelectCommand = (cmd: string) => {
     setInput((prev) => (prev ? `${cmd} ${prev}` : `${cmd} `));
     setShowCommandMenu(false);
@@ -227,6 +350,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
     if (e) e.preventDefault();
     if ((!input.trim() && attachments.length === 0) || isLoading || isUploading) return;
     onSend(input, model, permission, attachments);
+    clearDraft("new_session");
     setInput("");
     setAttachments([]);
   };
@@ -284,8 +408,16 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
               className="flex items-center gap-1.5 px-3 py-1 bg-gray-100 dark:bg-[#20222b] hover:bg-gray-200 dark:hover:bg-[#2a2d39] text-gray-700 dark:text-gray-200 rounded-full text-xs cursor-pointer transition font-medium"
               title="切换工作区或添加磁盘项目"
             >
-              <Folder size={13} className="text-blue-600" />
-              <span>{projectName || (displayProjects.length > 0 ? "选择工作区" : "未添加工作区")}</span>
+              {projectName === "_general" ? (
+                <MessageSquare size={13} className="text-gray-500" />
+              ) : (
+                <Folder size={13} className="text-blue-600" />
+              )}
+              <span>
+                {projectName === "_general"
+                  ? "不在项目中"
+                  : (projectName || (displayProjects.length > 0 ? "选择工作区" : "未添加工作区"))}
+              </span>
               <ChevronDown size={12} className="text-gray-400" />
             </button>
 
@@ -332,18 +464,37 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
                     }))}
                   </div>
                   
-                  {/* 添加新的工作区（选择磁盘项目）按钮 */}
-                  <div className="border-t border-gray-100 dark:border-gray-800 pt-1 mt-1 px-1">
+                  {/* 下拉框底部操作：添加新的工作区 & 不在项目中 (对标图四需求 5) */}
+                  <div className="border-t border-gray-100 dark:border-gray-800 pt-1 mt-1 px-1 space-y-0.5">
                     <button
                       type="button"
                       onClick={() => {
                         setShowWorkspaceMenu(false);
                         if (onAddWorkspace) onAddWorkspace();
                       }}
-                      className="w-full flex items-center gap-2 px-2.5 py-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition font-medium text-xs text-left cursor-pointer"
+                      className="w-full flex items-center gap-2 px-2.5 py-1.5 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/30 rounded-lg transition font-medium text-xs text-left cursor-pointer"
                     >
                       <FolderPlus size={14} className="text-blue-600 shrink-0" />
                       <span>+ 添加新的工作区（选择磁盘项目）</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowWorkspaceMenu(false);
+                        handleSelectProj("_general");
+                      }}
+                      className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg transition font-medium text-xs text-left cursor-pointer ${
+                        projectName === "_general"
+                          ? "text-blue-600 font-semibold bg-blue-50/60 dark:bg-blue-950/40"
+                          : "text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-[#20232e]"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <MessageSquare size={14} className={projectName === "_general" ? "text-blue-600" : "text-gray-400"} />
+                        <span>不在项目中</span>
+                      </div>
+                      {projectName === "_general" && <Check size={13} className="text-blue-600 ml-1" />}
                     </button>
                   </div>
                 </div>
@@ -401,12 +552,23 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
           </div>
         </div>
 
+        {/* 右键快捷菜单 */}
+        <InputContextMenu
+          position={contextMenuPos}
+          onClose={() => setContextMenuPos(null)}
+          onCopy={handleMenuCopy}
+          onPaste={handleMenuPaste}
+          onSelectAll={handleMenuSelectAll}
+        />
+
         {/* 悬浮圆角输入框卡片 (支持拖拽上传) */}
         <div 
           onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
+          onPaste={handlePaste}
+          onContextMenu={handleContextMenu}
           className={`w-full bg-white dark:bg-[#161822] border ${
             isDragging ? "border-blue-500 ring-2 ring-blue-500/20" : "border-gray-200 dark:border-[#262a38]"
           } shadow-sm hover:shadow-md focus-within:shadow-md focus-within:border-gray-300 dark:focus-within:border-gray-600 rounded-2xl p-3.5 transition relative`}
@@ -426,7 +588,14 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
                 <PendingAttachmentChip 
                   key={att.id} 
                   attachment={att} 
-                  onRemove={(id) => setAttachments((prev) => prev.filter((a) => a.id !== id))} 
+                  onRemove={(id) => {
+                  setAttachments((prev) => {
+                    const nextAtts = prev.filter((a) => a.id !== id);
+                    saveDraft("new_session", input, nextAtts);
+                    onDraftChange?.(input, nextAtts);
+                    return nextAtts;
+                  });
+                }} 
                 />
               ))}
             </div>
@@ -435,7 +604,14 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
           <textarea
             ref={textareaRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onPaste={handlePaste}
+            onContextMenu={handleContextMenu}
+            onChange={(e) => {
+            const val = e.target.value;
+            setInput(val);
+            saveDraft("new_session", val, attachments);
+            onDraftChange?.(val, attachments);
+          }}
             onKeyDown={handleKeyDown}
             placeholder={projectName ? `描述你想让 super 智能体在 "${projectName}" 中构建或排查的任务...` : (displayProjects.length > 0 ? "请先在上方选择一个项目工作区，然后输入任务..." : "请先在上方点击添加项目工作区，然后输入任务...")}
             rows={3}

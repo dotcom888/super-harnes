@@ -20,6 +20,8 @@ import { TurnRuler } from "./components/TurnRuler";
 import { UserInputModal } from "./components/UserInputModal";
 import { TrajectoryTimeline } from "./components/TrajectoryTimeline";
 import { LOGO_DATA_URI } from "./assets/logoData";
+import { InputContextMenu, ContextMenuPosition } from "./components/InputContextMenu";
+import { readMediaFromClipboard } from "./utils/clipboardHelper";
 
 // 生成复合工程与会话键，保证跨项目及同项目多会话 100% 独立隔离
 const getSessionKey = (proj: string, sid: string) => `${proj || "default"}:${sid || "default"}`;
@@ -43,6 +45,7 @@ export const App: React.FC = () => {
   const [approvalReq, setApprovalReq] = useState<{ ticket_id: string; command: string; reason: string } | null>(null);
   const [userInputReq, setUserInputReq] = useState<UserInputRequest | null>(null);
   const isAtBottomRef = useRef<boolean>(true);
+  const [showScrollBottom, setShowScrollBottom] = useState<boolean>(false);
   const [confirmDialog, setConfirmDialog] = useState<{
     isOpen: boolean;
     title: string;
@@ -258,6 +261,27 @@ export const App: React.FC = () => {
   const scrollEndRef = useRef<HTMLDivElement | null>(null);
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
   const sessionScrollMap = useRef<Record<string, number>>({});
+  const visitedSessionsRef = useRef<Set<string>>(new Set());
+  const isRestoringScrollRef = useRef<boolean>(false);
+  const [chatContextMenuPos, setChatContextMenuPos] = useState<ContextMenuPosition | null>(null);
+
+  // 会话输入草稿与文件附件临时保护系统 (包括聊天框与新增会话页面，杜绝切换丢失)
+  const [sessionDraftsMap, setSessionDraftsMap] = useState<Record<string, { text: string; attachments: AttachmentItem[] }>>({});
+  const [newSessionDraft, setNewSessionDraft] = useState<{ text: string; attachments: AttachmentItem[] }>(() => {
+    try {
+      const saved = localStorage.getItem("super_new_session_draft");
+      return saved ? JSON.parse(saved) : { text: "", attachments: [] };
+    } catch {
+      return { text: "", attachments: [] };
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("super_new_session_draft", JSON.stringify(newSessionDraft));
+    } catch {}
+  }, [newSessionDraft]);
+
 
   // 全局阻止默认拖拽行为，防止 Electron 误将拖入窗口边缘的文件作为网页打开
   useEffect(() => {
@@ -279,6 +303,11 @@ export const App: React.FC = () => {
   useEffect(() => {
     fetchModels();
     fetchWorkspaces();
+
+    // 前端页面初次挂载就绪，触发启动动态效果淡出（内部自带保底 0.5s 机制）
+    if (typeof (window as any).__dismissSuperSplash === "function") {
+      (window as any).__dismissSuperSplash();
+    }
 
     const timer = setInterval(() => {
       setProjects((currentProjects) => {
@@ -445,20 +474,9 @@ export const App: React.FC = () => {
             steps: (data.all_actions || []).length || 1
           }));
 
-          // 会话初次进入时默认滚动到底部最新消息，随后用户在该会话中的滚动位置会被完整保留
-          if (sessionScrollMap.current[key] === undefined && key === getSessionKey(projectNameRef.current, activeSessionIdRef.current)) {
-            requestAnimationFrame(() => {
-              if (chatContainerRef.current) {
-                chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
-                sessionScrollMap.current[key] = chatContainerRef.current.scrollHeight;
-              }
-            });
-          } else if (sessionScrollMap.current[key] !== undefined && key === getSessionKey(projectNameRef.current, activeSessionIdRef.current)) {
-            requestAnimationFrame(() => {
-              if (chatContainerRef.current) {
-                chatContainerRef.current.scrollTop = sessionScrollMap.current[key];
-              }
-            });
+          // 重新激活滚动位置自适应恢复（确保数据从后端返回后 DOM 展开时同步恢复到精确高度）
+          if (key === getSessionKey(projectNameRef.current, activeSessionIdRef.current)) {
+            restoreScrollPosition(key);
           }
         } else {
           // 磁盘无历史轮次：检查内存中是否已有新发起的在途轮次，有则保留
@@ -649,18 +667,26 @@ export const App: React.FC = () => {
               }
             } else if (payload.event === "stream_chunk") {
               const delta = payload.delta || "";
-              setSessionThoughtMap((prev) => ({
-                ...prev,
-                [targetKey]: (prev[targetKey] || "") + delta
-              }));
               setSessionTurnsMap((prev) => {
                 const list = prev[targetKey] || [];
                 if (list.length === 0) return prev;
                 const lastIdx = list.length - 1;
+                const curTurn = list[lastIdx];
+
+                // 若当前轮次已被用户手动暂停，绝对禁止追加任何后台在途文本碎片 (彻底解决图二串台 Bug)
+                if (curTurn.is_paused || curTurn.assistant_response?.includes("【用户已手动暂停】")) {
+                  return prev;
+                }
+
+                setSessionThoughtMap((prev) => ({
+                  ...prev,
+                  [targetKey]: (prev[targetKey] || "") + delta
+                }));
+
                 const updated = [...list];
-                const curResponse = updated[lastIdx].assistant_response || "";
+                const curResponse = curTurn.assistant_response || "";
                 updated[lastIdx] = {
-                  ...updated[lastIdx],
+                  ...curTurn,
                   thought: "",
                   assistant_response: curResponse + delta
                 };
@@ -689,11 +715,24 @@ export const App: React.FC = () => {
                 const list = prev[targetKey] || [];
                 if (list.length === 0) return prev;
                 const lastIdx = list.length - 1;
+                const curTurn = list[lastIdx];
+
+                // 若当前轮次已被用户暂停且来的是非暂停确认内容，坚决不覆盖已暂停状态
+                if (curTurn.is_paused || curTurn.assistant_response?.includes("【用户已手动暂停】")) {
+                  if (!payload.content?.includes("【用户已手动暂停】")) {
+                    return prev;
+                  }
+                }
+
+                const turnElapsed = payload.elapsed !== undefined 
+                  ? payload.elapsed 
+                  : (curTurn.timestamp ? Math.max(1, Math.round(Date.now() / 1000 - curTurn.timestamp)) : curTurn.elapsed);
+
                 const updated = [...list];
                 updated[lastIdx] = {
-                  ...updated[lastIdx],
+                  ...curTurn,
                   assistant_response: payload.content,
-                  elapsed: payload.elapsed !== undefined ? payload.elapsed : updated[lastIdx].elapsed
+                  elapsed: turnElapsed
                 };
                 return { ...prev, [targetKey]: updated };
               });
@@ -707,11 +746,16 @@ export const App: React.FC = () => {
                 const list = prev[targetKey] || [];
                 if (list.length === 0) return prev;
                 const lastIdx = list.length - 1;
+                const curTurn = list[lastIdx];
+                const turnElapsed = curTurn.timestamp 
+                  ? Math.max(1, Math.round(Date.now() / 1000 - curTurn.timestamp)) 
+                  : curTurn.elapsed;
                 const updated = [...list];
                 if (!updated[lastIdx].assistant_response) {
                   updated[lastIdx] = {
                     ...updated[lastIdx],
-                    assistant_response: errorMsg
+                    assistant_response: errorMsg,
+                    elapsed: turnElapsed
                   };
                 }
                 return { ...prev, [targetKey]: updated };
@@ -755,7 +799,70 @@ export const App: React.FC = () => {
     };
   }, []);
 
+  const saveCurrentSessionScroll = () => {
+    if (chatContainerRef.current && isCurrentChatStarted) {
+      const currentKey = getSessionKey(projectNameRef.current, activeSessionIdRef.current);
+      sessionScrollMap.current[currentKey] = chatContainerRef.current.scrollTop;
+    }
+  };
+
+  // 智能多阶滚动恢复与首次触底锁定系统
+  const restoreScrollPosition = (targetKey: string) => {
+    isRestoringScrollRef.current = true;
+    const isFirst = !visitedSessionsRef.current.has(targetKey);
+    if (isFirst) {
+      visitedSessionsRef.current.add(targetKey);
+    }
+    const saved = sessionScrollMap.current[targetKey];
+
+    let attempts = 0;
+    const maxAttempts = 15;
+    const interval = 40;
+
+    const tryApply = () => {
+      attempts++;
+      const el = chatContainerRef.current;
+      if (!el) {
+        if (attempts < maxAttempts) {
+          setTimeout(tryApply, interval);
+        } else {
+          isRestoringScrollRef.current = false;
+        }
+        return;
+      }
+
+      const currentSessionKey = getSessionKey(projectNameRef.current, activeSessionIdRef.current);
+      if (currentSessionKey !== targetKey) {
+        isRestoringScrollRef.current = false;
+        return;
+      }
+
+      if (isFirst || saved === undefined) {
+        // 程序启动后首次进入该会话：随着组件逐步渲染展开，持续将视口锁定在底部最新消息
+        el.scrollTop = el.scrollHeight;
+        sessionScrollMap.current[targetKey] = el.scrollHeight;
+      } else {
+        // 会话在当前生命周期中已被访问过：精准定位到上次离开时停留的像素高度
+        el.scrollTop = saved;
+      }
+
+      if (attempts < maxAttempts) {
+        setTimeout(tryApply, interval);
+      } else {
+        isRestoringScrollRef.current = false;
+        if (el) {
+          const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 40;
+          isAtBottomRef.current = atBottom;
+          setShowScrollBottom(!atBottom);
+        }
+      }
+    };
+
+    tryApply();
+  };
+
   const handleScrollToBottom = () => {
+    setShowScrollBottom(false);
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTo({ top: chatContainerRef.current.scrollHeight, behavior: "smooth" });
       const currentKey = getSessionKey(projectNameRef.current, activeSessionIdRef.current);
@@ -763,25 +870,27 @@ export const App: React.FC = () => {
     }
   };
 
-  // 视口滚动监听：实时记录当前会话停留的滚动位置，并判断是否处于最底部 (严格容差 <= 25px，杜绝翻看历史时的视图平移)
+  // 视口滚动监听：仅在聊天执行态且非恢复期记录，过滤 DOM 折叠产生的伪 0 像素干扰
   const handleViewportScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    if (isRestoringScrollRef.current || !isCurrentChatStarted) return;
     const el = e.currentTarget;
     const top = el.scrollTop;
+    if (el.scrollHeight <= el.clientHeight && top === 0) return;
+
     const currentKey = getSessionKey(projectNameRef.current, activeSessionIdRef.current);
     sessionScrollMap.current[currentKey] = top;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    isAtBottomRef.current = distanceFromBottom <= 25;
+    const atBottom = distanceFromBottom <= 40;
+    isAtBottomRef.current = atBottom;
+    setShowScrollBottom(!atBottom);
   };
 
-  // 切换会话时，精准恢复上次停留的滚动位置，杜绝卡顿与跳动刷新
+  // 切换会话或初次挂载时触发精准滚动还原
   useLayoutEffect(() => {
-    if (!chatContainerRef.current) return;
+    if (!isCurrentChatStarted) return;
     const key = getSessionKey(projectName, activeSessionId);
-    const savedScroll = sessionScrollMap.current[key];
-    if (savedScroll !== undefined) {
-      chatContainerRef.current.scrollTop = savedScroll;
-    }
-  }, [activeSessionId, projectName]);
+    restoreScrollPosition(key);
+  }, [activeSessionId, projectName, isCurrentChatStarted]);
 
   // 在新增会话功能页面切换工作区：绝不跳转到旧对话，保持新建会话态，更新目标工作区
   const handleSelectProjectInEmptyState = (pname: string) => {
@@ -952,18 +1061,42 @@ export const App: React.FC = () => {
       );
     }
 
+    setSessionActionsMap((prev) => {
+      const list = prev[targetKey] || [];
+      return {
+        ...prev,
+        [targetKey]: list.map((act) =>
+          act.status === "running" ? { ...act, status: "interrupted" as const } : act
+        )
+      };
+    });
+
     setSessionTurnsMap((prev) => {
       const list = prev[targetKey] || [];
       if (list.length === 0) return prev;
       const lastIdx = list.length - 1;
       const updated = [...list];
       const cur = updated[lastIdx];
-      if (!cur.assistant_response) {
-        updated[lastIdx] = {
-          ...cur,
-          assistant_response: "【用户已手动暂停】已终止当前思考与工具调用。"
-        };
-      }
+      const calculatedElapsed = cur.timestamp
+        ? Math.max(1, Math.round(Date.now() / 1000 - cur.timestamp))
+        : 1;
+
+      const updatedSteps = (cur.steps || []).map((st) =>
+        st.status === "running" ? { ...st, status: "interrupted" as const } : st
+      );
+      const updatedActions = (cur.actions || []).map((act) =>
+        act.status === "running" ? { ...act, status: "interrupted" as const } : act
+      );
+
+      // 强制打上已暂停标记，记录准确的发送至暂停真实耗时，彻底防止后续文本拼接与悬挂动态 (对标需求 2)
+      updated[lastIdx] = {
+        ...cur,
+        steps: updatedSteps,
+        actions: updatedActions,
+        assistant_response: "【用户已手动暂停】已终止当前思考与工具调用。",
+        elapsed: calculatedElapsed,
+        is_paused: true
+      };
       return { ...prev, [targetKey]: updated };
     });
   };
@@ -990,6 +1123,8 @@ export const App: React.FC = () => {
 
   // 切换工作区/项目 (侧边栏触发)
   const handleSelectProject = (pname: string) => {
+    saveCurrentSessionScroll();
+    projectNameRef.current = pname;
     setProjectName(pname);
     fetch("http://127.0.0.1:8765/api/workspaces/switch", {
       method: "POST",
@@ -1005,11 +1140,12 @@ export const App: React.FC = () => {
 
   // 选择会话 (保留并优先恢复内存中在途消息，并记住上一会话的滚动停留位置)
   const handleSelectSession = (sid: string, projName?: string) => {
-    if (chatContainerRef.current) {
-      const currentKey = getSessionKey(projectName, activeSessionId);
-      sessionScrollMap.current[currentKey] = chatContainerRef.current.scrollTop;
-    }
+    saveCurrentSessionScroll();
+    isRestoringScrollRef.current = true;
+
     const targetProj = projName || projectName;
+    activeSessionIdRef.current = sid;
+    projectNameRef.current = targetProj;
     if (targetProj !== projectName) {
       setProjectName(targetProj);
     }
@@ -1037,6 +1173,9 @@ export const App: React.FC = () => {
 
   // 新建自由独立会话 (归属于最近)
   const handleNewRecentSession = () => {
+    saveCurrentSessionScroll();
+    isRestoringScrollRef.current = true;
+
     fetch("http://127.0.0.1:8765/api/sessions/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1053,7 +1192,7 @@ export const App: React.FC = () => {
         setSessionActionsMap((prev) => ({ ...prev, [newKey]: [] }));
         setSessionThoughtMap((prev) => ({ ...prev, [newKey]: "" }));
         setSessionTitle("新会话");
-        fetchWorkspaces("_general", newSid);
+        fetchWorkspaces("_general", newSid, false);
       })
       .catch(() => {
         setHasStarted(false);
@@ -1076,6 +1215,9 @@ export const App: React.FC = () => {
 
   // 新建会话 (注册全新隔离复合键)
   const handleNewSession = () => {
+    saveCurrentSessionScroll();
+    isRestoringScrollRef.current = true;
+
     const targetP = (projectName && projectName !== "_general" && projects.some((p) => p.name === projectName)) ? projectName : "_general";
     fetch("http://127.0.0.1:8765/api/sessions/create", {
       method: "POST",
@@ -1092,7 +1234,7 @@ export const App: React.FC = () => {
         setSessionActionsMap((prev) => ({ ...prev, [newKey]: [] }));
         setSessionThoughtMap((prev) => ({ ...prev, [newKey]: "" }));
         setSessionTitle("新会话");
-        fetchWorkspaces(targetP, newSid);
+        fetchWorkspaces(targetP, newSid, false);
       })
       .catch(() => {
         setHasStarted(false);
@@ -1319,15 +1461,9 @@ export const App: React.FC = () => {
           </div>
         )}
 
-        {/* 主视口内容区 (overflowAnchor: none 彻底禁用浏览器在历史浏览时的默认元素位移抖动) */}
-        <div
-          ref={chatContainerRef}
-          onScroll={handleViewportScroll}
-          style={{ overflowAnchor: "none" }}
-          className="flex-1 overflow-y-auto px-6 py-4 flex flex-col"
-        >
-          {!isCurrentChatStarted ? (
-            /* 空态居中视图：支持选择工作区、添加磁盘项目、+ 号快捷指令与配置模型 */
+        {/* 主视口内容区 (分流隔离：空态视图拥有独立容器，绝不污染或重置聊天视口的滚动高度) */}
+        {!isCurrentChatStarted ? (
+          <div className="flex-1 overflow-y-auto px-6 py-4 flex flex-col">
             <EmptyState
               projectName={projectName}
               sessionId={activeSessionId}
@@ -1345,9 +1481,19 @@ export const App: React.FC = () => {
               onPause={handlePause}
               onPermissionChange={handlePermissionChange}
             />
-          ) : (
-            /* 会话执行态：支持“对话”与“轨迹”双模自由切换，流式逐字输出 */
-            <div className="max-w-4xl w-full mx-auto flex-1 flex flex-col">
+          </div>
+        ) : (
+          <div
+            ref={chatContainerRef}
+            onScroll={handleViewportScroll}
+            style={{ overflowAnchor: "none" }}
+            className="flex-1 overflow-y-auto px-6 py-4 flex flex-col"
+          >
+            {/* 会话执行态：支持“对话”与“轨迹”双模自由切换，流式逐字输出 (对标图一：向左侧空白平移一半距离，拓宽至 max-w-5xl) */}
+            <div 
+              style={{ marginLeft: "max(1rem, calc((100% - 64rem) * 0.25))" }}
+              className="max-w-5xl w-full flex-1 flex flex-col"
+            >
 
               {activeTab === "chat" ? (
                 /* 对话流视图：展示完整历史问答轮次、实时流式思考与折叠步骤 (对标图四) */
@@ -1401,8 +1547,8 @@ export const App: React.FC = () => {
 
               <div ref={scrollEndRef} className="h-8" />
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* 对话轮次记录导航尺 (贴近左侧边栏，垂直居中固定，绝对不随页面滚动，完全避免与 super 头像重叠) */}
         {isCurrentChatStarted && activeTab === "chat" && turns.length > 0 && (
@@ -1418,6 +1564,7 @@ export const App: React.FC = () => {
             isLoading={isCurrentSessionLoading}
             metrics={metrics}
             onScrollToBottom={handleScrollToBottom}
+            showScrollBottom={showScrollBottom}
             models={availableModels}
             selectedModel={currentModel}
             modelProviders={modelProviders}

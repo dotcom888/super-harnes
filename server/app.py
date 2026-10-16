@@ -1194,6 +1194,8 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     loop = asyncio.get_running_loop()
     active_tasks: Dict[str, asyncio.Task] = {}
+    turn_start_times: Dict[str, float] = {}
+    aborted_session_keys: Set[str] = set()
 
     try:
         status = bridge.get_status()
@@ -1234,7 +1236,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     bridge.abort_session(session_id, project_name)
                     active_tasks[session_key].cancel()
 
+                turn_start_times[session_key] = time.time()
+                aborted_session_keys.discard(session_key)
+
                 def emit_event(ev: Dict[str, Any]):
+                    if session_key in aborted_session_keys:
+                        return
                     ev.setdefault("session_id", session_id)
                     ev.setdefault("project", project_name)
                     asyncio.run_coroutine_threadsafe(
@@ -1305,15 +1312,23 @@ async def websocket_endpoint(websocket: WebSocket):
                 project_name = payload.get("project_name", default_workspace.root.name)
                 session_key = f"{project_name}:{session_id}"
 
+                # 标记该会话已中止，立即静音所有来自后台执行线程的在途事件广播
+                aborted_session_keys.add(session_key)
+
                 # 立即向底层 agent 派发中止信号，并取消异步任务 (对标需求 5)
                 bridge.abort_session(session_id, project_name)
                 if session_key in active_tasks and not active_tasks[session_key].done():
                     active_tasks[session_key].cancel()
                     active_tasks.pop(session_key, None)
 
+                # 计算从用户发送到暂停的真实总耗时
+                t_start = turn_start_times.get(session_key, time.time())
+                elapsed = round(max(1.0, time.time() - t_start), 1)
+
                 await websocket.send_json({
                     "event": "assistant_response",
                     "content": "【用户已手动暂停】已终止当前思考与工具调用。",
+                    "elapsed": elapsed,
                     "session_id": session_id,
                     "project": project_name,
                     "timestamp": asyncio.get_event_loop().time()

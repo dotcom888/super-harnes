@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from "react";
 import { 
-  User, 
   ChevronDown, 
   ChevronRight, 
   Check, 
@@ -12,6 +11,8 @@ import {
   Terminal, 
   Loader2, 
   AlertCircle,
+  RotateCcw,
+  PauseCircle,
   Settings,
   ThumbsUp,
   ThumbsDown,
@@ -20,7 +21,6 @@ import {
   Clock
 } from "lucide-react";
 import { TurnData, TrajectoryStep, UserInputRequest } from "../types";
-import { LOGO_DATA_URI } from "../assets/logoData";
 import { ChatAttachmentItemCard } from "./AttachmentCards";
 import { InlineApprovalCard, InlineUserInputCard } from "./InlineInteractionCards";
 
@@ -59,43 +59,20 @@ function formatFullDateTime(ts?: number): string {
   return `${hours}:${minutes}, ${year}/${month}/${day}`;
 }
 
-// 格式化此轮耗时为 "用时 15秒" 或 "用时 15分钟 58秒" (对标图一)
-function formatTurnElapsed(turn: TurnData): string {
-  if (turn.elapsed) {
-    if (turn.elapsed >= 60) {
-      const mins = Math.floor(turn.elapsed / 60);
-      const secs = Math.round(turn.elapsed % 60);
-      return `${mins}分钟 ${secs}秒`;
-    }
-    return `${Math.round(turn.elapsed)}秒`;
-  }
+// 格式化此轮耗时为 "用时 15秒" 或 "用时 15分钟 58秒" (对标图一，按用户发出至回复完成真实时间计算)
+function formatTurnElapsed(turn: TurnData, liveElapsed?: number): string {
+  const secs = liveElapsed !== undefined 
+    ? liveElapsed 
+    : (turn.elapsed !== undefined 
+        ? turn.elapsed 
+        : (turn.timestamp ? Math.max(1, Math.round(Date.now() / 1000 - turn.timestamp)) : 1));
 
-  let totalSecs = 0;
-  if (turn.steps && turn.steps.length > 0) {
-    for (const st of turn.steps) {
-      if (st.elapsed) totalSecs += st.elapsed;
-    }
+  if (secs >= 60) {
+    const mins = Math.floor(secs / 60);
+    const remainingSecs = Math.round(secs % 60);
+    return `${mins}分钟 ${remainingSecs}秒`;
   }
-  if (totalSecs === 0 && turn.actions && turn.actions.length > 0) {
-    for (const act of turn.actions) {
-      if (act.elapsed) totalSecs += act.elapsed;
-    }
-  }
-
-  if (totalSecs > 0) {
-    if (totalSecs >= 60) {
-      const mins = Math.floor(totalSecs / 60);
-      const secs = Math.round(totalSecs % 60);
-      return `${mins}分钟 ${secs}秒`;
-    }
-    return `${Math.round(totalSecs)}秒`;
-  }
-
-  const stepCount = (turn.steps?.length || turn.actions?.length || 0);
-  if (stepCount > 0) {
-    return `${Math.max(2, stepCount * 3)}秒`;
-  }
-  return "6秒";
+  return `${Math.max(1, Math.round(secs))}秒`;
 }
 
 // 行内 Markdown 标记渲染器 (支持加粗 **bold**、行内代码 `code`、外链 [title](url))
@@ -443,42 +420,89 @@ const MarkdownContent: React.FC<{ content: string }> = ({ content }) => {
   );
 };
 
-// 单项思考过程卡片 (对标图一：不换行，单行自动截断折叠，带动态图标与等距排版)
-const ThinkStepCard: React.FC<{ thought: string }> = ({ thought }) => {
+// 汉化工具名称 (对标需求 2：思考过程英文全汉化)
+function translateToolName(name: string): string {
+  if (!name) return "工具调用";
+  const lower = name.toLowerCase().trim();
+  if (lower.includes("think") || lower === "assistant" || lower === "thought") return "思考";
+  if (lower === "bash" || lower === "exec_command" || lower === "terminal" || lower === "shell" || lower === "cmd") return "终端命令";
+  if (lower.includes("write") || lower.includes("edit") || lower.includes("patch") || lower.includes("create")) return "写入文件";
+  if (lower.includes("read") || lower.includes("view") || lower.includes("cat")) return "读取文件";
+  if (lower.includes("grep") || lower.includes("search") || lower.includes("find")) return "代码检索";
+  if (lower.includes("glob") || lower.includes("list_dir") || lower.includes("dir") || lower.includes("ls")) return "检索目录";
+  if (lower.includes("skill") || lower.includes("platform")) return "技能平台";
+  if (lower.includes("todo") || lower.includes("task")) return "任务规划";
+  if (lower.includes("weather")) return "天气查询";
+  if (lower.includes("web") || lower.includes("browser") || lower.includes("fetch") || lower.includes("url")) return "网页请求";
+  if (lower.includes("user_input") || lower.includes("approval")) return "确认交互";
+  if (lower.startsWith("mcp")) return "外部工具";
+  return name;
+}
+
+// 提取工具执行参数或描述预览
+function formatToolDesc(step: TrajectoryStep): string {
+  if (step.desc) return step.desc;
+  if (step.args) {
+    if (typeof step.args === "string") return step.args;
+    if (step.args.command) return String(step.args.command);
+    if (step.args.path) return String(step.args.path);
+    if (step.args.query) return String(step.args.query);
+    try {
+      return JSON.stringify(step.args);
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
+// 单项思考过程行 (对标图二：去框化无卡片，流光溢彩动态呼吸，全中文展示，点击展开详情)
+// 单项思考过程行 (对标图二需求3：彻底删除思考过程右侧时间及多余提示，清爽纯净，点击展开详情)
+const ThinkStepRow: React.FC<{ thought: string; isRunning?: boolean }> = ({ 
+  thought, 
+  isRunning = false 
+}) => {
   const [expanded, setExpanded] = useState(false);
   const cleanThought = thought.trim();
   const singleLinePreview = cleanThought.replace(/\r?\n+/g, " ");
 
   return (
-    <div className="border border-gray-200/80 dark:border-gray-700/80 rounded-xl bg-white dark:bg-[#1a1c24] overflow-hidden shadow-2xs text-xs font-mono my-1 transition-all">
+    <div className="py-0.5 text-xs select-none transition-colors">
       <div 
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center justify-between px-3 py-2 bg-purple-50/30 dark:bg-[#201d2e]/40 hover:bg-purple-50/60 dark:hover:bg-[#262238] transition cursor-pointer select-none"
+        className="flex items-center gap-2 py-1 px-1.5 -mx-1.5 rounded-lg hover:bg-gray-100/60 dark:hover:bg-[#20232e]/60 transition cursor-pointer group"
       >
-        <div className="flex items-center gap-2 truncate flex-1 min-w-0 pr-2">
-          <div className="relative flex items-center justify-center shrink-0">
-            <Atom size={13} className="text-purple-600 dark:text-purple-400 animate-spin-slow animate-pulse-glow shrink-0" />
-          </div>
-
-          <span className="font-semibold text-purple-700 dark:text-purple-300 shrink-0">
-            Think ·
-          </span>
-
-          <span className="text-gray-700 dark:text-gray-300 truncate font-sans text-xs">
-            {singleLinePreview}
-          </span>
+        <div className="relative flex items-center justify-center shrink-0">
+          <Atom size={13} className={`text-purple-500 dark:text-purple-400 shrink-0 ${isRunning ? "animate-spin-slow" : ""}`} />
         </div>
 
-        <div className="flex items-center gap-1.5 text-gray-400 text-[11px] shrink-0">
-          <span className="text-[10px] text-gray-400 font-sans hidden sm:inline">
-            {expanded ? "收起" : "展开"}
+        <span className="font-medium text-gray-500 dark:text-gray-400 shrink-0">
+          思考
+        </span>
+
+        <span className="text-gray-300 dark:text-gray-600 select-none">·</span>
+
+        {isRunning ? (
+          <span className="shimmer-text font-medium truncate flex-1 min-w-0">
+            {singleLinePreview || "正在深入分析与规划中..."}
           </span>
-          {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        ) : (
+          <span className="text-gray-700 dark:text-gray-300 truncate font-sans text-xs flex-1 min-w-0">
+            {singleLinePreview}
+          </span>
+        )}
+
+        <div className="flex items-center text-gray-400 text-[11px] shrink-0 ml-auto">
+          {expanded ? (
+            <ChevronDown size={12} className="text-gray-400 group-hover:text-gray-600 dark:group-hover:text-gray-300" />
+          ) : (
+            <ChevronRight size={12} className="text-gray-400 group-hover:text-gray-600 dark:group-hover:text-gray-300" />
+          )}
         </div>
       </div>
 
       {expanded && (
-        <div className="p-3.5 border-t border-purple-100/80 dark:border-gray-800 bg-purple-50/20 dark:bg-[#181622] text-[13px] font-sans text-gray-800 dark:text-gray-200 leading-[1.7] whitespace-pre-wrap select-text max-h-64 overflow-y-auto">
+        <div className="ml-5 pl-3.5 my-1.5 border-l-2 border-purple-200 dark:border-purple-800/80 text-[12.5px] font-sans text-gray-700 dark:text-gray-300 leading-[1.7] whitespace-pre-wrap select-text max-h-64 overflow-y-auto animate-in fade-in duration-150">
           {cleanThought}
         </div>
       )}
@@ -486,64 +510,90 @@ const ThinkStepCard: React.FC<{ thought: string }> = ({ thought }) => {
   );
 };
 
-// 单项工具调用卡片 (对标图一：单行紧凑折叠，带动态终端脉冲动画，IN/OUT 规范折叠)
-const ToolStepCard: React.FC<{ step: TrajectoryStep; onOpenFile?: (path: string) => void }> = ({ step, onOpenFile }) => {
+// 单项工具执行行 (对标图二：去框化无卡片，流光溢彩执行动态，全中文展示，点击展开入参出参)
+const ToolStepRow: React.FC<{ 
+  step: TrajectoryStep; 
+  onOpenFile?: (path: string) => void;
+  isPaused?: boolean;
+  isLoading?: boolean;
+}> = ({ step, onOpenFile, isPaused = false, isLoading = false }) => {
   const [expanded, setExpanded] = useState(false);
-  const isRunning = step.status === "running";
+  const isInterrupted = Boolean(step.status === "running" && (isPaused || !isLoading));
+  const isRunning = Boolean(step.status === "running" && !isPaused && isLoading);
   const isError = step.status === "error";
 
-  const toolTitle = step.display || step.tool || "Tool";
-  const descText = step.desc || (typeof step.args === "object" ? JSON.stringify(step.args) : String(step.args || ""));
+  const chineseType = translateToolName(step.tool || step.display || "");
+  const descText = formatToolDesc(step);
+
+  const elapsedText = step.elapsed !== undefined && step.elapsed > 0
+    ? `持续了 ${step.elapsed >= 1 ? Math.round(step.elapsed) : step.elapsed.toFixed(1)} 秒` 
+    : (isRunning ? "正在执行..." : undefined);
 
   return (
-    <div className="border border-gray-200/80 dark:border-gray-700/80 rounded-xl bg-white dark:bg-[#1a1c24] overflow-hidden shadow-2xs text-xs font-mono my-1 transition-all">
+    <div className="py-0.5 text-xs select-none transition-colors">
       <div 
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center justify-between px-3 py-2 bg-gray-50/70 dark:bg-[#20232e] hover:bg-gray-100/70 dark:hover:bg-[#272b38] transition cursor-pointer select-none"
+        className="flex items-center gap-2 py-1 px-1.5 -mx-1.5 rounded-lg hover:bg-gray-100/60 dark:hover:bg-[#20232e]/60 transition cursor-pointer group"
       >
-        <div className="flex items-center gap-2 truncate flex-1 min-w-0 pr-2">
+        <div className="relative flex items-center justify-center shrink-0">
           {isRunning ? (
-            <Loader2 size={13} className="text-amber-500 animate-spin shrink-0" />
+            <Loader2 size={13} className="text-blue-500 animate-spin shrink-0" />
+          ) : isInterrupted ? (
+            <PauseCircle size={13} className="text-amber-500 shrink-0" />
           ) : isError ? (
             <AlertCircle size={13} className="text-red-500 shrink-0" />
           ) : (
-            <div className="relative flex items-center justify-center shrink-0">
-              <Terminal size={13} className="text-amber-500 dark:text-amber-400 animate-tool-pulse shrink-0" />
-            </div>
-          )}
-
-          <span className="font-semibold text-gray-800 dark:text-gray-200 shrink-0">
-            Tool call · {toolTitle}
-          </span>
-          <span className="text-gray-400">·</span>
-
-          {step.path ? (
-            <span 
-              onClick={(e) => {
-                e.stopPropagation();
-                if (onOpenFile && step.path) onOpenFile(step.path);
-              }}
-              className="text-gray-600 dark:text-gray-300 hover:text-blue-600 underline truncate"
-            >
-              {descText}
-            </span>
-          ) : (
-            <span className="text-gray-500 dark:text-gray-400 truncate">{descText}</span>
+            <Terminal size={13} className="text-amber-500 dark:text-amber-400 shrink-0" />
           )}
         </div>
 
-        <div className="flex items-center gap-1.5 text-gray-400 text-[11px] shrink-0">
-          {step.elapsed !== undefined && <span>{step.elapsed}s</span>}
-          {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        <span className="font-medium text-gray-700 dark:text-gray-300 shrink-0">
+          {chineseType}
+        </span>
+
+        <span className="text-gray-300 dark:text-gray-600 select-none">·</span>
+
+        {isRunning ? (
+          <span className="shimmer-text font-medium truncate flex-1 min-w-0">
+            {descText || "正在执行..."}
+          </span>
+        ) : isInterrupted ? (
+          <span className="text-amber-600 dark:text-amber-400 truncate font-mono text-[11.5px] flex-1 min-w-0">
+            {descText ? `${descText}（已中止）` : "已终止执行"}
+          </span>
+        ) : step.path ? (
+          <span 
+            onClick={(e) => {
+              e.stopPropagation();
+              if (onOpenFile && step.path) onOpenFile(step.path);
+            }}
+            className="text-gray-600 dark:text-gray-300 hover:text-blue-600 underline truncate font-mono text-[11.5px] flex-1 min-w-0"
+          >
+            {descText || "查看文件"}
+          </span>
+        ) : (
+          <span className="text-gray-600 dark:text-gray-300 truncate font-mono text-[11.5px] flex-1 min-w-0">
+            {descText || "执行完成"}
+          </span>
+        )}
+
+        <div className="flex items-center text-gray-400 text-[11px] shrink-0 ml-auto">
+          {(step.args || step.output) && (
+            expanded ? (
+              <ChevronDown size={12} className="text-gray-400 group-hover:text-gray-600 dark:group-hover:text-gray-300" />
+            ) : (
+              <ChevronRight size={12} className="text-gray-400 group-hover:text-gray-600 dark:group-hover:text-gray-300" />
+            )
+          )}
         </div>
       </div>
 
-      {expanded && (
-        <div className="p-3 border-t border-gray-100 dark:border-gray-800 space-y-2 bg-gray-50/40 dark:bg-[#161820] text-[11px]">
+      {expanded && (step.args || step.output) && (
+        <div className="ml-5 pl-3.5 my-1.5 border-l-2 border-amber-300/80 dark:border-amber-700/80 space-y-2 text-xs animate-in fade-in duration-150">
           {step.args && (
             <div>
-              <div className="text-[10px] font-bold text-gray-400 uppercase mb-1">IN 参数</div>
-              <pre className="p-2.5 bg-white dark:bg-[#1e202a] border border-gray-200/80 dark:border-gray-700 rounded-lg text-gray-800 dark:text-gray-200 whitespace-pre-wrap max-h-40 overflow-y-auto">
+              <div className="text-[10px] font-bold text-gray-400 mb-0.5">输入参数</div>
+              <pre className="p-2 bg-gray-50 dark:bg-[#161822] border border-gray-200/80 dark:border-gray-800 rounded-lg text-gray-800 dark:text-gray-200 text-xs font-mono whitespace-pre-wrap max-h-40 overflow-y-auto">
                 {typeof step.args === "object" ? JSON.stringify(step.args, null, 2) : step.args}
               </pre>
             </div>
@@ -551,8 +601,8 @@ const ToolStepCard: React.FC<{ step: TrajectoryStep; onOpenFile?: (path: string)
 
           {step.output && (
             <div>
-              <div className="text-[10px] font-bold text-gray-400 uppercase mb-1">OUT 输出</div>
-              <pre className="p-2.5 bg-white dark:bg-[#1e202a] border border-gray-200/80 dark:border-gray-700 rounded-lg text-gray-800 dark:text-gray-200 whitespace-pre-wrap max-h-52 overflow-y-auto">
+              <div className="text-[10px] font-bold text-gray-400 mb-0.5">执行结果</div>
+              <pre className="p-2 bg-gray-50 dark:bg-[#161822] border border-gray-200/80 dark:border-gray-800 rounded-lg text-gray-800 dark:text-gray-200 text-xs font-mono whitespace-pre-wrap max-h-52 overflow-y-auto">
                 {step.output}
               </pre>
             </div>
@@ -562,6 +612,58 @@ const ToolStepCard: React.FC<{ step: TrajectoryStep; onOpenFile?: (path: string)
     </div>
   );
 };
+
+// 智能诊断 Agent 思考中断根因 (对标需求 3：多维度归因，避免用户误会为仅 API Key 错误)
+function diagnoseInterruption(steps: TrajectoryStep[]): {
+  title: string;
+  desc: string;
+  action: "settings" | "resend" | "cmd";
+} {
+  if (!steps || steps.length === 0) {
+    return {
+      title: "大模型连接异常或鉴权失败",
+      desc: "未能成功建立通信。可能原因：当前模型未配置有效 API 密钥、接口 Base URL 无法连通或模型名称不匹配。",
+      action: "settings"
+    };
+  }
+
+  // 1. 检查是否存在命令执行超时或挂起
+  const lastToolStep = [...steps].reverse().find(s => s.type === "tool");
+  if (lastToolStep) {
+    const out = String(lastToolStep.output || "");
+    const argsStr = JSON.stringify(lastToolStep.args || "");
+    if (out.includes("执行超时") || out.includes("强杀") || out.includes("TimeoutExpired") || argsStr.includes("start.bat") || argsStr.includes("pause")) {
+      return {
+        title: "终端命令执行超时或子进程挂起",
+        desc: "终端命令执行超时已被系统安全强杀。可能原因：执行的脚本或批处理中包含交互式等待命令（如 pause）、或者启动了未脱离控制台的常驻后台服务。",
+        action: "cmd"
+      };
+    }
+    if (out.includes("用户拒绝") || out.includes("安全拦截拒绝")) {
+      return {
+        title: "命令执行被取消或被安全策略拦截",
+        desc: "排查过程中的敏感命令未通过审批或被防火墙规则拦截，Agent 提前收束退出。",
+        action: "resend"
+      };
+    }
+  }
+
+  // 2. 检查步数是否过多导致上下文或死循环熔断
+  if (steps.length >= 12) {
+    return {
+      title: "长周期推理中断或步数达到上限",
+      desc: `本轮任务已执行 ${steps.length} 个步骤。可能原因：达到模型单轮推理上限、上下文 Token 达到阈值，或触发了多步排查安全熔断。`,
+      action: "resend"
+    };
+  }
+
+  // 3. 通用网络波动或上游服务异常
+  return {
+    title: "模型思考中断或服务响应超时",
+    desc: "在执行多步任务时大模型连接断开或未能输出最终回复。可能原因：服务商网络波动、网关超时（504/502）或响应格式中断。",
+    action: "resend"
+  };
+}
 
 export const ChatMessage: React.FC<ChatMessageProps> = ({ 
   turn, 
@@ -578,14 +680,37 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   onSubmitUserInput,
   onCancelUserInput
 }) => {
-  const [traceExpanded, setTraceExpanded] = useState(false);
+  const isPaused = Boolean(turn.is_paused || turn.assistant_response?.includes("【用户已手动暂停】"));
+  // 思考状态默认保持展开展示，每一行平铺流光动态，用户可自由折叠与展开 (若已暂停则默认收起)
+  const [traceExpanded, setTraceExpanded] = useState<boolean>(() => {
+    if (isPaused) return false;
+    return true;
+  });
 
-  // 运行中默认展开查看实时轨迹；一旦运行结束或暂停，思考过程自动收起折叠 (对标需求 4)
+  // 动态实时秒数计时器：解决硬编码 6 秒与思考中不计时问题
+  const [liveElapsed, setLiveElapsed] = useState<number>(() => {
+    if (turn.elapsed) return turn.elapsed;
+    if (turn.timestamp) return Math.max(1, Math.round(Date.now() / 1000 - turn.timestamp));
+    return 1;
+  });
+
   useEffect(() => {
     if (!isLoading) {
-      setTraceExpanded(false);
+      if (turn.elapsed) setLiveElapsed(turn.elapsed);
+      return;
     }
-  }, [isLoading]);
+    const updateElapsed = () => {
+      if (turn.timestamp) {
+        setLiveElapsed(Math.max(1, Math.round(Date.now() / 1000 - turn.timestamp)));
+      } else {
+        setLiveElapsed((prev) => prev + 1);
+      }
+    };
+    updateElapsed();
+    const timer = setInterval(updateElapsed, 1000);
+    return () => clearInterval(timer);
+  }, [isLoading, turn.timestamp, turn.elapsed]);
+
   const [copiedAsst, setCopiedAsst] = useState(false);
   const [copiedUser, setCopiedUser] = useState(false);
   const [liked, setLiked] = useState<boolean | null>(null);
@@ -645,11 +770,11 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   const hasSteps = steps.length > 0;
   const timeStr = formatTime(turn.timestamp);
   const fullDateTimeStr = formatFullDateTime(turn.timestamp);
-  const elapsedStr = formatTurnElapsed(turn);
+  const elapsedStr = formatTurnElapsed(turn, isLoading ? liveElapsed : turn.elapsed);
 
-  // 当存在待人工审批的敏感操作或用户决策卡片时，强制展开思考追踪区展现卡片 (对标需求 1)
+  // 当存在待人工审批的敏感操作或用户决策卡片时，强制展开思考追踪区展现卡片；用户在思考中可自由折叠与展开
   const hasPendingInteraction = Boolean(approvalReq || userInputReq);
-  const showTrace = isLoading || hasPendingInteraction ? true : traceExpanded;
+  const showTrace = hasPendingInteraction ? true : traceExpanded;
 
   return (
     <div id={`turn-container-${turn.turn_id}`} className="space-y-3.5 mb-6 select-text">
@@ -740,72 +865,54 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
             </div>
           )}
 
-          <div className="w-7 h-7 rounded-full bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 flex items-center justify-center text-xs font-semibold shrink-0 shadow-2xs mt-0.5 select-none">
-            <User size={15} />
-          </div>
+
         </div>
       )}
 
-      {/* 2. 思考过程与工具调用过程 (对标图四：执行时流式展开，完成后自动折叠，发消息立即显示动效) */}
+      {/* 2. 思考过程与工具调用过程 (对标图二：去框化无卡片，流光溢彩动态呼吸，全中文展示，默认展开可自由折叠) */}
       {(hasSteps || isLoading) && (
-        <div className="w-full max-w-full mr-auto pl-10">
-          {!isLoading && (turn.assistant_response || hasSteps) && hasSteps && (
-            <div className="mb-2">
-              <button
-                type="button"
-                onClick={() => setTraceExpanded(!traceExpanded)}
-                className="group/trace inline-flex items-center gap-1.5 text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200 text-sm py-1 transition cursor-pointer select-none"
-              >
-                <span className="font-normal">Worked for {elapsedStr || "数秒"}</span>
-                {traceExpanded ? (
-                  <ChevronDown size={14} className="text-gray-400 group-hover/trace:text-gray-600 dark:group-hover/trace:text-gray-300 transition-transform" />
-                ) : (
-                  <ChevronRight size={14} className="text-gray-400 group-hover/trace:text-gray-600 dark:group-hover/trace:text-gray-300 transition-transform" />
-                )}
-              </button>
-              {!traceExpanded && <hr className="my-2.5 border-t border-gray-100 dark:border-gray-800/80" />}
-            </div>
-          )}
+        <div className="w-full max-w-full mr-auto pl-1 my-1">
+          <div className="mb-1.5 flex items-center justify-between">
+            <button
+              type="button"
+              onClick={() => setTraceExpanded(!traceExpanded)}
+              className="group/trace inline-flex items-center gap-1.5 text-gray-400 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 text-xs py-0.5 transition cursor-pointer select-none"
+            >
+              <Sparkles size={12} className="text-purple-500 shrink-0" />
+              <span className="font-normal">
+                {traceExpanded 
+                  ? `深度思考 · 耗时 ${elapsedStr}` 
+                  : `深度思考 · 耗时 ${elapsedStr} (点击展开)`}
+              </span>
+              {traceExpanded ? (
+                <ChevronDown size={13} className="text-gray-400 group-hover/trace:text-gray-600 dark:group-hover/trace:text-gray-300" />
+              ) : (
+                <ChevronRight size={13} className="text-gray-400 group-hover/trace:text-gray-600 dark:group-hover/trace:text-gray-300" />
+              )}
+            </button>
+          </div>
 
-          {/* 若模型调用异常导致思考中断且无答复时，在此处抛出报错信息 (对标需求 4) */}
-          {!isLoading && !turn.assistant_response && hasSteps && (
-            <div className="my-2 p-3 bg-red-50/80 dark:bg-red-950/20 border border-red-200 dark:border-red-900/40 rounded-xl text-xs text-red-700 dark:text-red-300 flex items-start gap-2.5 animate-in fade-in">
-              <AlertCircle size={15} className="shrink-0 mt-0.5 text-red-600 dark:text-red-400" />
-              <div className="flex-1 space-y-1.5">
-                <div className="font-semibold">模型思考中断，未能生成最终回复</div>
-                <div className="text-[11px] leading-relaxed text-red-600/90 dark:text-red-400/90">
-                  可能原因：当前选择的模型未配置有效 API 密钥、接口地址无法连通或模型名称不匹配。
-                </div>
-                {onOpenSettings && (
-                  <button
-                    type="button"
-                    onClick={onOpenSettings}
-                    className="mt-1 px-2.5 py-1 bg-red-100 hover:bg-red-200 dark:bg-red-900/40 dark:hover:bg-red-900/60 text-red-700 dark:text-red-200 rounded-lg text-xs font-medium transition cursor-pointer flex items-center gap-1.5"
-                  >
-                    <Settings size={12} />
-                    <span>前往配置模型提供方</span>
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
+
 
           {showTrace && (
             <div className="space-y-1.5 py-1 select-text animate-in fade-in duration-150">
               {steps.map((st, i) => {
                 if (st.type === "assistant" && st.thought) {
                   return (
-                    <ThinkStepCard 
+                    <ThinkStepRow 
                       key={st.id || `th_${i}`}
                       thought={st.thought}
+                      isRunning={isLoading && !isPaused && i === steps.length - 1}
                     />
                   );
                 } else if (st.type === "tool") {
                   return (
-                    <ToolStepCard 
+                    <ToolStepRow 
                       key={st.id || `tool_${i}`} 
                       step={st} 
                       onOpenFile={onOpenFile} 
+                      isPaused={isPaused}
+                      isLoading={isLoading}
                     />
                   );
                 }
@@ -831,9 +938,11 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
               )}
 
               {isLoading && (
-                <div className="flex items-center gap-2 text-xs text-blue-600 dark:text-blue-400 py-1.5 animate-pulse font-medium">
-                  <Loader2 size={13} className="animate-spin" />
-                  <span>super 正在深度思考与执行下一步排查...</span>
+                <div className="flex items-center gap-2 text-xs py-1 select-none font-medium">
+                  <Sparkles size={13} className="text-purple-500 animate-spin-slow shrink-0" />
+                  <span className="shimmer-text">
+                    思考 · 正在深入分析与执行中...
+                  </span>
                 </div>
               )}
             </div>
@@ -841,15 +950,51 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
         </div>
       )}
 
-      {/* 3. 智能体正式输出卡片 (对标图一、图二、图三) */}
+      {/* 若模型调用异常导致思考中断且无最终答复时，在此轮末尾抛出结构化智能诊断卡片 (对标需求 3) */}
+      {!isLoading && !turn.assistant_response && (
+        <div className="w-full max-w-full mr-auto my-2 animate-in fade-in">
+          {(() => {
+            const diag = diagnoseInterruption(steps);
+            return (
+              <div className="p-4 bg-amber-50/90 dark:bg-[#1f1d18] border border-amber-200/90 dark:border-amber-900/50 rounded-2xl text-xs text-amber-900 dark:text-amber-200 flex items-start gap-3 shadow-xs">
+                <AlertCircle size={16} className="shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+                <div className="flex-1 space-y-1.5">
+                  <div className="font-bold text-sm text-amber-900 dark:text-amber-100">{diag.title}</div>
+                  <div className="text-xs leading-relaxed text-amber-800/90 dark:text-amber-300/90">
+                    {diag.desc}
+                  </div>
+                  <div className="flex items-center gap-2 pt-1">
+                    {diag.action === "settings" && onOpenSettings ? (
+                      <button
+                        type="button"
+                        onClick={onOpenSettings}
+                        className="px-3 py-1.5 bg-amber-200/70 hover:bg-amber-200 dark:bg-amber-900/50 dark:hover:bg-amber-900/80 text-amber-900 dark:text-amber-100 rounded-xl text-xs font-medium transition cursor-pointer flex items-center gap-1.5 shadow-xs"
+                      >
+                        <Settings size={13} />
+                        <span>前往配置模型提供方</span>
+                      </button>
+                    ) : onResendTurn && turn.user_prompt ? (
+                      <button
+                        type="button"
+                        onClick={() => onResendTurn(turn.turn_id, turn.user_prompt)}
+                        className="px-3 py-1.5 bg-amber-200/70 hover:bg-amber-200 dark:bg-amber-900/50 dark:hover:bg-amber-900/80 text-amber-900 dark:text-amber-100 rounded-xl text-xs font-medium transition cursor-pointer flex items-center gap-1.5 shadow-xs"
+                      >
+                        <RotateCcw size={13} />
+                        <span>重新生成此轮</span>
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* 3. 智能体正式输出卡片 (无头像，全宽整齐对齐，对标图四图五优化排版) */}
       {(turn.assistant_response || (!turn.user_prompt && !hasSteps)) && (
-        <div className="flex items-start gap-3 w-full max-w-full mr-auto group">
-          <img 
-            src={LOGO_DATA_URI} 
-            alt="super avatar" 
-            className="w-7 h-7 object-contain rounded-xl shrink-0 mt-1 shadow-2xs select-none" 
-          />
-          <div className="flex-1 bg-white dark:bg-[#1a1c24] border border-gray-200/90 dark:border-gray-800 shadow-2xs rounded-2xl px-5 py-4 sm:px-6 sm:py-5 text-sm text-gray-800 dark:text-gray-200 leading-[1.75] select-text">
+        <div className="w-full max-w-full mr-auto group">
+          <div className="w-full bg-white dark:bg-[#1a1c24] border border-gray-200/90 dark:border-gray-800 shadow-2xs rounded-2xl px-5 py-4 sm:px-6 sm:py-5 text-sm text-gray-800 dark:text-gray-200 leading-[1.75] select-text">
             {/* 卡片顶部：品牌标识 */}
             <div className="flex items-center justify-between pb-2.5 mb-3 border-b border-gray-100 dark:border-gray-800/80 text-xs text-gray-500 select-none">
               <div className="flex items-center gap-2 font-medium text-gray-700 dark:text-gray-300">

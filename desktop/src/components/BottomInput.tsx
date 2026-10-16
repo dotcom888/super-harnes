@@ -22,12 +22,15 @@ import {
 } from "lucide-react";
 import { TelemetryMetrics, AttachmentItem } from "../types";
 import { PendingAttachmentChip } from "./AttachmentCards";
+import { readMediaFromClipboard, extractFilesFromClipboardEvent, saveDraft, loadDraft, clearDraft } from "../utils/clipboardHelper";
+import { InputContextMenu, ContextMenuPosition } from "./InputContextMenu";
 
 interface BottomInputProps {
   onSend: (text: string, model: string, permission: string, attachments?: AttachmentItem[]) => void;
   isLoading: boolean;
   metrics: TelemetryMetrics;
   onScrollToBottom?: () => void;
+  showScrollBottom?: boolean;
   models?: string[];
   selectedModel?: string;
   modelProviders?: Record<string, string>;
@@ -40,6 +43,8 @@ interface BottomInputProps {
   sessionId?: string;
   permissionMode?: string;
   onPermissionChange?: (newMode: string) => void;
+  draftAttachments?: AttachmentItem[];
+  onDraftChange?: (text: string, attachments: AttachmentItem[]) => void;
 }
 
 interface CommandItem {
@@ -54,6 +59,7 @@ export const BottomInput: React.FC<BottomInputProps> = ({
   isLoading,
   metrics,
   onScrollToBottom,
+  showScrollBottom = false,
   models = [],
   selectedModel,
   modelProviders,
@@ -65,9 +71,19 @@ export const BottomInput: React.FC<BottomInputProps> = ({
   projectName,
   sessionId,
   permissionMode,
-  onPermissionChange
+  onPermissionChange,
+  draftAttachments,
+  onDraftChange
 }) => {
-  const [input, setInput] = useState("");
+  const sessionKey = `${projectName || "default"}:${sessionId || "default"}`;
+  const [input, setInput] = useState(() => {
+    if (sessionId) {
+      const d = loadDraft(sessionKey);
+      return d.text || draftText || "";
+    }
+    return draftText || "";
+  });
+  const [contextMenuPos, setContextMenuPos] = useState<ContextMenuPosition | null>(null);
   const [model, setModel] = useState(selectedModel || models[0] || "");
   const [permission, setPermission] = useState(permissionMode || "AUTO 模式");
 
@@ -81,13 +97,39 @@ export const BottomInput: React.FC<BottomInputProps> = ({
   const [showCommandMenu, setShowCommandMenu] = useState(false);
 
   // 附件上传与拖拽状态
-  const [attachments, setAttachments] = useState<AttachmentItem[]>([]);
+  const [attachments, setAttachments] = useState<AttachmentItem[]>(() => {
+    if (sessionId) {
+      const d = loadDraft(sessionKey);
+      return d.attachments.length > 0 ? d.attachments : (draftAttachments || []);
+    }
+    return draftAttachments || [];
+  });
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const dragCounter = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const lastPasteTimeRef = useRef(0);
+
+  // 会话切换与持久草稿隔离绑定：切换会话时，严格加载目标会话草稿，绝不残留其他会话输入
+  useEffect(() => {
+    if (sessionId) {
+      const d = loadDraft(sessionKey);
+      setInput(d.text || "");
+      setAttachments(d.attachments || []);
+    } else {
+      setInput("");
+      setAttachments([]);
+    }
+  }, [sessionId, projectName]);
+
+  // 当外部快捷指令注入 draftText 时同步
+  useEffect(() => {
+    if (draftText) {
+      setInput(draftText);
+      onDraftConsumed?.();
+    }
+  }, [draftText]);
 
   const handleUploadFiles = async (files: FileList | File[]) => {
     if (!files || files.length === 0) return;
@@ -105,7 +147,12 @@ export const BottomInput: React.FC<BottomInputProps> = ({
       if (res.ok) {
         const data = await res.json();
         if (data.attachments) {
-          setAttachments((prev) => [...prev, ...data.attachments]);
+          setAttachments((prev) => {
+            const nextAtts = [...prev, ...data.attachments];
+            if (sessionId) saveDraft(sessionKey, input, nextAtts);
+            onDraftChange?.(input, nextAtts);
+            return nextAtts;
+          });
         }
       }
     } catch (err) {
@@ -158,53 +205,96 @@ export const BottomInput: React.FC<BottomInputProps> = ({
     }
   };
 
-  // 剪贴板复制粘贴上传 (支持截图/图片/文件 Ctrl+V 粘贴直接上传并附件化，防重防抖与防冒泡)
-  const handlePaste = async (e: React.ClipboardEvent) => {
-    const clipboardData = e.clipboardData;
-    if (!clipboardData) return;
 
-    // 防重防抖：300ms 内禁止重复触发粘贴上传
+  // 右键菜单交互操作 (复制、粘贴、全选)
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenuPos({ x: e.clientX, y: e.clientY });
+  };
+
+  const handleMenuCopy = () => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const selected = textarea.value.substring(textarea.selectionStart, textarea.selectionEnd);
+    const toCopy = selected || textarea.value;
+    if (toCopy) {
+      navigator.clipboard.writeText(toCopy);
+    }
+  };
+
+  const handleMenuPaste = async () => {
+    const textarea = textareaRef.current;
+
+    // 1. 检查操作系统剪贴板文件或图片
+    try {
+      const mediaFiles = await readMediaFromClipboard();
+      if (mediaFiles && mediaFiles.length > 0) {
+        await handleUploadFiles(mediaFiles);
+        return;
+      }
+    } catch (err) {}
+
+    // 2. 文本粘贴
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text && textarea) {
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        const current = textarea.value;
+        const updated = current.substring(0, start) + text + current.substring(end);
+        setInput(updated);
+        if (sessionId) saveDraft(sessionKey, updated, attachments);
+        onDraftChange?.(updated, attachments);
+        setTimeout(() => {
+          textarea.selectionStart = textarea.selectionEnd = start + text.length;
+          textarea.focus();
+        }, 0);
+      }
+    } catch {
+      if (textarea) {
+        textarea.focus();
+        document.execCommand("paste");
+      }
+    }
+  };
+
+  const handleMenuSelectAll = () => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    textarea.select();
+  };
+
+  // 剪贴板复制粘贴上传 (支持 Windows 资源管理器文件 Ctrl+C 复制后在此处 Ctrl+V 粘贴、截图直接粘贴)
+  const handlePaste = async (e: React.ClipboardEvent) => {
     const now = Date.now();
-    if (now - lastPasteTimeRef.current < 300) {
+    if (now - lastPasteTimeRef.current < 250) {
       return;
     }
 
-    const filesToUpload: File[] = [];
-
-    // 1. 检查剪贴板中直接复制的文件
-    if (clipboardData.files && clipboardData.files.length > 0) {
-      for (let i = 0; i < clipboardData.files.length; i++) {
-        const file = clipboardData.files[i];
-        if (file && file.size > 0) {
-          filesToUpload.push(file);
-        }
-      }
-    }
-
-    // 2. 检查剪贴板 items 中的文件/图片 Blob (针对微信截图、QQ截图、系统截图 Win+Shift+S)
-    if (filesToUpload.length === 0 && clipboardData.items && clipboardData.items.length > 0) {
-      for (let i = 0; i < clipboardData.items.length; i++) {
-        const item = clipboardData.items[i];
-        if (item.kind === "file") {
-          const blob = item.getAsFile();
-          if (blob) {
-            let filename = blob.name;
-            if (!filename || filename === "image.png") {
-              const ext = (blob.type && blob.type.split("/")[1]) || "png";
-              filename = `screenshot_${Date.now()}.${ext}`;
-            }
-            const namedFile = new File([blob], filename, { type: blob.type || "image/png" });
-            filesToUpload.push(namedFile);
-          }
-        }
-      }
-    }
-
+    // 1. 同步优先检查 Web 标准 clipboardData 中的文件与 Blob (微信截图、QQ截图、系统截图)
+    const filesToUpload = extractFilesFromClipboardEvent(e);
     if (filesToUpload.length > 0) {
       e.preventDefault();
       e.stopPropagation();
       lastPasteTimeRef.current = now;
       await handleUploadFiles(filesToUpload);
+      return;
+    }
+
+    // 2. 检查 Electron 原生 IPC 读取系统真实文件路径 (针对 Windows 资源管理器复制的文件)
+    try {
+      const mediaFiles = await readMediaFromClipboard();
+      if (mediaFiles && mediaFiles.length > 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        lastPasteTimeRef.current = now;
+        await handleUploadFiles(mediaFiles);
+        return;
+      }
+    } catch (err) {
+      console.warn("readMediaFromClipboard error:", err);
     }
   };
 
@@ -308,6 +398,9 @@ export const BottomInput: React.FC<BottomInputProps> = ({
     if (e) e.preventDefault();
     if ((!input.trim() && attachments.length === 0) || isLoading || isUploading) return;
     onSend(input, model, permission, attachments);
+    if (sessionId) {
+      clearDraft(sessionKey);
+    }
     setInput("");
     setAttachments([]);
   };
@@ -329,14 +422,11 @@ export const BottomInput: React.FC<BottomInputProps> = ({
 
   return (
     <div className="w-full bg-white dark:bg-[#0f1117] px-4 pb-2 pt-1 border-t border-gray-100 dark:border-gray-800 select-none relative transition-colors duration-150">
-      {/* 渐变遮罩：在输入框上方末尾处形成柔和渐变过渡，避免动态调整高度遮挡聊天内容时产生生硬断层 (对标图一) */}
-      <div className="absolute -top-10 left-0 right-0 h-10 bg-gradient-to-t from-white via-white/85 to-transparent dark:from-[#0f1117] dark:via-[#0f1117]/85 dark:to-transparent pointer-events-none z-20" />
-
-      {/* 悬浮回底箭头按钮 */}
-      {onScrollToBottom && (
+      {/* 悬浮回底箭头按钮 (对标需求 2：不遮挡输入框，往上移至 -top-11，且仅在未处于最底部时显现) */}
+      {showScrollBottom && onScrollToBottom && (
         <button
           onClick={onScrollToBottom}
-          className="absolute -top-10 right-8 w-8 h-8 rounded-full bg-white border border-gray-200 shadow-md flex items-center justify-center text-gray-500 hover:text-gray-800 transition hover:shadow-lg cursor-pointer"
+          className="absolute -top-11 left-1/2 -translate-x-1/2 w-8 h-8 rounded-full bg-white dark:bg-[#1e202a] border border-gray-200/90 dark:border-gray-700/80 shadow-md flex items-center justify-center text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white transition hover:shadow-lg cursor-pointer z-30 animate-in fade-in zoom-in-95 duration-150"
           title="回到底部"
         >
           <ScrollDown size={16} />
@@ -350,6 +440,7 @@ export const BottomInput: React.FC<BottomInputProps> = ({
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         onPaste={handlePaste}
+        onContextMenu={handleContextMenu}
         className={`w-full bg-white dark:bg-[#181920] border ${
           isDragging ? "border-blue-500 ring-2 ring-blue-500/20" : "border-gray-200 dark:border-gray-800"
         } shadow-sm focus-within:shadow-md focus-within:border-gray-300 dark:focus-within:border-gray-700 rounded-2xl p-3 transition relative`}
@@ -369,7 +460,14 @@ export const BottomInput: React.FC<BottomInputProps> = ({
               <PendingAttachmentChip 
                 key={att.id} 
                 attachment={att} 
-                onRemove={(id) => setAttachments((prev) => prev.filter((a) => a.id !== id))} 
+                onRemove={(id) => {
+                setAttachments((prev) => {
+                  const nextAtts = prev.filter((a) => a.id !== id);
+                  if (sessionId) saveDraft(sessionKey, input, nextAtts);
+                  onDraftChange?.(input, nextAtts);
+                  return nextAtts;
+                });
+              }} 
               />
             ))}
           </div>
@@ -378,7 +476,14 @@ export const BottomInput: React.FC<BottomInputProps> = ({
         <textarea
           ref={textareaRef}
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onPaste={handlePaste}
+          onContextMenu={handleContextMenu}
+          onChange={(e) => {
+            const val = e.target.value;
+            setInput(val);
+            if (sessionId) saveDraft(sessionKey, val, attachments);
+            onDraftChange?.(val, attachments);
+          }}
           onKeyDown={handleKeyDown}
           placeholder="给 super 智能体发消息，输入 / 或点击左下角 + 选择快捷指令..."
           style={{ minHeight: "44px", maxHeight: "144px" }}
@@ -632,6 +737,15 @@ export const BottomInput: React.FC<BottomInputProps> = ({
           </div>
         </div>
       </div>
+
+      {/* 右键快捷菜单 */}
+      <InputContextMenu
+        position={contextMenuPos}
+        onClose={() => setContextMenuPos(null)}
+        onCopy={handleMenuCopy}
+        onPaste={handleMenuPaste}
+        onSelectAll={handleMenuSelectAll}
+      />
 
       {/* 底部遥测状态栏 */}
       <div className="w-full text-center py-1 text-[11px] text-gray-400 dark:text-gray-500 font-mono tracking-tight flex items-center justify-center gap-2">

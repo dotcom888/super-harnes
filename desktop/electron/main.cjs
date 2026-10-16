@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -167,6 +167,52 @@ function createWindow() {
       mainWindow.webContents.toggleDevTools();
       event.preventDefault();
     }
+  });
+
+  
+  // 读取系统剪贴板中的真实文件 (针对 Windows 资源管理器 Ctrl+C 复制的文件) 或截图图片
+  ipcMain.handle('clipboard:read-media', async () => {
+    const result = { files: [], image: null };
+    try {
+      // 1. 检查 Windows 资源管理器复制的文件 (CF_HDROP / FileNameW)
+      if (process.platform === 'win32') {
+        const buf = clipboard.readBuffer('FileNameW');
+        if (buf && buf.length > 0) {
+          const rawStr = buf.toString('ucs2');
+          const paths = rawStr.split('\0').filter((p) => p.length > 0 && fs.existsSync(p));
+          for (const filePath of paths) {
+            try {
+              const stat = fs.statSync(filePath);
+              if (stat.isFile() && stat.size <= 50 * 1024 * 1024) {
+                const fileBuf = fs.readFileSync(filePath);
+                result.files.push({
+                  name: path.basename(filePath),
+                  path: filePath,
+                  size: stat.size,
+                  dataBase64: fileBuf.toString('base64')
+                });
+              }
+            } catch (e) {}
+          }
+        }
+      }
+
+      // 2. 检查系统剪贴板中的截图或复制的图片
+      if (result.files.length === 0) {
+        const img = clipboard.readImage();
+        if (!img.isEmpty()) {
+          const pngBuf = img.toPNG();
+          result.image = {
+            name: `screenshot_${Date.now()}.png`,
+            size: pngBuf.length,
+            dataBase64: pngBuf.toString('base64')
+          };
+        }
+      }
+    } catch (err) {
+      console.error('Error reading clipboard media in main:', err);
+    }
+    return result;
   });
 
   ipcMain.on('window-minimize', () => mainWindow?.minimize());

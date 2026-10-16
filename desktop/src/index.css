@@ -94,3 +94,56 @@
 .animate-tool-pulse {
   animation: toolPulse 2.2s ease-in-out infinite;
 }
+
+
+/* 流光溢彩动画效果 (用于思考状态与执行中的动态呼吸与七彩微光流动) */
+@keyframes flowingLight {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+@keyframes sweepGlow {
+  0% {
+    opacity: 0.35;
+    background-position: -200% 0;
+  }
+  50% {
+    opacity: 0.85;
+  }
+  100% {
+    opacity: 0.35;
+    background-position: 200% 0;
+  }
+}
+
+.shimmer-text {
+  background: linear-gradient(90deg, #6366f1 0%, #a855f7 25%, #ec4899 50%, #3b82f6 75%, #06b6d4 90%, #6366f1 100%);
+  background-size: 250% auto;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: flowingLight 3s linear infinite;
+  display: inline-block;
+}
+
+.shimmer-text-active {
+  background: linear-gradient(90deg, #3b82f6 0%, #8b5cf6 25%, #ec4899 50%, #06b6d4 75%, #3b82f6 100%);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: flowingLight 2s linear infinite;
+  display: inline-block;
+}
+
+.shimmer-glow-line {
+  position: relative;
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.04) 0%, rgba(168, 85, 247, 0.12) 50%, rgba(59, 130, 246, 0.04) 100%);
+  background-size: 200% 100%;
+  animation: sweepGlow 3s ease-in-out infinite;
+}

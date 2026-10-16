@@ -234,10 +234,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       e.preventDefault();
                       setActiveProjectMenu({ name: proj.name, x: e.clientX, y: e.clientY });
                     }}
-                    className={`flex items-center justify-between px-2 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition relative ${
+                    className={`flex items-center justify-between px-2 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition relative border ${
                       isCurrent 
-                        ? "bg-[#e2e6eb] dark:bg-[#202535] text-gray-900 dark:text-blue-300 font-semibold border border-transparent dark:border-blue-500/20" 
-                        : "text-gray-700 dark:text-gray-400 hover:bg-[#eceef0] dark:hover:bg-[#181a24] hover:text-gray-900 dark:hover:text-gray-200"
+                        ? "bg-[#e2e6eb] dark:bg-[#202535] text-gray-900 dark:text-blue-300 border-transparent dark:border-blue-500/20" 
+                        : "border-transparent text-gray-700 dark:text-gray-400 hover:bg-[#eceef0] dark:hover:bg-[#181a24] hover:text-gray-900 dark:hover:text-gray-200"
                     }`}
                   >
                     <div className="flex items-center gap-1.5 truncate flex-1 min-w-0 pr-1">
@@ -268,62 +268,69 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     </div>
                   </div>
 
-                  {/* 展开后的会话列表项 (悬停显示居中的 '...' 按钮，支持右键操作) */}
-                  {isExpanded && (
-                    <div className="pl-5 space-y-0.5 mt-0.5 border-l-2 border-gray-200 dark:border-gray-800 ml-3">
-                      {projSessions.length === 0 ? (
-                        <div className="px-2 py-1 text-[11px] text-gray-400 italic">暂无历史消息</div>
-                      ) : (
-                        projSessions.map((s) => {
-                          const isActive = isCurrent && s.session_id === activeSessionId;
-                          const displayTitle = s.current_goal || (s.session_id === "default" ? "默认会话" : s.session_id);
-                          const isSessionPinned = s.is_pinned;
+                  {/* 展开后的会话列表项 (对标需求 5：从上向下丝滑摊开/推出，收起时反向向上平滑收拢) */}
+                  <div
+                    className={`grid transition-all duration-200 ease-out ${
+                      isExpanded 
+                        ? "grid-rows-[1fr] opacity-100 mt-0.5" 
+                        : "grid-rows-[0fr] opacity-0 pointer-events-none"
+                    }`}
+                  >
+                    <div className="overflow-hidden">
+                      <div className="pl-4 space-y-0.5 border-l-2 border-gray-200/80 dark:border-gray-800 ml-3 py-0.5">
+                        {projSessions.length === 0 ? (
+                          <div className="px-2 py-1 text-[11px] text-gray-400 italic">暂无历史消息</div>
+                        ) : (
+                          projSessions.map((s) => {
+                            const isActive = isCurrent && s.session_id === activeSessionId;
+                            const displayTitle = s.current_goal || (s.session_id === "default" ? "默认会话" : s.session_id);
+                            const isSessionPinned = s.is_pinned;
 
-                          return (
-                            <div
-                              key={`${proj.name}-${s.session_id}`}
-                              onClick={() => onSelectSession(s.session_id, proj.name)}
-                              onContextMenu={(e) => {
-                                e.preventDefault();
-                                setActiveSessionMenu({ project: proj.name, sid: s.session_id, x: e.clientX, y: e.clientY });
-                              }}
-                              className={`group/sess flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs cursor-pointer transition relative ${
-                                isActive
-                                  ? "bg-blue-100/80 dark:bg-blue-900/30 font-semibold text-blue-900 dark:text-blue-300 shadow-xs border border-transparent dark:border-blue-700/30"
-                                  : "text-gray-600 dark:text-gray-400 hover:bg-[#eceef0] dark:hover:bg-[#181a24] hover:text-gray-900 dark:hover:text-gray-200"
-                              }`}
-                            >
-                              <div className="flex items-center gap-1.5 truncate flex-1 min-w-0 pr-1">
-                                {isSessionPinned && <Pin size={10} className="text-blue-600 shrink-0 rotate-45" />}
-                                <span className="truncate max-w-[125px]" title={displayTitle}>
-                                  {displayTitle}
-                                </span>
-                              </div>
+                            return (
+                              <div
+                                key={`${proj.name}-${s.session_id}`}
+                                onClick={() => onSelectSession(s.session_id, proj.name)}
+                                onContextMenu={(e) => {
+                                  e.preventDefault();
+                                  setActiveSessionMenu({ project: proj.name, sid: s.session_id, x: e.clientX, y: e.clientY });
+                                }}
+                                className={`group/sess flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs cursor-pointer transition relative border ${
+                                  isActive
+                                    ? "bg-blue-100/80 dark:bg-blue-900/30 text-blue-900 dark:text-blue-300 shadow-xs border-transparent dark:border-blue-700/30"
+                                    : "border-transparent text-gray-600 dark:text-gray-400 hover:bg-[#eceef0] dark:hover:bg-[#181a24] hover:text-gray-900 dark:hover:text-gray-200"
+                                }`}
+                              >
+                                <div className="flex items-center gap-1.5 truncate flex-1 min-w-0 pr-1">
+                                  {isSessionPinned && <Pin size={10} className="text-blue-600 shrink-0 rotate-45" />}
+                                  <span className="truncate max-w-[125px]" title={displayTitle}>
+                                    {displayTitle}
+                                  </span>
+                                </div>
 
-                              <div className="flex items-center gap-1 shrink-0">
-                                {/* 鼠标悬停显示 '...' 居中操作按钮 */}
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    const rect = e.currentTarget.getBoundingClientRect();
-                                    setActiveSessionMenu({ project: proj.name, sid: s.session_id, x: rect.right, y: rect.bottom });
-                                  }}
-                                  className="opacity-0 group-hover/sess:opacity-100 hover:bg-gray-300/60 p-0.5 rounded text-gray-500 transition cursor-pointer"
-                                  title="会话操作"
-                                >
-                                  <MoreHorizontal size={14} />
-                                </button>
-                                <span className="text-[10px] text-gray-400 shrink-0">
-                                  {s.time_ago || "历史"}
-                                </span>
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      const rect = e.currentTarget.getBoundingClientRect();
+                                      setActiveSessionMenu({ project: proj.name, sid: s.session_id, x: rect.right, y: rect.bottom });
+                                    }}
+                                    className="opacity-0 group-hover/sess:opacity-100 hover:bg-gray-300/60 p-0.5 rounded text-gray-500 transition cursor-pointer"
+                                    title="会话操作"
+                                  >
+                                    <MoreHorizontal size={14} />
+                                  </button>
+                                  <span className="text-[10px] text-gray-400 shrink-0">
+                                    {s.time_ago || "历史"}
+                                  </span>
+                                </div>
                               </div>
-                            </div>
-                          );
-                        })
-                      )}
+                            );
+                          })
+                        )}
+                      </div>
                     </div>
-                  )}
+                  </div>
                 </div>
               );
             }))}
@@ -385,7 +392,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         }}
                         className={"group/recent flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs cursor-pointer transition relative " + (
                           isRecentActive
-                            ? "bg-blue-100/80 dark:bg-blue-900/40 font-semibold text-blue-900 dark:text-blue-200 shadow-2xs"
+                            ? "bg-blue-100/80 dark:bg-blue-900/40 text-blue-900 dark:text-blue-200 shadow-2xs"
                             : "text-gray-600 dark:text-gray-400 hover:bg-[#eceef0] dark:hover:bg-[#181a24] hover:text-gray-900 dark:hover:text-gray-200"
                         )}
                       >

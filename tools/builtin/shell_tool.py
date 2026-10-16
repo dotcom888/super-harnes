@@ -214,20 +214,37 @@ def run_shell(
     safe_timeout = max(1, min(120, int(timeout)))
 
     try:
-        # 3. 隔离凭据，启动子进程执行并捕获原始字节
-        process = subprocess.run(
+        # 3. 隔离凭据，启动子进程执行 (使用 stdin=DEVNULL 防止交互卡死，利用 taskkill /F /T 彻底消除 Windows 进程树与管道悬挂)
+        proc = subprocess.Popen(
             cmd_clean,
             shell=True,
             cwd=str(effective_cwd),
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=safe_timeout,
             env=_get_sanitized_env()
         )
 
-        stdout = _strip_ansi(_decode_bytes(process.stdout))
-        stderr = _strip_ansi(_decode_bytes(process.stderr))
-        return_code = process.returncode
+        try:
+            raw_stdout, raw_stderr = proc.communicate(timeout=safe_timeout)
+        except subprocess.TimeoutExpired:
+            # 关键：Windows 上必须递归杀光整棵子进程树，否则常驻子进程继承管道会导致永久挂起死锁
+            if os.name == "nt":
+                try:
+                    subprocess.run(f"taskkill /F /T /PID {proc.pid}", shell=True, capture_output=True, timeout=5)
+                except Exception:
+                    pass
+            else:
+                proc.kill()
+            try:
+                raw_stdout, raw_stderr = proc.communicate(timeout=3)
+            except Exception:
+                raw_stdout, raw_stderr = b"", b""
+            return f"【执行超时】：命令执行超过 {safe_timeout} 秒上限，已通过系统进程树级强杀（Kill Process Tree）终止全部子孙进程以防挂起死锁！"
+
+        stdout = _strip_ansi(_decode_bytes(raw_stdout))
+        stderr = _strip_ansi(_decode_bytes(raw_stderr))
+        return_code = proc.returncode
 
         # 4. 组装输出并做语义输出截断与全量持久化
         combined_output = ""

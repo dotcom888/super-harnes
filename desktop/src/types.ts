@@ -15,7 +15,7 @@ export interface ToolAction {
   desc: string;
   path?: string;
   args?: Record<string, any>;
-  status?: 'running' | 'success' | 'error';
+  status?: 'running' | 'success' | 'error' | 'interrupted';
   output?: string;
   elapsed?: number;
   timestamp: number;
@@ -36,7 +36,7 @@ export interface TrajectoryStep {
   path?: string;
   args?: Record<string, any> | string;
   output?: string;
-  status?: 'running' | 'success' | 'error';
+  status?: 'running' | 'success' | 'error' | 'interrupted';
   elapsed?: number;
   thought?: string;
   content?: string;
@@ -53,6 +53,7 @@ export interface TurnData {
   steps?: TrajectoryStep[];
   timestamp?: number;
   elapsed?: number;
+  is_paused?: boolean;
 }
 
 export interface MessageItem {
