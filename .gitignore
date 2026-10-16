@@ -60,3 +60,5 @@ desktop/bin/
 
 # Local uploaded attachments
 .super_attachments/
+
+.build/

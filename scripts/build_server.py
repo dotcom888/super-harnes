@@ -20,19 +20,20 @@ excludes = [
 exclude_args = [f"--exclude-module={mod}" for mod in excludes]
 
 dist_dir = root / "desktop" / "bin"
-build_dir = root / "build_server"
+build_dir = root / ".build" / "server"
 
 dist_dir.mkdir(parents=True, exist_ok=True)
 
 args = [
-    str(root / "server" / "run_server.py"),
+    str(root / "backend" / "server" / "run_server.py"),
     "--name=super-server",
     "--onedir",
     "--noconfirm",
     "--clean",
+    f"--paths={str(root / 'backend')}",
     f"--paths={str(root)}",
-    f"--add-data={str(root / 'config')};config",
-    f"--add-data={str(root / 'mcp' / 'servers')};mcp/servers",
+    f"--add-data={str(root / 'backend' / 'config')};config",
+    f"--add-data={str(root / 'backend' / 'mcp' / 'servers')};mcp/servers",
     f"--add-data={str(root / '.skills')};.skills",
     "--hidden-import=uvicorn",
     "--hidden-import=uvicorn.logging",

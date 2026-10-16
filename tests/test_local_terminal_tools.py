@@ -1046,3 +1046,136 @@ class TestPermissionPolicyHardening(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+
+class TestFourExecutionModes(unittest.TestCase):
+    """
+    对标 Claude Code 4 阶运行模式综合测试：
+    1. Auto (全自动模式): 安全改不问，危险跑才问
+    2. Edit automatically (自动编辑模式): 直接改不问，非白名单命令才问
+    3. Plan (规划方案模式): 不动手，先出方案（写操作与变更拦截）
+    4. Manual (手动模式): 步步为营，编辑文件与执行命令每次都问
+    """
+    def setUp(self):
+        from tools.framework.policies import CommandPolicy, default_policy
+        self.default_policy = default_policy
+        self.orig_mode = default_policy.mode
+        self.orig_approved = default_policy.session_approved
+
+    def tearDown(self):
+        self.default_policy.mode = self.orig_mode
+        self.default_policy.session_approved = self.orig_approved
+
+    def test_mode_normalization(self):
+        from tools.framework.policies import CommandPolicy
+        self.assertEqual(CommandPolicy.normalize_mode("Auto 模式"), "auto")
+        self.assertEqual(CommandPolicy.normalize_mode("AUTO 模式 (默认)"), "auto")
+        self.assertEqual(CommandPolicy.normalize_mode("Edit automatically"), "edit_auto")
+        self.assertEqual(CommandPolicy.normalize_mode("edit_auto"), "edit_auto")
+        self.assertEqual(CommandPolicy.normalize_mode("Plan 模式"), "plan")
+        self.assertEqual(CommandPolicy.normalize_mode("plan"), "plan")
+        self.assertEqual(CommandPolicy.normalize_mode("Manual 模式"), "manual")
+        self.assertEqual(CommandPolicy.normalize_mode("manual"), "manual")
+        self.assertEqual(CommandPolicy.normalize_mode("ask"), "ask")
+
+    def test_auto_mode_file_edit_and_shell(self):
+        from tools.framework.policies import CommandPolicy, PolicyDecision
+        from tools.builtin.file_tools import write_file
+        from tools.builtin.patch_tool import apply_patch
+        import os
+
+        self.default_policy.mode = "auto"
+        self.default_policy.session_approved = False
+
+        # 1. 编辑文件：安全改，不问
+        res_w = write_file("test_auto_write.txt", "auto_content")
+        self.assertIn("【写入成功】", res_w)
+        if os.path.exists("test_auto_write.txt"):
+            os.remove("test_auto_write.txt")
+
+        # 2. 跑 Shell：白名单与常规命令自动放行
+        policy = CommandPolicy(mode="auto")
+        dec, _ = policy.evaluate("git status")
+        self.assertEqual(dec, PolicyDecision.ALLOW)
+        dec, _ = policy.evaluate("python -m pytest")
+        self.assertEqual(dec, PolicyDecision.ALLOW)
+
+        # 3. 高危黑名单依然坚决阻断
+        dec, _ = policy.evaluate("rm -rf /")
+        self.assertEqual(dec, PolicyDecision.DENY)
+
+    def test_edit_automatically_mode(self):
+        from tools.framework.policies import CommandPolicy, PolicyDecision
+        from tools.builtin.file_tools import write_file
+        import os
+
+        self.default_policy.mode = "edit_auto"
+        self.default_policy.session_approved = False
+
+        # 1. 编辑文件：直接改，不问
+        res_w = write_file("test_edit_write.txt", "edit_content")
+        self.assertIn("【写入成功】", res_w)
+        if os.path.exists("test_edit_write.txt"):
+            os.remove("test_edit_write.txt")
+
+        # 2. 跑 Shell：安全白名单不问
+        policy = CommandPolicy(mode="edit_auto")
+        dec, _ = policy.evaluate("git status")
+        self.assertEqual(dec, PolicyDecision.ALLOW)
+        dec, _ = policy.evaluate("pytest tests/")
+        self.assertEqual(dec, PolicyDecision.ALLOW)
+
+        # 3. 跑 Shell：非白名单命令才问
+        dec, _ = policy.evaluate("python arbitrary_script.py")
+        self.assertEqual(dec, PolicyDecision.REQUIRE_APPROVAL)
+        dec, _ = policy.evaluate("npm install express")
+        self.assertEqual(dec, PolicyDecision.REQUIRE_APPROVAL)
+
+    def test_plan_mode_intercepts_modifications(self):
+        from tools.framework.policies import CommandPolicy, PolicyDecision
+        from tools.builtin.file_tools import write_file
+        from tools.builtin.patch_tool import apply_patch
+
+        self.default_policy.mode = "plan"
+        self.default_policy.session_approved = False
+
+        # 1. 编辑文件：不动手，先出方案！写文件被拦截
+        res_w = write_file("test_plan_write.txt", "plan_content")
+        self.assertIn("【Plan 模式拦截】", res_w)
+        self.assertIn("不动手，先出方案", res_w)
+
+        # 2. 编辑文件：补丁被拦截
+        patch_text = "*** Create File: test_plan_patch.txt\nhello\n*** End File\n"
+        res_p = apply_patch(patch_text)
+        self.assertIn("【Plan 模式拦截】", res_p)
+
+        # 3. 跑 Shell：只读探索命令放行
+        policy = CommandPolicy(mode="plan")
+        dec, _ = policy.evaluate("git status")
+        self.assertEqual(dec, PolicyDecision.ALLOW)
+        dec, _ = policy.evaluate("git log -n 5")
+        self.assertEqual(dec, PolicyDecision.ALLOW)
+
+        # 4. 跑 Shell：状态变更或未知命令拦截提请确认
+        dec, _ = policy.evaluate("python deploy.py")
+        self.assertEqual(dec, PolicyDecision.REQUIRE_APPROVAL)
+
+    def test_manual_mode_requires_approval_every_time(self):
+        from tools.framework.policies import CommandPolicy, PolicyDecision
+        from unittest.mock import patch
+        from tools.builtin.file_tools import write_file
+
+        self.default_policy.mode = "manual"
+        self.default_policy.session_approved = False
+
+        # 1. 编辑文件：每次都问
+        with patch.object(self.default_policy, "request_approval", return_value=False):
+            res_w = write_file("test_manual_file.txt", "manual_content")
+            self.assertIn("【用户拒绝】", res_w)
+
+        # 2. 跑 Shell：每次都问（包括只读白名单）
+        policy = CommandPolicy(mode="manual")
+        dec, _ = policy.evaluate("git status")
+        self.assertEqual(dec, PolicyDecision.REQUIRE_APPROVAL)
+        dec, _ = policy.evaluate("dir")
+        self.assertEqual(dec, PolicyDecision.REQUIRE_APPROVAL)

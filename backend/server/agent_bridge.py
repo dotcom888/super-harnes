@@ -72,6 +72,8 @@ class StreamingToolExecutor(ToolExecutor):
         super().__init__(registry=base_executor.registry, max_workers=base_executor.max_workers)
         self.event_emitter = event_emitter
         self.pending_approvals: Dict[str, asyncio.Future] = {}
+        self.total_tool_elapsed: float = 0.0
+        self.tool_steps_count: int = 0
 
     def _execute_single(self, tc: Any):
         # 提取参数
@@ -101,6 +103,8 @@ class StreamingToolExecutor(ToolExecutor):
         start_time = time.time()
         func_name, args_str, msg = super()._execute_single(tc)
         elapsed = time.time() - start_time
+        self.total_tool_elapsed += elapsed
+        self.tool_steps_count += 1
 
         content = msg.get("content", "")
         is_err = any(k in content for k in ["【执行超时】", "【并发执行异常】", "【安全拦截拒绝】", "【用户拒绝】", "执行失败:", "Error:"])
@@ -149,31 +153,9 @@ class AgentBridge:
         self.default_agent = val
 
     def _resolve_model_config(self, ag_model: str) -> tuple[str, str, str]:
-        provider_key = ""
-        provider_base_url = ""
-        provider_protocol = "openai_chat"
-        try:
-            from server.app import load_models_config, clean_base_url
-            cfg = load_models_config()
-            for p in cfg.get("providers", []):
-                if ag_model in p.get("models", []):
-                    raw_key = p.get("api_key", "").strip()
-                    if raw_key.startswith("${") and raw_key.endswith("}"):
-                        raw_key = os.getenv(raw_key[2:-1], "").strip()
-                    elif raw_key.startswith("$"):
-                        raw_key = os.getenv(raw_key[1:], "").strip()
-                    if raw_key:
-                        provider_key = raw_key
-                    raw_url = p.get("base_url", "").strip()
-                    provider_protocol = p.get("protocol", "openai_chat")
-                    provider_base_url = clean_base_url(raw_url, provider_protocol)
-                    break
-        except Exception:
-            pass
-
-        final_key = provider_key or os.getenv("LLM_API_KEY", "")
-        final_base_url = provider_base_url or os.getenv("LLM_BASE_URL", "")
-        return final_key, final_base_url, provider_protocol
+        from config.model_resolver import resolve_active_model_config
+        _, final_key, final_base_url, _ = resolve_active_model_config(model=ag_model)
+        return final_key, final_base_url, "openai_chat"
 
     def get_or_create_agent(self, project_name: str, session_id: str, model: Optional[str] = None) -> ReActAgent:
         """获取或创建与指定 (project, session) 强绑定的专属独立 Agent 实例，确保多会话并发无串扰"""
@@ -183,6 +165,12 @@ class AgentBridge:
 
         if key in self.agents:
             ag = self.agents[key]
+            # 外部删除感知：若会话磁盘文件已被物理删除，淘汰内存失效缓存
+            h_file = HISTORY_ROOT / project_name / f"{session_id}.jsonl"
+            if not h_file.exists() and getattr(getattr(ag, "session_manager", None), "active_session", None) and ag.session_manager.active_session.turn_count > 0:
+                logger.info(f"Session file {h_file} was removed on disk; evicting cached agent '{key}'")
+                del self.agents[key]
+                ag = None
             needs_update = False
             if target_model != ag.model:
                 ag.model = target_model
@@ -233,6 +221,20 @@ class AgentBridge:
         self.agents[key] = ag
         logger.info(f"Created dedicated ReActAgent instance for session '{key}', workspace: {target_workspace.root}, model: {target_model}")
         return ag
+
+    def evict_session_agent(self, project_name: str, session_id: str):
+        key = f"{project_name}:{session_id}"
+        if key in self.agents:
+            del self.agents[key]
+            logger.info(f"AgentBridge: evicted agent cache for session '{key}'")
+
+    def evict_project_agents(self, project_name: str):
+        prefix = f"{project_name}:"
+        to_del = [k for k in self.agents if k.startswith(prefix)]
+        for k in to_del:
+            del self.agents[k]
+        if to_del:
+            logger.info(f"AgentBridge: evicted {len(to_del)} agents for project '{project_name}'")
 
     def reload_agents_config(self):
         """当用户在设置页新增、修改、删除提供方或切换配置时，彻底重载并更新 Agent 缓存"""
@@ -354,14 +356,12 @@ class AgentBridge:
             return err_msg
 
         if permission_mode:
+            norm_mode = default_policy.normalize_mode(permission_mode)
+            default_policy.mode = norm_mode
             if permission_mode == "full_access":
-                default_policy.mode = "auto"
                 default_policy.session_approved = True
-            elif permission_mode == "ask":
-                default_policy.mode = "ask"
+            elif norm_mode in ("manual", "plan"):
                 default_policy.session_approved = False
-            else:
-                default_policy.mode = "auto"
 
         def wrapped_callback(ev: Dict[str, Any]):
             ev.setdefault("session_id", active_sid)
@@ -473,9 +473,13 @@ class AgentBridge:
 
         start_time = time.time()
         start_step = getattr(cur_agent.context_manager, "turn_count", 1)
+        first_token_time: Optional[float] = None
 
         try:
             def on_token_chunk(token: str):
+                nonlocal first_token_time
+                if first_token_time is None:
+                    first_token_time = time.time()
                 wrapped_callback({
                     "event": "stream_chunk",
                     "delta": token,
@@ -616,12 +620,13 @@ class AgentBridge:
                 # 计算从用户发送到回复完成的真实总耗时
                 elapsed_total = round(max(1.0, time.time() - start_time), 1)
 
-                # 最终答复确认推送 (包含真实耗时 elapsed)
+                # 最终答复确认推送 (包含真实耗时 elapsed 与当前运行安全模式)
                 wrapped_callback({
                     "event": "assistant_response",
                     "content": result,
                     "elapsed": elapsed_total,
-                    "timestamp": time.time()
+                    "timestamp": time.time(),
+                    "permission_mode": getattr(default_policy, "mode", "auto")
                 })
             except Exception as run_err:
                 logger.error(f"Error running agent for prompt: {run_err}", exc_info=True)
@@ -651,16 +656,26 @@ class AgentBridge:
                 })
                 raise run_err
 
-            # 计算最终遥测指标并推送
-            elapsed_total = time.time() - start_time
+            # 计算最终遥测指标并推送 (真实动态遥测：统计真实耗时、工具调用与每秒吐字速率)
+            elapsed_total = max(0.1, time.time() - start_time)
             cm = cur_agent.context_manager
+            comp_tokens = getattr(cm, "total_api_completion_tokens", 0)
+            tool_sec = round(streaming_executor.total_tool_elapsed, 1)
+            llm_calc_time = max(0.2, elapsed_total - tool_sec)
+            tok_per_sec = round(comp_tokens / llm_calc_time, 1) if (comp_tokens > 0 and llm_calc_time > 0) else 0
+
+            ttft_val = f"{round(first_token_time - start_time, 1)}s" if first_token_time else "--"
+            tool_time_str = f"{int(tool_sec // 60)}m{int(tool_sec % 60)}s" if tool_sec >= 60 else f"{round(tool_sec, 1)}s"
+            total_time_str = f"{int(elapsed_total // 60)}m{int(elapsed_total % 60)}s" if elapsed_total >= 60 else f"{round(elapsed_total, 1)}s"
+
             wrapped_callback({
                 "event": "metrics",
                 "turns": cm.turn_count,
-                "steps": max(1, cm.turn_count * 2),
-                "total_time": f"{int(elapsed_total // 60)}m{int(elapsed_total % 60)}s",
-                "tool_time": "1m12s",
-                "tokens_per_sec": 88,
+                "steps": max(1, streaming_executor.tool_steps_count or cm.turn_count * 2),
+                "total_time": total_time_str,
+                "tool_time": tool_time_str,
+                "tokens_per_sec": tok_per_sec,
+                "ttft": ttft_val,
                 "cache_hit_rate": getattr(cm, "api_cache_hit_rate", 0.0),
                 "cached_tokens": getattr(cm, "total_api_cached_tokens", 0),
                 "prompt_tokens": cm.total_api_prompt_tokens,

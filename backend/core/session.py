@@ -53,29 +53,20 @@ class SessionManager:
         # 实例化项目全局共享状态总线 (Project State Bus)
         self.project_state = ProjectState(project_dir=self.history_dir, project_name=self.project_name)
 
-        # 历史迁移感知：若顶层 history/ 下存在遗留的 default.jsonl，自动拷贝至项目子目录
-        legacy_default = HISTORY_DIR / "default.jsonl"
-        target_default = self.history_dir / "default.jsonl"
-        if legacy_default.exists() and not target_default.exists() and self.history_dir != HISTORY_DIR:
-            try:
-                import shutil
-                shutil.copy2(legacy_default, target_default)
-            except Exception:
-                pass
-
         # 初始化激活默认会话（若磁盘存在历史则自动加载）
         self.get_session(default_session_id, auto_restore=True)
 
-        # 登记当前工作区工程至用户全局记忆索引
-        try:
-            from context.global_memory import default_global_memory
-            default_global_memory.register_project(
-                name=self.project_name,
-                path=ws.root,
-                description=f"本地工程 {self.project_name}"
-            )
-        except Exception:
-            pass
+        # 登记当前工作区工程至用户全局记忆索引 (仅针对真实工程，排除 _general 自由对话与沙箱)
+        if self.project_name and self.project_name.lower() not in ("_general", "scratchpad", "workspace"):
+            try:
+                from context.global_memory import default_global_memory
+                default_global_memory.register_project(
+                    name=self.project_name,
+                    path=ws.root,
+                    description=f"本地工程 {self.project_name}"
+                )
+            except Exception:
+                pass
 
     @property
     def active_session(self) -> ContextManager:
@@ -240,14 +231,23 @@ class SessionManager:
         """
         汇总当前项目所有会话（内存 + 磁盘 history/<project>/*.jsonl）元数据列表
         """
-        all_sids = set(self._sessions.keys())
+        all_sids = set()
         if self.history_dir.exists():
             for f in self.history_dir.glob("*.jsonl"):
                 stem = f.stem
                 if not stem.endswith(".tmp"):
                     all_sids.add(stem)
 
-        all_sids.add("default")
+        # 内存感知淘汰：若磁盘文件已被外部删除，从 _sessions 缓存移除
+        for sid in list(self._sessions.keys()):
+            f_path = self.history_dir / f"{sid}.jsonl"
+            if not f_path.exists() and sid != self.active_session_id:
+                del self._sessions[sid]
+            elif f_path.exists():
+                all_sids.add(sid)
+
+        if not all_sids:
+            all_sids.add(self.active_session_id or "default")
 
         result = []
         for sid in sorted(all_sids):

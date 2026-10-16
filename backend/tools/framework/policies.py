@@ -111,7 +111,12 @@ def _split_shell_commands(command: str) -> List[str]:
 
 class CommandPolicy:
     """
-    命令安全策略引擎：在任何 shell 命令下发前进行三级风险评估与决策
+    命令安全策略引擎：在任何 shell 命令下发前进行风险评估与四阶模式决策
+    对应 Claude Code 四种运行策略：
+    - auto: Auto 模式 (日常开发最推荐，安全改不问，危险跑才问)
+    - edit_auto: Edit automatically 模式 (适合明确目标、快速改代码，直接改不问，命令才问)
+    - plan: Plan 模式 (适合大重构、复杂任务，不动手，先出方案)
+    - manual: Manual 模式 (步步为营，最安全但最累，编辑文件与跑命令每次都问)
     """
     # 1. 绝对禁止黑名单 (DENY)：破坏性、系统级高危、提权或敏感文件窥探
     DENY_PATTERNS = [
@@ -205,16 +210,25 @@ class CommandPolicy:
         "whoami",
     ]
 
+    @staticmethod
+    def normalize_mode(mode: Optional[str]) -> str:
+        if not mode:
+            return "auto"
+        m = str(mode).strip().lower()
+        if "plan" in m:
+            return "plan"
+        if "edit" in m:
+            return "edit_auto"
+        if "manual" in m or "always_ask" in m:
+            return "manual"
+        if "ask" in m:
+            return "ask"
+        return "auto"
+
     def __init__(self, mode: Optional[str] = None):
-        """
-        :param mode: 审批模式
-            - 'auto' / 'never': 全自动模式 (类似 Claude AUTO 模式)，非黑名单高危命令均自动放行（默认推荐）
-            - 'ask': 敏感命令在终端提示用户输入 [y/n/a]
-            - 'always_ask': 严格模式，任何命令都必须人工确认
-        """
         if mode is None:
             mode = APPROVAL_MODE
-        self.mode = mode if mode in ("auto", "never", "ask", "always_ask") else "auto"
+        self.mode = self.normalize_mode(mode)
         self.session_approved = False  # 会话级全局信任开关
         self.approval_callback = None  # 外部注入的审批回调函数 Callable[[str, str], bool]
 
@@ -293,30 +307,45 @@ class CommandPolicy:
         if self.session_approved:
             return PolicyDecision.ALLOW, "用户此前已信任当前会话后续所有命令"
 
-        # 5. 全自动模式放行
-        if self.mode in ("never", "auto"):
-            return PolicyDecision.ALLOW, "Claude 风格 AUTO 模式全自动放行"
+        # 5. Plan 模式：不动手，先出方案！只允许只读探索命令，其他命令需人工确认或制定方案
+        if self.mode == "plan":
+            for sub_cmd in sub_commands:
+                sub_dec, sub_reason = self._evaluate_atomic_command(sub_cmd)
+                if sub_dec == PolicyDecision.REQUIRE_APPROVAL:
+                    return PolicyDecision.REQUIRE_APPROVAL, f"Plan 模式下执行非只读或变更命令需确认：{sub_cmd}"
+            return PolicyDecision.ALLOW, "Plan 模式允许只读探索命令"
 
-        # 6. 严格模式
-        if self.mode == "always_ask":
-            return PolicyDecision.REQUIRE_APPROVAL, "严格模式：任何命令均须人工审批"
+        # 6. Manual 模式 (步步为营，每次都问)：任何命令均须人工审批
+        if self.mode in ("manual", "always_ask"):
+            return PolicyDecision.REQUIRE_APPROVAL, "Manual 模式：所有命令执行均须人工逐次确认"
 
-        # 7. 人工审批模式 (ASK): 逐一审查各个原子子命令
-        all_reasons = []
-        for sub_cmd in sub_commands:
-            sub_dec, sub_reason = self._evaluate_atomic_command(sub_cmd)
-            if sub_dec == PolicyDecision.REQUIRE_APPROVAL:
-                return PolicyDecision.REQUIRE_APPROVAL, f"复合命令包含需审批子命令：{sub_reason}"
-            all_reasons.append(sub_reason)
+        # 7. Edit automatically 模式：直接改代码，安全命令不问，非白名单命令才问
+        if self.mode in ("edit_auto", "edit_automatically"):
+            for sub_cmd in sub_commands:
+                sub_dec, sub_reason = self._evaluate_atomic_command(sub_cmd)
+                if sub_dec == PolicyDecision.REQUIRE_APPROVAL:
+                    return PolicyDecision.REQUIRE_APPROVAL, f"Edit 模式下非白名单命令需人工确认：{sub_reason}"
+            return PolicyDecision.ALLOW, "匹配安全白名单"
 
-        return PolicyDecision.ALLOW, "复合命令中所有子命令均匹配安全白名单"
+        # 8. 兼容 legacy 'ask' 模式
+        if self.mode == "ask":
+            for sub_cmd in sub_commands:
+                sub_dec, sub_reason = self._evaluate_atomic_command(sub_cmd)
+                if sub_dec == PolicyDecision.REQUIRE_APPROVAL:
+                    return PolicyDecision.REQUIRE_APPROVAL, f"复合命令包含需审批子命令：{sub_reason}"
+            return PolicyDecision.ALLOW, "复合命令中所有子命令均匹配安全白名单"
+
+        # 9. Auto 模式 (默认全自动放行)
+        return PolicyDecision.ALLOW, "Auto 模式全自动放行"
 
     def request_approval(self, command: str, reason: str) -> bool:
         """
         终端交互卡片 / 桌面端 GUI 异步审批：Human-in-the-Loop 人工审核
         """
-        # 在 AUTO 模式或会话已授权状态下，直接放行，无需终端打扰
-        if self.mode in ("auto", "never") or self.session_approved:
+        # 在会话已全局授权或 AUTO 模式下，直接放行，无需打扰
+        if self.session_approved:
+            return True
+        if self.mode in ("auto", "never"):
             return True
 
         # 1. 优先调用注册的异步/GUI 交互审批回调 (例如 Desktop 桌面端 WebSocket 审批流)

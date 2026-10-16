@@ -79,7 +79,10 @@ function startBackendDaemon() {
 
     console.log('Falling back to system/venv python...');
     const pythonCmd = resolvePythonCommand();
-    const serverScript = path.resolve(__dirname, '../../server/run_server.py');
+    let serverScript = path.resolve(__dirname, '../../backend/server/run_server.py');
+    if (!fs.existsSync(serverScript)) {
+      serverScript = path.resolve(__dirname, '../../server/run_server.py');
+    }
 
     if (fs.existsSync(serverScript)) {
       pythonProcess = spawn(pythonCmd, [serverScript, String(BACKEND_PORT)], {
@@ -246,6 +249,9 @@ function createWindow() {
 
   // 终端会话 IPC 处理 (用于右侧调试侧边栏运行 PowerShell / 终端)
   ipcMain.handle('terminal:create', (event, { id, cwd }) => {
+    if (terminalSessions.has(id)) {
+      return { success: true, cwd: cwd || path.resolve(__dirname, '../..') };
+    }
     const shellCmd = process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || 'bash');
     const shellArgs = process.platform === 'win32' ? ['-NoLogo', '-ExecutionPolicy', 'Bypass'] : [];
     const targetCwd = cwd || path.resolve(__dirname, '../..');
@@ -277,8 +283,29 @@ function createWindow() {
     }
   });
 
-  ipcMain.on('terminal:write', (_event, { id, data }) => {
-    const proc = terminalSessions.get(id);
+  ipcMain.on('terminal:write', (event, { id, data, cwd }) => {
+    let proc = terminalSessions.get(id);
+    if (!proc) {
+      const shellCmd = process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || 'bash');
+      const shellArgs = process.platform === 'win32' ? ['-NoLogo', '-ExecutionPolicy', 'Bypass'] : [];
+      const targetCwd = cwd || path.resolve(__dirname, '../..');
+      try {
+        proc = spawn(shellCmd, shellArgs, {
+          cwd: targetCwd,
+          env: { ...process.env, TERM: 'xterm-256color' },
+          windowsHide: true
+        });
+        proc.stdout.on('data', (d) => event.sender.send(`terminal:data:${id}`, d.toString('utf8')));
+        proc.stderr.on('data', (d) => event.sender.send(`terminal:data:${id}`, d.toString('utf8')));
+        proc.on('exit', (code) => {
+          event.sender.send(`terminal:exit:${id}`, code);
+          terminalSessions.delete(id);
+        });
+        terminalSessions.set(id, proc);
+      } catch (e) {
+        console.error('Failed to auto-spawn terminal in write:', e);
+      }
+    }
     if (proc && proc.stdin && proc.stdin.writable) {
       proc.stdin.write(data);
     }

@@ -6,6 +6,9 @@ import {
   Settings, 
   Cpu, 
   ShieldCheck, 
+  Zap, 
+  FileEdit, 
+  Compass, 
   Info, 
   Plus, 
   Check, 
@@ -81,7 +84,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       }
       const data = await res.json();
       const tag = (data.tag_name || data.name || "").trim();
-      const currentVer = "v5.7.11";
+      const currentVer = "v5.7.13";
       setLatestVersion(tag || "未知");
       const htmlUrl = data.html_url || "https://github.com/dotcom888/super-harnes/releases";
       setReleaseUrl(htmlUrl);
@@ -641,29 +644,73 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {activeTab === "security" && (
               <div className="space-y-4 text-xs max-w-4xl">
                 <div>
-                  <h2 className="text-base font-bold text-gray-900 dark:text-white">安全与模式</h2>
+                  <h2 className="text-base font-bold text-gray-900 dark:text-white">安全与执行模式</h2>
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    管理本地 Shell 执行策略与 Human-in-the-Loop 审批级别。
+                    参考业界领先的 Claude Code 4 阶执行策略体系，在开发速度与控制安全之间按需平衡。
                   </p>
                 </div>
 
+                {/* 1. Auto 模式 */}
                 <div className="p-4 bg-blue-50/70 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-900/40 rounded-xl space-y-2">
-                  <div className="font-semibold text-blue-900 dark:text-blue-300 flex items-center gap-2">
-                    <ShieldCheck size={16} className="text-blue-600 dark:text-blue-400" />
-                    <span>AUTO 模式 (全自动执行，默认推荐)</span>
+                  <div className="font-semibold text-blue-900 dark:text-blue-300 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Zap size={16} className="text-blue-600 dark:text-blue-400" />
+                      <span>Auto 模式 (日常开发推荐)</span>
+                    </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300">Default</span>
                   </div>
-                  <p className="text-blue-700 dark:text-blue-300/80 leading-relaxed text-[11px]">
-                    非破坏性操作（读取文件、代码走查、pytest 测试、ripgrep 搜索等）全自动静默放行，无需频繁打扰开发者；对任何包含破坏性删除（如 rm -rf、format）或提权命令均实施强制底层阻断。
+                  <p className="text-blue-800 dark:text-blue-300/80 leading-relaxed text-[11px]">
+                    <strong>核心特点：</strong>日常开发最推荐，效率与安全兼顾。<br />
+                    • <strong>编辑文件：</strong>安全修改，无需逐次打扰；<br />
+                    • <strong>跑 Shell 命令：</strong>安全命令全自动放行，底层绝对阻断高危破坏性命令（如 rm -rf、format）与凭据窥探。
                   </p>
                 </div>
 
-                <div className="p-4 bg-gray-50 dark:bg-[#181a24] border border-gray-200 dark:border-[#262a38] rounded-xl space-y-2">
-                  <div className="font-semibold text-gray-800 dark:text-gray-200 flex items-center gap-2">
-                    <ShieldCheck size={16} className="text-gray-600 dark:text-gray-400" />
-                    <span>ASK 模式 (人工交互审批)</span>
+                {/* 2. Edit automatically 模式 */}
+                <div className="p-4 bg-purple-50/70 dark:bg-purple-950/20 border border-purple-200 dark:border-purple-900/40 rounded-xl space-y-2">
+                  <div className="font-semibold text-purple-900 dark:text-purple-300 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <FileEdit size={16} className="text-purple-600 dark:text-purple-400" />
+                      <span>Edit automatically (自动编辑模式)</span>
+                    </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300">Fast Edit</span>
                   </div>
-                  <p className="text-gray-500 dark:text-gray-400 leading-relaxed text-[11px]">
-                    任何涉及文件写入、代码修改或 Shell 命令下发的工具操作，均会在桌面端弹窗等待用户点击允许。
+                  <p className="text-purple-800 dark:text-purple-300/80 leading-relaxed text-[11px]">
+                    <strong>核心特点：</strong>适合目标明确、快速修改代码与重构。<br />
+                    • <strong>编辑文件：</strong>直接改，不问；<br />
+                    • <strong>跑 Shell 命令：</strong>只读/测试命令（git status、pytest、npm test 等）自动放行，任何修改系统环境的未知命令均须审批。
+                  </p>
+                </div>
+
+                {/* 3. Plan 模式 */}
+                <div className="p-4 bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 rounded-xl space-y-2">
+                  <div className="font-semibold text-amber-900 dark:text-amber-300 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Compass size={16} className="text-amber-600 dark:text-amber-400" />
+                      <span>Plan 模式 (方案先行规划)</span>
+                    </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300">Read-Only Planning</span>
+                  </div>
+                  <p className="text-amber-800 dark:text-amber-300/80 leading-relaxed text-[11px]">
+                    <strong>核心特点：</strong>适合大重构、复杂疑难任务，先审批方案。<br />
+                    • <strong>编辑文件：</strong>不动手，先出方案！写文件与打补丁将被底层拦截；<br />
+                    • <strong>跑 Shell 命令：</strong>仅允许只读探索命令（代码走查、状态检测），严禁运行具有变更副作用的指令。
+                  </p>
+                </div>
+
+                {/* 4. Manual 模式 */}
+                <div className="p-4 bg-gray-50 dark:bg-[#181a24] border border-gray-200 dark:border-[#262a38] rounded-xl space-y-2">
+                  <div className="font-semibold text-gray-800 dark:text-gray-200 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck size={16} className="text-gray-600 dark:text-gray-400" />
+                      <span>Manual 模式 (步步为营手动审批)</span>
+                    </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300">Strict</span>
+                  </div>
+                  <p className="text-gray-600 dark:text-gray-400 leading-relaxed text-[11px]">
+                    <strong>核心特点：</strong>步步为营，最安全但最累。<br />
+                    • <strong>编辑文件：</strong>每次修改或新建文件均须弹窗确认；<br />
+                    • <strong>跑 Shell 命令：</strong>每一条终端命令下发前均须开发者手动审批允许。
                   </p>
                 </div>
               </div>
@@ -806,7 +853,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <img src={LOGO_DATA_URI} alt="super logo" className="w-10 h-10 object-contain" />
                     <div>
                       <h2 className="text-base font-bold text-gray-900 dark:text-white">super HARNESS 桌面客户端</h2>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">版本 v5.7.11 · DeepSeek Harness 架构增强版</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">版本 v5.7.13 · DeepSeek Harness 架构增强版</p>
                     </div>
                   </div>
 
@@ -830,7 +877,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 {checkVersionStatus === "latest" && (
                   <div className="flex items-center gap-2 p-3 bg-emerald-50/80 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800/40 rounded-xl text-emerald-700 dark:text-emerald-400">
                     <CheckCircle2 size={16} className="shrink-0" />
-                    <span className="font-medium">当前已是最新版本 (v5.7.11)，与 GitHub 官方发布版本一致。</span>
+                    <span className="font-medium">当前已是最新版本 (v5.7.13)，与 GitHub 官方发布版本一致。</span>
                   </div>
                 )}
 
@@ -839,7 +886,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2 text-blue-800 dark:text-blue-300 font-semibold">
                         <Sparkles size={16} />
-                        <span>发现新版本: {latestVersion} (当前为 v5.7.11)</span>
+                        <span>发现新版本: {latestVersion} (当前为 v5.7.13)</span>
                       </div>
                       <button
                         type="button"

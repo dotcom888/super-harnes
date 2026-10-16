@@ -15,7 +15,7 @@ if exist ".venv\Scripts\python.exe" (
 )
 
 echo [1/2] Starting Super-Harnes Backend (http://127.0.0.1:8765)...
-start "Super-Harnes Backend" /min "%PYTHON_CMD%" "%SCRIPT_DIR%server\run_server.py" 8765
+start "Super-Harnes Backend" /min "%PYTHON_CMD%" "%SCRIPT_DIR%backend\server\run_server.py" 8765
 
 timeout /t 2 /nobreak >nul
 

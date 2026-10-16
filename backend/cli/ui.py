@@ -207,7 +207,11 @@ class TerminalUI:
         meta_table.add_column(style="bold #9ca3af", justify="right")
         meta_table.add_column(style="white")
 
-        meta_table.add_row("工作区根目录", f"[bold cyan]{workspace_path}[/] [dim]({project_name})[/]")
+        if project_name == "_general":
+            proj_badge = "[bold yellow]不在项目中 (_general)[/]"
+        else:
+            proj_badge = f"[bold green]{project_name}[/]"
+        meta_table.add_row("工作区根目录", f"[bold cyan]{workspace_path}[/]  [dim]|[/]  对话分区: {proj_badge}")
         meta_table.add_row("激活会话", f"[bold magenta]{session_id}[/]  [dim]|[/]  推理模型: [bold #38bdf8]{model}[/]")
         meta_table.add_row(
             "可用能力",

@@ -95,7 +95,30 @@ def build_system_prompt(base_prompt: Optional[str] = None, global_memory: Option
     except Exception:
         pass
 
-    # 3. 注入高阶软件工程规范与实战全流程手册 (构建约 20k Tokens 静态稳态锚点)
+    # 3. 注入 Plan 模式专项规划准则 (对标 Claude Code Plan 模式)
+    try:
+        from tools.framework.policies import default_policy
+        if getattr(default_policy, "mode", "auto") == "plan":
+            plan_prompt = (
+                "### 【当前执行模式：Plan 规划模式 (先谋后动 / 方案先行)】\n"
+                "- **核心定位**：对标 Claude Code 计划模式，像资深架构师一样深入调研，先制定完整施工方案，待用户批准后才动手！\n"
+                "- **严格行为准则**：\n"
+                "  1. 【严禁写操作与环境变更】：严禁调用 write_file、apply_patch 新建或修改文件，严禁执行有写副作用、安装依赖或修改环境的 Shell 命令；\n"
+                "  2. 【充分调研代码】：利用 read_file、list_dir、file_search、grep_search 等只读工具充分分析现有代码逻辑、关联模块及调用链路；\n"
+                "  3. 【结构化施工方案输出】：调研完成后，输出一份结构清晰、条理分明的【实施方案】，必须清晰包含以下板块：\n"
+                "     - 🎯 **方案目标与根因定位**：明确本次任务要解决的核心问题、现状缺陷或需求背景；\n"
+                "     - 📁 **影响范围与变动文件**：完整罗列需新建、修改、迁移或删除的文件相对路径及具体改动目的；\n"
+                "     - 🔨 **分步实施计划**：按依赖关系拆解为具体的实施步骤（Step 1, Step 2...）；\n"
+                "     - 🛡️ **风险评估与安全回滚**：评估潜在破坏性或兼容性风险，提供防护措施；\n"
+                "     - 🧪 **验证与验收策略**：明确指出方案执行完毕后的测试命令与验收验证指标；\n"
+                "- **结尾审批指引**：\n"
+                "  方案末尾请明确告知用户：“方案已规划完毕，请审阅。如认可方案，请点击下方【批准并以 Auto 模式执行】（或在输入框确认），智能体将自动转入执行模式开始落地实施。”"
+            )
+            parts.append(plan_prompt)
+    except Exception:
+        pass
+
+    # 4. 注入高阶软件工程规范与实战全流程手册 (构建约 20k Tokens 静态稳态锚点)
     try:
         from core.knowledge import ENGINEERING_PLAYBOOK
         if ENGINEERING_PLAYBOOK:

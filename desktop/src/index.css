@@ -147,3 +147,31 @@
   background-size: 200% 100%;
   animation: sweepGlow 3s ease-in-out infinite;
 }
+
+/* 左侧工作区项目目录滚动条 (对标需求 2：工作目录过长时右侧优雅滑块) */
+.sidebar-scroll-box {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+.dark .sidebar-scroll-box {
+  scrollbar-color: #2e3446 transparent;
+}
+.sidebar-scroll-box::-webkit-scrollbar {
+  width: 5px;
+}
+.sidebar-scroll-box::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sidebar-scroll-box::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+.dark .sidebar-scroll-box::-webkit-scrollbar-thumb {
+  background: #2e3446;
+}
+.sidebar-scroll-box::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+.dark .sidebar-scroll-box::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}

@@ -47,29 +47,44 @@ class ReActAgent:
         mcp_manager: Optional[McpManager] = None,
         session_manager: Optional[SessionManager] = None
     ):
-        self.api_key = api_key or os.getenv("LLM_API_KEY")
-        self.base_url = base_url or os.getenv("LLM_BASE_URL", "https://api.deepseek.com")
-        self.model = model or os.getenv("LLM_MODEL", "deepseek-chat")
+        # 自动同步解析模型、凭据与 Base URL (优先参数/环境，默认无缝对齐桌面端 ~/.super-harnes/config/models_config.json)
+        from config.model_resolver import resolve_active_model_config
+        resolved_model, resolved_key, resolved_url, resolved_source = resolve_active_model_config(
+            model=model,
+            api_key=api_key,
+            base_url=base_url
+        )
+        self.model = resolved_model
+        self.api_key = resolved_key
+        self.base_url = resolved_url
+        self.model_source = resolved_source
+
         self._custom_system_prompt: Optional[str] = system_prompt if system_prompt != DEFAULT_SYSTEM_PROMPT else None
         env_max_steps = int(os.getenv("AGENT_MAX_STEPS", "0"))
         self.max_steps = max_steps if max_steps is not None else env_max_steps
         self.loop_detector = LoopDetector()
         self.stage_manager = StageManager(enable_stage_masking=False)
         self.executor = executor or default_executor
+        default_proj = os.getenv("SUPER_DEFAULT_PROJECT")
         if session_manager is not None:
             self.session_manager = session_manager
             if context_manager is not None:
                 self.session_manager._sessions[context_manager.session_id] = context_manager
                 self.session_manager.active_session_id = context_manager.session_id
         elif context_manager is not None:
-            self.session_manager = SessionManager(default_session_id=context_manager.session_id)
+            self.session_manager = SessionManager(default_session_id=context_manager.session_id, project_name=default_proj)
             self.session_manager._sessions[context_manager.session_id] = context_manager
         else:
-            self.session_manager = SessionManager(default_session_id="default")
+            self.session_manager = SessionManager(default_session_id="default", project_name=default_proj)
         self.mcp_manager = mcp_manager or default_mcp_manager
 
         if not self.api_key or self.api_key == "your_api_key_here":
-            raise ValueError("未检测到有效的 LLM_API_KEY，请检查 .env 文件！")
+            raise ValueError(
+                "未检测到有效的模型 API 密钥！\n"
+                "💡 快速配置指引：\n"
+                "  1. 打开桌面端，在「设置」->「模型提供方」中添加模型与 API Key (推荐，自动安全同步)；\n"
+                "  2. 或在当前工作区根目录下创建 .env 文件，填写 LLM_API_KEY 与 LLM_BASE_URL。"
+            )
 
         self.client = create_resilient_openai_client(api_key=self.api_key, base_url=self.base_url)
 

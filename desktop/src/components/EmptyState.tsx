@@ -2,6 +2,10 @@ import React, { useState, useEffect, useRef } from "react";
 import { 
   Folder, 
   Atom, 
+  Zap, 
+  FileEdit, 
+  Compass, 
+  ShieldCheck, 
   Plus, 
   Shield, 
   ChevronDown, 
@@ -27,6 +31,7 @@ import { PendingAttachmentChip } from "./AttachmentCards";
 import { readMediaFromClipboard, extractFilesFromClipboardEvent, saveDraft, loadDraft, clearDraft } from "../utils/clipboardHelper";
 import { InputContextMenu, ContextMenuPosition } from "./InputContextMenu";
 import { LOGO_DATA_URI } from "../assets/logoData";
+import { EXECUTION_MODES, normalizeModeId, getModeDisplayName, ExecutionModeId } from "../utils/modeHelper";
 
 interface EmptyStateProps {
   projectName: string;
@@ -362,6 +367,21 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
     }
   };
 
+  const currentModeId = normalizeModeId(permission);
+
+  const renderModeIcon = (modeId: ExecutionModeId) => {
+    switch (modeId) {
+      case "plan":
+        return <Compass size={13} className="text-amber-500" />;
+      case "edit_auto":
+        return <FileEdit size={13} className="text-purple-500" />;
+      case "manual":
+        return <ShieldCheck size={13} className="text-emerald-500" />;
+      default:
+        return <Zap size={13} className="text-blue-500" />;
+    }
+  };
+
   const handleSelectModel = (m: string) => {
     setModel(m);
     setShowModelMenu(false);
@@ -502,54 +522,6 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
             )}
           </div>
 
-          {/* 模式选择胶囊 */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setShowPermMenu(!showPermMenu)}
-              className="flex items-center gap-1.5 px-3 py-1 bg-gray-100 dark:bg-[#20222b] hover:bg-gray-200 dark:hover:bg-[#2a2d39] text-gray-700 dark:text-gray-200 rounded-full text-xs cursor-pointer transition font-medium"
-            >
-              <Atom size={13} className="text-blue-600" />
-              <span>{permission}</span>
-              <ChevronDown size={12} className="text-gray-400" />
-            </button>
-
-            {showPermMenu && (
-              <>
-                <div 
-                  className="fixed inset-0 z-20 cursor-default" 
-                  onClick={() => setShowPermMenu(false)} 
-                />
-                <div className="absolute left-0 top-8 w-56 bg-white dark:bg-[#1a1d27] border border-gray-200 dark:border-[#2a2e3f] shadow-xl rounded-xl py-1 z-30 text-xs text-gray-800 dark:text-gray-200">
-                  <div className="px-3 py-1.5 text-[11px] font-semibold text-gray-400 border-b border-gray-100 dark:border-gray-800">
-                    执行策略模式
-                  </div>
-                  {[
-                    { id: "AUTO 模式", name: "AUTO 模式 (默认)", desc: "全自动免打扰执行，非黑名单高危命令自动放行" },
-                    { id: "ASK 模式", name: "ASK 模式 (人工审批)", desc: "敏感修改命令弹窗确认后方可执行" }
-                  ].map((item) => (
-                    <div
-                      key={item.id}
-                      onClick={() => {
-                        setPermission(item.id);
-                        setShowPermMenu(false);
-                        onPermissionChange?.(item.id);
-                      }}
-                      className={`px-3 py-2 hover:bg-gray-50 cursor-pointer flex flex-col transition ${
-                        permission === item.id ? "text-blue-600 font-semibold bg-blue-50/50" : "text-gray-700"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span>{item.name}</span>
-                        {permission === item.id && <Check size={13} className="text-blue-600" />}
-                      </div>
-                      <span className="text-[10px] text-gray-400 mt-0.5">{item.desc}</span>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
         </div>
 
         {/* 右键快捷菜单 */}
@@ -702,10 +674,58 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
                 </button>
               </div>
 
-              {/* 运行安全模式标识 */}
-              <div className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-[#20232e] rounded-lg border border-gray-100 dark:border-gray-800 font-medium">
-                <Shield size={13} className="text-blue-600" />
-                <span>{permission}</span>
+              {/* 运行安全模式选择胶囊 (继承 4 阶策略完整切换功能) */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShowPermMenu(!showPermMenu)}
+                  className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-gray-700 dark:text-gray-300 bg-gray-50 hover:bg-gray-100 dark:bg-[#20232e] dark:hover:bg-[#282c3a] rounded-lg border border-gray-200/80 dark:border-gray-800 font-medium transition cursor-pointer"
+                  title="切换执行安全模式"
+                >
+                  {renderModeIcon(currentModeId)}
+                  <span>{getModeDisplayName(permission)}</span>
+                  <ChevronDown size={11} className="text-gray-400" />
+                </button>
+
+                {showPermMenu && (
+                  <>
+                    <div 
+                      className="fixed inset-0 z-20 cursor-default" 
+                      onClick={() => setShowPermMenu(false)} 
+                    />
+                    <div className="absolute left-0 bottom-9 w-64 bg-white dark:bg-[#1a1d27] border border-gray-200 dark:border-[#2a2e3f] shadow-xl rounded-xl py-1 z-30 text-xs text-gray-800 dark:text-gray-200">
+                      <div className="px-3 py-1.5 text-[11px] font-semibold text-gray-400 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+                        <span>运行安全级别</span>
+                        <span className="text-[10px] text-gray-400">4 阶策略</span>
+                      </div>
+                      {EXECUTION_MODES.map((item) => {
+                        const isCur = currentModeId === item.id;
+                        return (
+                          <div
+                            key={item.id}
+                            onClick={() => {
+                              setPermission(item.name);
+                              setShowPermMenu(false);
+                              onPermissionChange?.(item.name);
+                            }}
+                            className={`px-3 py-2 hover:bg-gray-50 dark:hover:bg-[#222534] cursor-pointer flex flex-col transition ${
+                              isCur ? "text-blue-600 dark:text-blue-400 font-semibold bg-blue-50/50 dark:bg-blue-900/20" : "text-gray-700 dark:text-gray-300"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                {renderModeIcon(item.id)}
+                                <span>{item.name}</span>
+                              </div>
+                              {isCur && <Check size={13} className="text-blue-600 dark:text-blue-400" />}
+                            </div>
+                            <span className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5 pl-5">{item.desc}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 

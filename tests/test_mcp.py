@@ -20,7 +20,7 @@ class TestMcpIntegration(unittest.TestCase):
         custom_registry = ToolRegistry()
         executor = ToolExecutor(registry=custom_registry)
 
-        server_path = str(WORKSPACE_ROOT / "mcp" / "servers" / "calc_server.py")
+        server_path = str(WORKSPACE_ROOT / "backend" / "mcp" / "servers" / "calc_server.py") if (WORKSPACE_ROOT / "backend" / "mcp" / "servers" / "calc_server.py").exists() else str(WORKSPACE_ROOT / "mcp" / "servers" / "calc_server.py")
         client = McpClient([sys.executable, server_path], server_name="calculator")
         cfg = McpServerConfig(server_id="calculator", command=sys.executable, args=[server_path])
         bridge = McpToolBridge(client=client, config=cfg, registry=custom_registry)

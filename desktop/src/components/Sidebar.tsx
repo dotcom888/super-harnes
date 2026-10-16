@@ -7,7 +7,8 @@ import {
   Settings, 
   PanelLeftClose, 
   PanelLeft, 
-  ChevronDown, 
+  ChevronDown,
+  ChevronUp, 
   ChevronRight,
   MoreHorizontal,
   Pin,
@@ -73,6 +74,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [isProjectsExpanded, setIsProjectsExpanded] = useState<boolean>(true);
   const [isRecentExpanded, setIsRecentExpanded] = useState<boolean>(true);
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
+  const [expandedMoreProjects, setExpandedMoreProjects] = useState<Record<string, boolean>>({});
 
   // 操作菜单弹出层状态
   const [activeProjectMenu, setActiveProjectMenu] = useState<{ name: string; x: number; y: number } | null>(null);
@@ -87,11 +89,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const toggleProject = (name: string) => {
     setExpandedProjects((prev) => ({
       ...prev,
-      [name]: !prev[name]
+      [name]: !(prev[name] ?? (name === projectName))
     }));
-    if (onSelectProject) {
-      onSelectProject(name);
-    }
   };
 
   // 选择磁盘目录
@@ -204,7 +203,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
 
           {isProjectsExpanded && (
-            <div className="space-y-1 pb-2 pl-0.5">
+            <div className="space-y-1 pb-2 pl-0.5 max-h-[50vh] overflow-y-auto pr-1 sidebar-scroll-box">
             {displayProjects.length === 0 ? (
               <div className="px-3 py-6 text-center text-xs text-gray-400 dark:text-gray-500 flex flex-col items-center gap-2">
                 <FolderPlus size={20} className="text-gray-300 dark:text-gray-600 mb-0.5" />
@@ -224,6 +223,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
               const isExpanded = expandedProjects[proj.name] ?? isCurrent;
               const projSessions = proj.sessions || [];
               const isPinned = proj.is_pinned;
+
+              const activeSessionIdx = projSessions.findIndex((s) => s.session_id === activeSessionId);
+              const isShowAll = expandedMoreProjects[proj.name] ?? (isCurrent && activeSessionIdx >= 5);
+              const shouldShowAll = isShowAll;
+              const visibleSessions = shouldShowAll ? projSessions : projSessions.slice(0, 5);
 
               return (
                 <div key={proj.name} className="space-y-0.5 group/proj">
@@ -281,7 +285,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         {projSessions.length === 0 ? (
                           <div className="px-2 py-1 text-[11px] text-gray-400 italic">暂无历史消息</div>
                         ) : (
-                          projSessions.map((s) => {
+                          <>
+                          {visibleSessions.map((s) => {
                             const isActive = isCurrent && s.session_id === activeSessionId;
                             const displayTitle = s.current_goal || (s.session_id === "default" ? "默认会话" : s.session_id);
                             const isSessionPinned = s.is_pinned;
@@ -326,7 +331,32 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                 </div>
                               </div>
                             );
-                          })
+                          })}
+                          {projSessions.length > 5 && (
+                            shouldShowAll ? (
+                              <button
+                                type="button"
+                                onClick={() => setExpandedMoreProjects((prev) => ({ ...prev, [proj.name]: false }))}
+                                className="w-full flex items-center gap-1 px-2.5 py-1 text-[11px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100/60 dark:hover:bg-[#181a24] rounded-md transition cursor-pointer mt-0.5"
+                              >
+                                <ChevronUp size={12} />
+                                <span>收起</span>
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setExpandedMoreProjects((prev) => ({ ...prev, [proj.name]: true }))}
+                                className="w-full flex items-center justify-between px-2.5 py-1 text-[11px] text-blue-600 dark:text-blue-400 hover:bg-blue-50/60 dark:hover:bg-blue-900/20 rounded-md transition font-medium cursor-pointer mt-0.5"
+                              >
+                                <span className="flex items-center gap-1">
+                                  <ChevronDown size={12} />
+                                  <span>展开显示</span>
+                                </span>
+                                <span className="text-[10px] text-gray-400">还有 {projSessions.length - 5} 项</span>
+                              </button>
+                            )
+                          )}
+                          </>
                         )}
                       </div>
                     </div>

@@ -10,6 +10,7 @@ import json
 import time
 import asyncio
 import shutil
+import subprocess
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 from pydantic import BaseModel
@@ -301,48 +302,52 @@ def get_all_projects_metadata() -> List[Dict[str, Any]]:
                     "sessions": proj_sessions
                 })
 
-    # 2. 检查注册在 ~/.super-harnes/projects.json 的磁盘工程 (合并未扫描到的新工程)
+    # 2. 检查注册在 ~/.super-harnes/projects.json 的磁盘工程 (双向一致同步：若 history/ 下已被物理删除，自动清理注册表绝不重新复活)
     extra_projects = get_registered_projects()
+    registered_changed = False
+    valid_registered = []
     for ep in extra_projects:
         ep_name = ep.get("name")
         ep_path = ep.get("path", "")
-        if ep_name and ep_name.lower() not in known_lower:
-            if ep_name in deleted_names or ep_name.lower() in [dn.lower() for dn in deleted_names]:
-                continue
-            ep_dir = HISTORY_ROOT / ep_name
-            # 若磁盘路径已失效且本地无任何历史会话，跳过该孤儿条目
-            if ep_path and not Path(ep_path).exists() and not ep_dir.exists():
-                continue
-            known_lower.add(ep_name.lower())
-            # 确保注册的有效项目在 ~/.super-harnes/history 下始终具备物理目录与 project_state.json，保证界面与磁盘完全一致
-            if not ep_dir.exists() and ep_path and Path(ep_path).exists():
-                try:
-                    ep_dir.mkdir(parents=True, exist_ok=True)
-                    ps_file = ep_dir / "project_state.json"
-                    if not ps_file.exists():
-                        with open(ps_file, "w", encoding="utf-8") as f:
-                            json.dump({"project_name": ep_name, "workspace_root": ep_path}, f, ensure_ascii=False, indent=2)
-                except Exception:
-                    pass
-            ep_sessions = scan_project_sessions(ep_dir) if ep_dir.exists() else []
-            projects.append({
-                "name": ep_name,
-                "path": ep_path,
-                "session_count": len(ep_sessions),
-                "sessions": ep_sessions
-            })
+        if not ep_name:
+            continue
+        ep_name_lower = ep_name.lower()
+        if ep_name in deleted_names or ep_name_lower in [dn.lower() for dn in deleted_names]:
+            registered_changed = True
+            continue
+        ep_dir = HISTORY_ROOT / ep_name
+        # 核心逻辑：若该项目在 history/ 下的物理目录不存在，判定为用户已在磁盘物理删除
+        # 同步从 projects.json 和 pins_config 中剔除，绝不重新创建
+        if not ep_dir.exists():
+            registered_changed = True
+            if ep_name not in deleted_names:
+                pins.setdefault("deleted_projects", []).append(ep_name)
+            pins["pinned_projects"] = [p for p in pins.get("pinned_projects", []) if p.lower() != ep_name_lower]
+            pins["project_order"] = [p for p in pins.get("project_order", []) if p.lower() != ep_name_lower]
+            if hasattr(bridge, "evict_project_agents"):
+                bridge.evict_project_agents(ep_name)
+            continue
 
-    # 3. 在源码开发模式下，确保当前工作区根目录在列表中 (排除编译内部临时目录与打包程序目录)
+        valid_registered.append(ep)
+
+    if registered_changed:
+        from server.project_utils import save_registered_projects
+        save_registered_projects(valid_registered)
+        save_pins_config(pins)
+
+    # 3. 在源码开发模式下，仅当 HISTORY_ROOT / cur_name 实际存在时才列出，严禁强行插入已被删除的项目
     if not getattr(sys, "frozen", False):
         cur_name = default_workspace.root.name
+        cur_dir = HISTORY_ROOT / cur_name
         if cur_name.lower() not in ("super-server", "bin", "resources", "_internal", "workspace", "super-harnes") and cur_name.lower() not in known_lower and cur_name not in deleted_names:
-            cur_sessions = scan_project_sessions(HISTORY_ROOT / cur_name)
-            projects.insert(0, {
-                "name": cur_name,
-                "path": str(default_workspace.root),
-                "session_count": len(cur_sessions),
-                "sessions": cur_sessions
-            })
+            if cur_dir.exists():
+                cur_sessions = scan_project_sessions(cur_dir)
+                projects.insert(0, {
+                    "name": cur_name,
+                    "path": str(default_workspace.root),
+                    "session_count": len(cur_sessions),
+                    "sessions": cur_sessions
+                })
 
     pinned_projs = pins.get("pinned_projects", [])
     project_order = pins.get("project_order", [])
@@ -418,6 +423,8 @@ def parse_project_turns_from_disk(project_name: str, session_id: str) -> Dict[st
             elif t == "user_message":
                 turns_map[tid]["user_prompt"] = data.get("content", "")
                 turns_map[tid]["attachments"] = data.get("attachments", [])
+                if data.get("permission_mode"):
+                    turns_map[tid]["permission_mode"] = data.get("permission_mode")
                 turn_start_times[tid] = row.get("timestamp", time.time())
 
             elif t == "assistant_message":
@@ -500,6 +507,7 @@ def parse_project_turns_from_disk(project_name: str, session_id: str) -> Dict[st
                     turns_map[tid]["user_prompt"] = wm.get("current_goal")
 
     # 计算并写入该轮真实的发送至回答完成时间
+    file_mtime = target_file.stat().st_mtime if target_file.exists() else 0
     for tid, tdata in turns_map.items():
         t_start = turn_start_times.get(tid)
         t_end = turn_end_times.get(tid)
@@ -507,6 +515,9 @@ def parse_project_turns_from_disk(project_name: str, session_id: str) -> Dict[st
             tdata["elapsed"] = round(max(1.0, t_end - t_start), 1)
         elif not tdata.get("elapsed"):
             tdata["elapsed"] = 1.0
+        # 严格使用历史持久化时间戳；若均无则以历史文件物理修改时间 mtime 兜底，绝不使用当前重启时间
+        tdata["timestamp"] = t_end or t_start or file_mtime
+        tdata["start_timestamp"] = t_start or tdata["timestamp"]
 
     # 填充缺失工具的输出
     for tid, tdata in turns_map.items():
@@ -934,7 +945,7 @@ def create_session(req: Optional[SessionActionRequest] = None):
 
 @app.delete("/api/sessions/delete")
 def delete_session(req: SessionActionRequest):
-    """删除会话"""
+    """删除会话 (物理清除磁盘文件、同步剔除内存缓存与图钉状态)"""
     proj_name = req.project or default_workspace.root.name
     target_file = HISTORY_ROOT / proj_name / f"{req.session_id}.jsonl"
     if target_file.exists():
@@ -942,6 +953,22 @@ def delete_session(req: SessionActionRequest):
             target_file.unlink()
         except Exception:
             pass
+
+    # 同步清理内存 agent 缓存
+    if hasattr(bridge, "evict_session_agent"):
+        bridge.evict_session_agent(proj_name, req.session_id)
+
+    # 同步清理置顶与自定义标题
+    pins = load_pins_config()
+    pinned_sids = pins.get("pinned_sessions", {}).get(proj_name, [])
+    if req.session_id in pinned_sids:
+        pins["pinned_sessions"][proj_name] = [s for s in pinned_sids if s != req.session_id]
+        save_pins_config(pins)
+    custom_titles = pins.get("custom_titles", {}).get(proj_name, {})
+    if req.session_id in custom_titles:
+        custom_titles.pop(req.session_id, None)
+        save_pins_config(pins)
+
     # 同步清理此会话绑定的本地上传附件，杜绝磁盘孤儿文件堆积
     att_dir = default_workspace.root / ".super_attachments" / req.session_id
     if att_dir.exists():
@@ -1182,11 +1209,40 @@ def resolve_user_input_api(req: UserInputResponseModel):
 
 @app.post("/api/permission_mode")
 def set_permission_mode_api(req: PermissionModeModel):
-    new_mode = "ask" if "ask" in req.mode.lower() else "auto"
+    new_mode = default_policy.normalize_mode(req.mode)
     default_policy.mode = new_mode
-    if new_mode == "auto":
+    if new_mode in ("auto", "edit_auto"):
         bridge.unblock_all_pending_approvals(approved=True)
     return {"success": True, "mode": default_policy.mode}
+
+
+class TerminalExecRequest(BaseModel):
+    command: str
+    cwd: Optional[str] = None
+
+@app.post("/api/terminal/exec")
+def terminal_exec_api(req: TerminalExecRequest):
+    target_cwd = req.cwd or str(default_workspace.root)
+    try:
+        res = subprocess.run(
+            req.command,
+            shell=True,
+            cwd=target_cwd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            encoding="utf-8",
+            errors="replace"
+        )
+        return {
+            "stdout": res.stdout,
+            "stderr": res.stderr,
+            "exit_code": res.returncode
+        }
+    except subprocess.TimeoutExpired:
+        return {"stdout": "", "stderr": "【命令执行超时 (60s)】", "exit_code": -1}
+    except Exception as e:
+        return {"stdout": "", "stderr": str(e), "exit_code": 1}
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -1281,9 +1337,9 @@ async def websocket_endpoint(websocket: WebSocket):
 
             elif msg_type == "set_permission_mode":
                 perm_mode = payload.get("permission_mode", "auto")
-                new_mode = "ask" if "ask" in perm_mode.lower() else "auto"
+                new_mode = default_policy.normalize_mode(perm_mode)
                 default_policy.mode = new_mode
-                if new_mode == "auto":
+                if new_mode in ("auto", "edit_auto"):
                     bridge.unblock_all_pending_approvals(approved=True)
                 logger.info(f"WebSocket updated permission mode: {default_policy.mode}")
                 await websocket.send_json({

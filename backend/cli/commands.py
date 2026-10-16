@@ -17,6 +17,7 @@ HELP_TEXT = """
   /new, /reset             - 清空当前内存会话记忆，开启全新排查任务
   /history                 - 查看当前会话历史简报
   /cd <路径>, /workspace   - 切换或查看目标工程工作区根目录
+  /project [名]            - 查看或切换当前对话绑定的项目工程 (默认: _general 不在项目中)
   /profile                 - 查看用户全局共享记忆（开发规范与偏好画像）
   /remember <偏好>         - 永久记入一条全局编码偏好或开发习惯
   /forget <关键字>         - 从全局记忆中移除匹配的偏好
@@ -56,19 +57,50 @@ def handle_slash_command(agent, prompt: str) -> Tuple[bool, bool]:
         print("再见！")
         return True, True
 
-    # 权限与审批模式切换指令：/auto, /ask, /mode
+    # 权限与审批模式切换指令：/auto, /edit, /plan, /manual, /ask, /mode
     if cmd_lower in ["/auto", "/mode auto"]:
         from tools.framework.policies import default_policy
         default_policy.mode = "auto"
         default_policy.session_approved = True
+        msg = "\n[bold green][OK] 已切换至 Auto 模式[/bold green]: 日常开发最推荐，效率与安全兼顾（安全改不问，危险跑才问）。\n"
         try:
             from cli.ui import default_ui
             if default_ui.is_active:
-                default_ui.console.print("\n[bold green][OK] 已切换至 Claude 风格 AUTO 模式[/bold green]: 终端命令将全自动执行，无需逐次审批确认（高危黑名单防御依然生效）。\n")
+                default_ui.console.print(msg)
             else:
-                print("\n【模式已切换】已切换至 Claude 风格 AUTO 模式：终端命令将全自动执行，无需逐次审批确认（高危黑名单防御依然生效）。\n")
+                print("\n【模式已切换】已切换至 Auto 模式：日常开发最推荐，效率与安全兼顾。\n")
         except Exception:
-            print("\n【模式已切换】已切换至 Claude 风格 AUTO 模式。\n")
+            print("\n【模式已切换】已切换至 Auto 模式。\n")
+        return True, False
+
+    if cmd_lower in ["/edit", "/mode edit", "/mode edit_auto"]:
+        from tools.framework.policies import default_policy
+        default_policy.mode = "edit_auto"
+        default_policy.session_approved = False
+        msg = "\n[bold magenta][OK] 已切换至 Edit automatically 模式[/bold magenta]: 适合明确目标、快速改代码（直接改不问，非白名单命令才问）。\n"
+        try:
+            from cli.ui import default_ui
+            if default_ui.is_active:
+                default_ui.console.print(msg)
+            else:
+                print("\n【模式已切换】已切换至 Edit automatically 模式：直接改不问，非白名单命令才问。\n")
+        except Exception:
+            print("\n【模式已切换】已切换至 Edit automatically 模式。\n")
+        return True, False
+
+    if cmd_lower in ["/plan", "/mode plan"]:
+        from tools.framework.policies import default_policy
+        default_policy.mode = "plan"
+        default_policy.session_approved = False
+        msg = "\n[bold yellow][OK] 已切换至 Plan 模式[/bold yellow]: 适合大重构、复杂任务（不动手，先出方案）。\n"
+        try:
+            from cli.ui import default_ui
+            if default_ui.is_active:
+                default_ui.console.print(msg)
+            else:
+                print("\n【模式已切换】已切换至 Plan 模式：不动手，先出方案。\n")
+        except Exception:
+            print("\n【模式已切换】已切换至 Plan 模式。\n")
         return True, False
 
     if cmd_lower in ["/ask", "/mode ask"]:
@@ -78,37 +110,77 @@ def handle_slash_command(agent, prompt: str) -> Tuple[bool, bool]:
         try:
             from cli.ui import default_ui
             if default_ui.is_active:
-                default_ui.console.print("\n[bold yellow][OK] 已切换至 ASK 审批模式[/bold yellow]: 遇到非白名单敏感命令将弹窗请求人工审批 [y/n/a]。\n")
+                default_ui.console.print("\n[bold yellow][OK] 已切换至 ASK 审批模式[/bold yellow]: 遇到敏感修改将请求人工审批。\n")
             else:
-                print("\n【模式已切换】已切换至 ASK 审批模式：遇到非白名单敏感命令将弹窗请求人工审批 [y/n/a]。\n")
+                print("\n【模式已切换】已切换至 ASK 审批模式。\n")
         except Exception:
             print("\n【模式已切换】已切换至 ASK 审批模式。\n")
         return True, False
 
+    if cmd_lower in ["/manual", "/mode manual"]:
+        from tools.framework.policies import default_policy
+        default_policy.mode = "manual"
+        default_policy.session_approved = False
+        msg = "\n[bold cyan][OK] 已切换至 Manual 手动模式[/bold cyan]: 步步为营，最安全但最累（编辑文件与执行命令每次都问）。\n"
+        try:
+            from cli.ui import default_ui
+            if default_ui.is_active:
+                default_ui.console.print(msg)
+            else:
+                print("\n【模式已切换】已切换至 Manual 模式：编辑文件与执行命令每次都问。\n")
+        except Exception:
+            print("\n【模式已切换】已切换至 Manual 模式。\n")
+        return True, False
+
     if cmd_lower in ["/mode"]:
         from tools.framework.policies import default_policy
-        if default_policy.mode in ("auto", "never"):
-            cur_mode = "AUTO (类似 Claude 免打扰全自动执行)"
+        m = getattr(default_policy, "mode", "auto")
+        if m == "auto":
+            cur_mode = "Auto (日常开发最推荐，效率与安全兼顾)"
             color = "green"
-        elif default_policy.session_approved:
-            cur_mode = "ASK (敏感命令与代码修改逐次审批 - 当前会话已临时全部放行 [a])"
-            color = "green"
-        elif default_policy.mode == "always_ask":
-            cur_mode = "ALWAYS_ASK (严格模式：所有操作均须人工确认)"
-            color = "red"
-        else:
-            cur_mode = "ASK (敏感命令与代码修改逐次人工审批)"
+        elif m == "edit_auto":
+            cur_mode = "Edit automatically (直接改不问，命令需审核)"
+            color = "magenta"
+        elif m == "plan":
+            cur_mode = "Plan (不动手，先出方案，只读调研)"
             color = "yellow"
+        else:
+            cur_mode = "Manual (步步为营，编辑与命令每次都问)"
+            color = "cyan"
         try:
             from cli.ui import default_ui
             if default_ui.is_active:
                 default_ui.console.print(f"\n当前安全审批模式: [bold {color}]{cur_mode}[/bold {color}]")
-                default_ui.console.print("[dim]💡 提示: 输入 [white]/auto[/] 切换为全自动模式，输入 [white]/ask[/] 切换为交互审批模式。[/dim]\n")
+                default_ui.console.print("[dim]💡 快捷切换: [white]/auto[/] [white]/edit[/] [white]/plan[/] [white]/manual[/][/dim]\n")
             else:
                 print(f"\n当前安全审批模式: 【{cur_mode}】")
-                print("💡 提示: 输入 /auto 切换为全自动模式，输入 /ask 切换为交互审批模式。\n")
+                print("💡 快捷切换: /auto /edit /plan /manual\n")
         except Exception:
             print(f"\n当前安全审批模式: 【{cur_mode}】\n")
+        return True, False
+
+    # 动态切换或查看项目对话分区：/project [name]
+    if cmd_lower in ["/project", "/proj"]:
+        proj_name = getattr(agent, "project_name", "_general")
+        active_id = getattr(getattr(agent, "session_manager", None), "active_session_id", "default")
+        proj_display = "不在项目中 (_general)" if proj_name == "_general" else f"【{proj_name}】"
+        print(f"当前对话分区: {proj_display} | 当前激活会话: 【{active_id}】")
+        print("💡 提示: 输入 /project <项目名> 可切换绑定的工程工作区；输入 /project _general 可切回“不在项目中”。")
+        return True, False
+
+    if cmd_lower.startswith("/project ") or cmd_lower.startswith("/proj "):
+        target_p = raw_prompt.split(None, 1)[1].strip()
+        from config.settings import HISTORY_DIR
+        from core.session import SessionManager
+        from tools.framework.workspace import default_workspace
+        agent.session_manager = SessionManager(
+            default_session_id="default",
+            workspace=default_workspace,
+            project_name=target_p,
+            history_dir=(HISTORY_DIR / target_p).resolve()
+        )
+        proj_display = "不在项目中 (_general)" if target_p == "_general" else f"【{target_p}】"
+        print(f"【对话分区已切换】当前工程: {proj_display} | 激活会话: 【default】（历史独立归档于 history/{target_p}/）")
         return True, False
 
     # 动态切换或查看工作区：/cd <path> 或 /workspace [path]

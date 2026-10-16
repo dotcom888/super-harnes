@@ -77,8 +77,9 @@ def resolve_project_workspace_root(project_name: str) -> Path:
         if r_name.lower() == pname_lower and r_path:
             p = Path(r_path).resolve()
             if p.exists() and p.is_dir():
-                # 顺便回写到 project_state.json 以保证一致性
-                _persist_project_state(target_history_dir, pname_clean, str(p))
+                # 仅在历史目录本身存在时回写，严禁无故重建已被用户删除的目录
+                if target_history_dir.exists():
+                    _persist_project_state(target_history_dir, pname_clean, str(p))
                 return p
 
     # 3. 自动在父级目录或同级目录寻找同名文件夹 (例如 E:\study\ECoHarvest)
@@ -87,9 +88,9 @@ def resolve_project_workspace_root(project_name: str) -> Path:
         for sibling in parent_dir.iterdir():
             if sibling.is_dir() and sibling.name.lower() == pname_lower:
                 found_path = sibling.resolve()
-                # 登记到 projects.json 与 project_state.json
-                register_project_path(pname_clean, str(found_path))
-                _persist_project_state(target_history_dir, pname_clean, str(found_path))
+                if target_history_dir.exists():
+                    register_project_path(pname_clean, str(found_path))
+                    _persist_project_state(target_history_dir, pname_clean, str(found_path))
                 return found_path
 
     # 4. 若名称为 super-harnes 则直接为自身代码根目录
@@ -104,8 +105,9 @@ def resolve_project_workspace_root(project_name: str) -> Path:
 
     fallback_dir = Path.home() / ".super-harnes" / "workspace" / pname_clean
     fallback_dir.mkdir(parents=True, exist_ok=True)
-    register_project_path(pname_clean, str(fallback_dir))
-    _persist_project_state(target_history_dir, pname_clean, str(fallback_dir))
+    if target_history_dir.exists():
+        register_project_path(pname_clean, str(fallback_dir))
+        _persist_project_state(target_history_dir, pname_clean, str(fallback_dir))
     return fallback_dir
 
 def _persist_project_state(proj_dir: Path, proj_name: str, ws_path: str):

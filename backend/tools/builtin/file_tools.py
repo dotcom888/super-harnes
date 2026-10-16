@@ -26,7 +26,7 @@ import sys
 if getattr(sys, "frozen", False):
     AGENT_SOURCE_ROOT = Path(sys.executable).resolve().parent
 else:
-    AGENT_SOURCE_ROOT = Path(__file__).resolve().parents[2]
+    AGENT_SOURCE_ROOT = Path(__file__).resolve().parents[3] if len(Path(__file__).resolve().parents) >= 4 else Path(__file__).resolve().parents[2]
 
 # 核心自身安全防护名单
 CORE_PROTECTED_FILES = {
@@ -55,6 +55,9 @@ def _validate_safe_path(target_path_str: str) -> Path:
     root = default_workspace.root
     if not target.is_absolute():
         resolved = (root / target).resolve()
+        # 兼容源码归集入 backend/ 后的相对路径访问
+        if not resolved.exists() and (root / "backend" / target).exists():
+            resolved = (root / "backend" / target).resolve()
     else:
         resolved = target.resolve()
 
@@ -325,12 +328,19 @@ def write_file(file_path: str, content: str) -> str:
             except ValueError:
                 pass
 
-        if default_workspace.root == AGENT_SOURCE_ROOT and norm_rel in CORE_PROTECTED_FILES:
+        check_rel = norm_rel[8:] if norm_rel.startswith("backend/") else norm_rel
+        if default_workspace.root == AGENT_SOURCE_ROOT and (norm_rel in CORE_PROTECTED_FILES or check_rel in CORE_PROTECTED_FILES):
             return f"【安全拦截】：'{norm_rel}' 属于 Agent 核心安全引擎文件，已被设为只读保护，禁止写入！"
 
-        # 核心安全模式审批 (ASK 模式下写文件需人工确认)
+        # 核心安全模式审批 (对标 Claude Code 4 阶模式):
+        # - plan: 不动手，先出方案（强制阻断并提示先出方案）
+        # - manual / ask: 每次都问（弹窗逐次审批）
+        # - edit_auto / auto: 安全改/直接改，不问（自动放行）
         from tools.framework.policies import default_policy
-        if default_policy.mode in ("ask", "always_ask") and not default_policy.session_approved:
+        if default_policy.mode == "plan":
+            return f"【Plan 模式拦截】：当前处于 Plan 规划模式（不动手，先出方案），禁止直接写入文件 '{file_path}'。请先向用户输出详细的实施方案并请求审批确认。"
+
+        if default_policy.mode in ("manual", "ask", "always_ask") and not default_policy.session_approved:
             is_approved = default_policy.request_approval(
                 f"write_file(file_path='{file_path}')",
                 f"代码/文件写操作（共 {len(content)} 字符）"

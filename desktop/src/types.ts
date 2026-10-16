@@ -52,8 +52,10 @@ export interface TurnData {
   actions: ToolAction[];
   steps?: TrajectoryStep[];
   timestamp?: number;
+  start_timestamp?: number;
   elapsed?: number;
   is_paused?: boolean;
+  permission_mode?: string;
 }
 
 export interface MessageItem {
@@ -105,6 +107,7 @@ export interface TelemetryMetrics {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  ttft?: string;
 }
 
 export interface SystemStatus {

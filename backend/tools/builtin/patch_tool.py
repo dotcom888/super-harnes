@@ -355,9 +355,15 @@ def apply_patch(patch_content: str) -> str:
         if not creates and not updates:
             return "【补丁失败】：未检测到有效的补丁格式。请使用 '*** Create File:' 或 '*** Update File:'。"
 
-        # 核心安全模式审批 (ASK 模式下应用源码补丁需人工确认)
+        # 核心安全模式审批 (对标 Claude Code 4 阶模式):
+        # - plan: 不动手，先出方案（强制阻断并提示先出方案）
+        # - manual / ask: 每次都问（弹窗逐次审批）
+        # - edit_auto / auto: 直接改，不问（自动放行）
         from tools.framework.policies import default_policy
-        if default_policy.mode in ("ask", "always_ask") and not default_policy.session_approved:
+        if default_policy.mode == "plan":
+            return "【Plan 模式拦截】：当前处于 Plan 规划模式（不动手，先出方案），禁止直接应用代码补丁。请先向用户输出详细的实施方案并请求审批确认。"
+
+        if default_policy.mode in ("manual", "ask", "always_ask") and not default_policy.session_approved:
             targets = [c[0].strip() for c in creates] + [u[0].strip() for u in updates]
             files_desc = ", ".join(targets[:5]) + ("..." if len(targets) > 5 else "")
             is_approved = default_policy.request_approval(

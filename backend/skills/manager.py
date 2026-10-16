@@ -4,6 +4,7 @@ skills/manager.py: Agent 技能注册与全局发现管理器
 支持多级级联扫描（工作区目录 > 用户全局目录 > 兼容目录），按需索引与轻量提示词生成
 """
 import os
+import sys
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Union, Tuple
@@ -42,11 +43,28 @@ class SkillManager:
         3. Codex / Super-Harnes 兼容级：~/.codex/skills, ~/.super-harnes/skills
         """
         candidates: List[Tuple[Path, str]] = []
-        agent_source_root = Path(__file__).resolve().parents[1]
+        if getattr(sys, "frozen", False):
+            install_root = Path(sys.executable).resolve().parent
+            meipass_root = Path(getattr(sys, "_MEIPASS", install_root)).resolve()
+            builtin_candidates = [
+                meipass_root / ".skills",
+                install_root / ".skills",
+                install_root / "_internal" / ".skills"
+            ]
+            agent_source_root = install_root
+        else:
+            # 开发模式下：__file__ 是 backend/skills/manager.py -> parents[2] 是项目源码根目录
+            proj_root = Path(__file__).resolve().parents[2]
+            builtin_candidates = [
+                proj_root / ".skills",
+                proj_root / "backend" / ".skills",
+            ]
+            agent_source_root = proj_root
 
         # 1. super 智能体内核原生搭载的专家技能 SOP (属于系统内置级)
-        candidates.append((agent_source_root / ".skills", "builtin"))
-        candidates.append((agent_source_root / "skills", "builtin"))
+        for bc in builtin_candidates:
+            if bc.exists() and bc.is_dir():
+                candidates.append((bc, "builtin"))
 
         # 2. 当前工程工作区私有级 (排除智能体自身源码目录)
         ws = self.workspace_root

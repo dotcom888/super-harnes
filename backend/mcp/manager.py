@@ -53,6 +53,7 @@ class McpManager:
             default_workspace.root / "config" / "mcp_servers.json",
             default_workspace.root / "mcp_servers.json",
             Path.home() / ".super-harnes" / "mcp_servers.json",
+            AGENT_INSTALL_ROOT / "backend" / "config" / "mcp_servers.json",
             AGENT_INSTALL_ROOT / "config" / "mcp_servers.json",
             AGENT_INSTALL_ROOT / "mcp_servers.json"
         ]

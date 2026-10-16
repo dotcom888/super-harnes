@@ -13,8 +13,10 @@ def main():
     parser = argparse.ArgumentParser(description="ReAct Agent 本地终端代码助手")
     parser.add_argument("-C", "--cwd", help="指定 Agent 操作的目标工程工作区根目录", default=None)
     parser.add_argument("--plain", action="store_true", help="使用传统纯文本输出，禁用 Claude Code 富文本终端界面")
-    parser.add_argument("--mode", choices=["auto", "ask", "always_ask"], default=None, help="命令安全审批模式: auto (类似 Claude AUTO 免打扰全自动执行，默认) 或 ask (敏感命令交互审批)")
+    parser.add_argument("--mode", choices=["auto", "edit_auto", "plan", "manual", "ask", "always_ask"], default=None, help="命令安全审批模式: auto (推荐), edit_auto, plan, manual")
     parser.add_argument("--auto", action="store_true", help="强制启用 Claude AUTO 模式 (免确认全自动执行)")
+    parser.add_argument("-m", "--model", help="指定使用的模型名称 (默认自动与桌面端同步)", default=None)
+    parser.add_argument("-p", "--project", default=None, help="指定对话绑定的项目工程 (默认: '_general' 不在项目中)")
     parser.add_argument("--ask", action="store_true", help="强制启用 ASK 模式 (每次敏感命令交互确认)")
     args, _ = parser.parse_known_args()
 
@@ -26,7 +28,7 @@ def main():
         default_policy.mode = "auto"
         default_policy.session_approved = True
     elif args.mode:
-        default_policy.mode = args.mode
+        default_policy.mode = default_policy.normalize_mode(args.mode)
         if args.mode in ("auto", "never"):
             default_policy.session_approved = True
         else:
@@ -46,9 +48,25 @@ def main():
             sys.exit(1)
 
     try:
-        agent = ReActAgent()
+        target_project = args.project.strip() if args.project else "_general"
+        import os
+        os.environ["SUPER_DEFAULT_PROJECT"] = target_project
+        from core.session import SessionManager
+        from config.settings import HISTORY_DIR
+
+        if args.model:
+            agent = ReActAgent(model=args.model)
+        else:
+            agent = ReActAgent()
+
+        agent.session_manager = SessionManager(
+            default_session_id="default",
+            workspace=default_workspace,
+            project_name=target_project,
+            history_dir=(HISTORY_DIR / target_project).resolve()
+        )
         active_sid = getattr(getattr(agent, "session_manager", None), "active_session_id", "default")
-        proj_name = getattr(agent, "project_name", default_workspace.root.name)
+        proj_name = getattr(agent, "project_name", target_project)
 
         all_tools = agent.executor.registry.get_tool_names()
         mcp_tools = [name for name in all_tools if name.startswith("mcp__")]
@@ -57,12 +75,13 @@ def main():
         from skills import default_skill_manager
         loaded_skills = default_skill_manager.list_skills()
 
+        model_label = f"{agent.model} [dim]({getattr(agent, 'model_source', '桌面端同步')})[/]"
         if default_ui.is_active:
             default_ui.render_banner(
                 workspace_path=default_workspace.root,
                 project_name=proj_name,
                 session_id=active_sid,
-                model=agent.model,
+                model=model_label,
                 native_tools=native_tools,
                 mcp_tools=mcp_tools,
                 skills=loaded_skills
@@ -72,8 +91,9 @@ def main():
             mode_desc = "AUTO (自动免打扰执行)" if is_auto else "ASK (人工审批确认)"
             print("正在启动 ReAct Agent 交互控制台 (本地核心 + MCP 扩展双轨版)...")
             print(f"Agent 就绪！激活模型: 【{agent.model}】")
+            proj_desc = "不在项目中 (_general)" if proj_name == "_general" else proj_name
             print(f"当前工作区根目录: 【{default_workspace.root}】")
-            print(f"当前项目: 【{proj_name}】 | 当前激活会话: 【{active_sid}】 | 审批模式: 【{mode_desc}】")
+            print(f"当前对话分区: 【{proj_desc}】 | 当前激活会话: 【{active_sid}】 | 审批模式: 【{mode_desc}】")
             print(f"  [本地内置工具]: {', '.join(native_tools)}")
             print(f"  [MCP 外部工具]: {', '.join(mcp_tools) if mcp_tools else '（无）'}")
             print(f"  [挂载技能 (Skills)]: {', '.join([s.name for s in loaded_skills]) if loaded_skills else '（无）'}")
@@ -82,7 +102,7 @@ def main():
 
         while True:
             active_sid = getattr(getattr(agent, "session_manager", None), "active_session_id", "default")
-            proj_name = getattr(agent, "project_name", default_workspace.root.name)
+            proj_name = getattr(agent, "project_name", "_general")
             try:
                 if default_ui.is_active:
                     prompt = default_ui.get_user_input(proj_name, active_sid)
@@ -114,6 +134,13 @@ def main():
                     default_ui.render_assistant_response(result)
                 else:
                     print(f"\nAgent 最终答复:\n{result}")
+
+                from tools.framework.policies import default_policy
+                if getattr(default_policy, "mode", "auto") == "plan":
+                    if default_ui.is_active:
+                        default_ui.console.print("\n[bold yellow]📋 Plan 模式施工方案已制定完成[/bold yellow]: [dim]输入 [white]/auto[/] 或 [white]/edit[/] 快速切换并批准执行，或直接输入补充意见。[/dim]\n")
+                    else:
+                        print("\n📋 Plan 模式施工方案已制定完成: 输入 /auto 或 /edit 快速切换并批准执行，或直接输入补充意见。\n")
             except KeyboardInterrupt:
                 if default_ui.is_active:
                     default_ui.console.print("\n[dim]● Interrupted by user. Session context preserved.[/dim]\n")
@@ -125,6 +152,23 @@ def main():
                 else:
                     print(f"\n[运行异常] {type(err).__name__}: {err}")
 
+    except ValueError as val_err:
+        err_msg = str(val_err)
+        if default_ui.is_active:
+            from rich.panel import Panel
+            default_ui.console.print(Panel(
+                f"[bold yellow]⚠️ 未检测到有效的大模型 API 密钥[/bold yellow]\n\n"
+                f"[white]super 支持以下两种配置方式（任选其一，推荐方式 1 与桌面端无缝同步）：[/white]\n"
+                f"  1. [bold cyan]桌面端一键配置[/bold cyan]：启动桌面端并在「设置」->「模型提供方」中填入 API Key 与接口地址\n"
+                f"     [dim]（配置将保存在本机用户目录 ~/.super-harnes/config/，绝不泄露到 Git 仓库）[/dim]\n"
+                f"  2. [bold cyan]工作区配置[/bold cyan]：在当前项目根目录创建 [bold yellow].env[/bold yellow] 文件，填写：\n"
+                f"     [dim]LLM_API_KEY=your_key\n     LLM_BASE_URL=https://api.deepseek.com/v1\n     LLM_MODEL=deepseek-chat[/dim]",
+                title="[bold red]配置提示[/bold red]",
+                border_style="yellow"
+            ))
+        else:
+            print(f"\n【配置提示】{err_msg}\n")
+        sys.exit(1)
     except Exception as e:
         if default_ui.is_active:
             default_ui.console.print(f"[bold red]Initialization failed: {e}[/bold red]")

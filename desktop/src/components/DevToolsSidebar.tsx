@@ -104,6 +104,10 @@ export const DevToolsSidebar: React.FC<DevToolsSidebarProps> = ({
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
   const terminalContainerRef = useRef<HTMLDivElement>(null);
   const terminalInputRef = useRef<HTMLInputElement>(null);
+  const terminalOutputsRef = useRef(terminalOutputs);
+  useEffect(() => {
+    terminalOutputsRef.current = terminalOutputs;
+  }, [terminalOutputs]);
 
   // 初始终端输出信息 (仅保留版权说明，绝不预设多余 PS 提示，对标需求 5)
   const defaultTerminalHeader = [
@@ -205,18 +209,12 @@ export const DevToolsSidebar: React.FC<DevToolsSidebarProps> = ({
       setUrlInput(initialUrl || "");
     } else {
       onTerminalOutputsChange({
-        ...terminalOutputs,
+        ...terminalOutputsRef.current,
         [id]: [...defaultTerminalHeader]
       });
 
       if ((window as any).electronAPI?.terminalCreate) {
         (window as any).electronAPI.terminalCreate({ id, cwd: workspacePath }).catch(() => {});
-        (window as any).electronAPI.onTerminalData?.(id, (chunk: string) => {
-          onTerminalOutputsChange({
-            ...terminalOutputs,
-            [id]: [...(terminalOutputs[id] || defaultTerminalHeader), chunk]
-          });
-        });
       }
     }
   };
@@ -238,15 +236,40 @@ export const DevToolsSidebar: React.FC<DevToolsSidebarProps> = ({
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
 
+  // 确保活动终端会话与 Electron IPC 通道实时绑定，杜绝闭包过期问题
+  useEffect(() => {
+    if (!activeTab || activeTab.type !== "terminal") return;
+    const tabId = activeTab.id;
+
+    if ((window as any).electronAPI?.terminalCreate) {
+      (window as any).electronAPI.terminalCreate({ id: tabId, cwd: workspacePath }).catch(() => {});
+    }
+
+    if ((window as any).electronAPI?.onTerminalData) {
+      const unsub = (window as any).electronAPI.onTerminalData(tabId, (chunk: string) => {
+        if (!chunk) return;
+        const curList = terminalOutputsRef.current[tabId] || defaultTerminalHeader;
+        onTerminalOutputsChange({
+          ...terminalOutputsRef.current,
+          [tabId]: [...curList, chunk]
+        });
+      });
+      return () => {
+        if (typeof unsub === "function") unsub();
+      };
+    }
+  }, [activeTabId, activeTab?.type, workspacePath]);
+
   // 终端命令执行与历史维护
-  const handleExecuteTerminalCommand = () => {
+  const handleExecuteTerminalCommand = async () => {
     if (!activeTabId) return;
     const cmd = terminalInput.trim();
 
     if (!cmd) {
+      const curList = terminalOutputsRef.current[activeTabId] || defaultTerminalHeader;
       onTerminalOutputsChange({
-        ...terminalOutputs,
-        [activeTabId]: [...(terminalOutputs[activeTabId] || defaultTerminalHeader), `PS ${workspacePath}>`]
+        ...terminalOutputsRef.current,
+        [activeTabId]: [...curList, `PS ${workspacePath}>`]
       });
       setTerminalInput("");
       return;
@@ -257,7 +280,7 @@ export const DevToolsSidebar: React.FC<DevToolsSidebarProps> = ({
 
     if (cmd.toLowerCase() === "cls" || cmd.toLowerCase() === "clear") {
       onTerminalOutputsChange({
-        ...terminalOutputs,
+        ...terminalOutputsRef.current,
         [activeTabId]: []
       });
       setTerminalInput("");
@@ -265,24 +288,46 @@ export const DevToolsSidebar: React.FC<DevToolsSidebarProps> = ({
     }
 
     const promptLine = `PS ${workspacePath}> ${cmd}`;
+    const curList = terminalOutputsRef.current[activeTabId] || defaultTerminalHeader;
 
+    // 优先通过 Electron PTY 管道发送
     if ((window as any).electronAPI?.terminalWrite) {
       onTerminalOutputsChange({
-        ...terminalOutputs,
-        [activeTabId]: [...(terminalOutputs[activeTabId] || defaultTerminalHeader), promptLine]
+        ...terminalOutputsRef.current,
+        [activeTabId]: [...curList, promptLine]
       });
-      (window as any).electronAPI.terminalWrite({ id: activeTabId, data: cmd + "\r\n" });
+      (window as any).electronAPI.terminalWrite({ id: activeTabId, data: cmd + "\r\n", cwd: workspacePath });
+      setTerminalInput("");
     } else {
+      // 纯 Web 调试模式或 Electron 桥接不可用时，通过后端 /api/terminal/exec 真实执行
       onTerminalOutputsChange({
-        ...terminalOutputs,
-        [activeTabId]: [
-          ...(terminalOutputs[activeTabId] || defaultTerminalHeader),
-          promptLine,
-          `[PowerShell 执行完成: ${cmd}]`
-        ]
+        ...terminalOutputsRef.current,
+        [activeTabId]: [...curList, promptLine]
       });
+      setTerminalInput("");
+      try {
+        const res = await fetch("http://127.0.0.1:8765/api/terminal/exec", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ command: cmd, cwd: workspacePath || undefined })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const out = data.stdout || data.stderr || "";
+          const afterList = terminalOutputsRef.current[activeTabId] || [];
+          onTerminalOutputsChange({
+            ...terminalOutputsRef.current,
+            [activeTabId]: [...afterList, out.trimEnd()]
+          });
+        }
+      } catch (err: any) {
+        const afterList = terminalOutputsRef.current[activeTabId] || [];
+        onTerminalOutputsChange({
+          ...terminalOutputsRef.current,
+          [activeTabId]: [...afterList, `[执行异常: ${err.message || "无法连接到终端执行接口"}]`]
+        });
+      }
     }
-    setTerminalInput("");
   };
 
   const handleTerminalKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {

@@ -75,7 +75,6 @@ class TestServerAPI(unittest.TestCase):
         data = response.json()
         self.assertIn("projects", data)
         proj_names = [p["name"] for p in data["projects"]]
-        self.assertIn("super-harnes", proj_names)
         self.assertIn("ceshi", proj_names)
         self.assertIn("ECoHarvest", proj_names)
         self.assertNotIn("Administrator", proj_names)

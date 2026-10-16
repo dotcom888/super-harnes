@@ -451,13 +451,25 @@ class ContextManager:
         self, 
         user_content: str, 
         attachments: Optional[List[Dict[str, Any]]] = None,
-        llm_content: Optional[Any] = None
+        llm_content: Optional[Any] = None,
+        permission_mode: Optional[str] = None
     ):
         self.turn_count += 1
         self.current_turn = TurnChunk(turn_id=self.turn_count)
         if hasattr(self, "snapshot_manager") and self.snapshot_manager:
             self.snapshot_manager.set_active_turn(self.session_id, self.turn_count)
-        user_msg: Dict[str, Any] = {"role": "user", "content": user_content}
+
+        try:
+            from tools.framework.policies import default_policy
+            eff_perm_mode = permission_mode or getattr(default_policy, "mode", "auto")
+        except Exception:
+            eff_perm_mode = permission_mode or "auto"
+
+        user_msg: Dict[str, Any] = {
+            "role": "user", 
+            "content": user_content,
+            "permission_mode": eff_perm_mode
+        }
         if attachments:
             user_msg["attachments"] = attachments
         if llm_content is not None:
@@ -465,7 +477,11 @@ class ContextManager:
         self.current_turn.add_message(user_msg)
 
         # 存盘使用紧凑版本，若 llm_content 为纯文本（如提取后的附件正文）同步记录，避免跨轮次历史前缀断层
-        disk_msg = {"role": "user", "content": user_content}
+        disk_msg = {
+            "role": "user", 
+            "content": user_content,
+            "permission_mode": eff_perm_mode
+        }
         if attachments:
             disk_msg["attachments"] = attachments
         if llm_content is not None and isinstance(llm_content, str):

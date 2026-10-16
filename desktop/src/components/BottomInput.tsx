@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useRef } from "react";
 import { 
   Plus, 
+  Zap, 
+  FileEdit, 
+  Compass, 
+  ShieldCheck, 
   Shield, 
   ChevronDown, 
   RotateCw, 
@@ -24,6 +28,7 @@ import { TelemetryMetrics, AttachmentItem } from "../types";
 import { PendingAttachmentChip } from "./AttachmentCards";
 import { readMediaFromClipboard, extractFilesFromClipboardEvent, saveDraft, loadDraft, clearDraft } from "../utils/clipboardHelper";
 import { InputContextMenu, ContextMenuPosition } from "./InputContextMenu";
+import { EXECUTION_MODES, normalizeModeId, getModeDisplayName, ExecutionModeId } from "../utils/modeHelper";
 
 interface BottomInputProps {
   onSend: (text: string, model: string, permission: string, attachments?: AttachmentItem[]) => void;
@@ -85,7 +90,7 @@ export const BottomInput: React.FC<BottomInputProps> = ({
   });
   const [contextMenuPos, setContextMenuPos] = useState<ContextMenuPosition | null>(null);
   const [model, setModel] = useState(selectedModel || models[0] || "");
-  const [permission, setPermission] = useState(permissionMode || "AUTO 模式");
+  const [permission, setPermission] = useState(permissionMode || "Auto 模式");
 
   useEffect(() => {
     if (permissionMode) {
@@ -130,6 +135,21 @@ export const BottomInput: React.FC<BottomInputProps> = ({
       onDraftConsumed?.();
     }
   }, [draftText]);
+
+    const currentModeId = normalizeModeId(permission);
+
+  const renderModeIcon = (modeId: ExecutionModeId) => {
+    switch (modeId) {
+      case "plan":
+        return <Compass size={13} className="text-amber-500" />;
+      case "edit_auto":
+        return <FileEdit size={13} className="text-purple-500" />;
+      case "manual":
+        return <ShieldCheck size={13} className="text-emerald-500" />;
+      default:
+        return <Zap size={13} className="text-blue-500" />;
+    }
+  };
 
   const handleUploadFiles = async (files: FileList | File[]) => {
     if (!files || files.length === 0) return;
@@ -485,7 +505,7 @@ export const BottomInput: React.FC<BottomInputProps> = ({
             onDraftChange?.(val, attachments);
           }}
           onKeyDown={handleKeyDown}
-          placeholder="给 super 智能体发消息，输入 / 或点击左下角 + 选择快捷指令..."
+          placeholder={currentModeId === "plan" ? "【Plan 模式 · 方案先行】输入你想规划的任务或重构目标，智能体将先深入调研并输出完整施工方案..." : "给 super 智能体发消息，输入 / 或点击左下角 + 选择快捷指令..."}
           style={{ minHeight: "44px", maxHeight: "144px" }}
           className="w-full resize-none border-none outline-none text-gray-800 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 text-sm leading-relaxed bg-transparent overflow-y-auto"
         />
@@ -574,15 +594,16 @@ export const BottomInput: React.FC<BottomInputProps> = ({
               </button>
             </div>
 
-            {/* 权限控制下拉项：实际支持的 AUTO 模式与 ASK 模式 */}
+            {/* 权限控制下拉项：对标 Claude Code 4 阶执行模式 */}
             <div className="relative">
               <button
                 type="button"
                 onClick={() => setShowPermMenu(!showPermMenu)}
                 className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#222534] rounded-lg transition font-medium cursor-pointer"
+                title="切换执行安全模式"
               >
-                <Shield size={13} className="text-blue-600" />
-                <span>{permission}</span>
+                {renderModeIcon(currentModeId)}
+                <span>{getModeDisplayName(permission)}</span>
                 <ChevronDown size={11} className="text-gray-400" />
               </button>
               
@@ -592,32 +613,36 @@ export const BottomInput: React.FC<BottomInputProps> = ({
                     className="fixed inset-0 z-20 cursor-default" 
                     onClick={() => setShowPermMenu(false)} 
                   />
-                  <div className="absolute left-0 bottom-8 w-52 bg-white dark:bg-[#1a1d27] border border-gray-200 dark:border-[#2a2e3f] shadow-xl rounded-xl py-1 z-30 text-xs text-gray-800 dark:text-gray-200">
-                    <div className="px-3 py-1.5 text-[11px] font-semibold text-gray-400 border-b border-gray-100 dark:border-gray-800">
-                      运行安全级别
+                  <div className="absolute left-0 bottom-8 w-64 bg-white dark:bg-[#1a1d27] border border-gray-200 dark:border-[#2a2e3f] shadow-xl rounded-xl py-1 z-30 text-xs text-gray-800 dark:text-gray-200">
+                    <div className="px-3 py-1.5 text-[11px] font-semibold text-gray-400 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+                      <span>运行安全级别</span>
+                      <span className="text-[10px] text-gray-400">4 阶策略</span>
                     </div>
-                    {[
-                      { id: "AUTO 模式", name: "AUTO 模式 (默认)", desc: "全自动执行，高危命令阻断" },
-                      { id: "ASK 模式", name: "ASK 模式 (人工审批)", desc: "敏感修改每次弹窗确认" }
-                    ].map((item) => (
-                      <div
-                        key={item.id}
-                        onClick={() => {
-                          setPermission(item.id);
-                          setShowPermMenu(false);
-                          onPermissionChange?.(item.id);
-                        }}
-                        className={`px-3 py-2 hover:bg-gray-50 dark:hover:bg-[#222534] cursor-pointer flex flex-col transition ${
-                          permission === item.id ? "text-blue-600 font-semibold bg-blue-50/50" : "text-gray-700"
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span>{item.name}</span>
-                          {permission === item.id && <Check size={13} className="text-blue-600" />}
+                    {EXECUTION_MODES.map((item) => {
+                      const isSelected = currentModeId === item.id;
+                      return (
+                        <div
+                          key={item.id}
+                          onClick={() => {
+                            setPermission(item.name);
+                            setShowPermMenu(false);
+                            onPermissionChange?.(item.name);
+                          }}
+                          className={`px-3 py-2 hover:bg-gray-50 dark:hover:bg-[#222534] cursor-pointer flex flex-col transition ${
+                            isSelected ? "text-blue-600 font-semibold bg-blue-50/50 dark:bg-blue-950/30" : "text-gray-700 dark:text-gray-300"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              {renderModeIcon(item.id)}
+                              <span>{item.name}</span>
+                            </div>
+                            {isSelected && <Check size={13} className="text-blue-600 ml-1 shrink-0" />}
+                          </div>
+                          <span className="text-[10px] text-gray-400 mt-0.5 leading-tight">{item.desc}</span>
                         </div>
-                        <span className="text-[10px] text-gray-400 mt-0.5">{item.desc}</span>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </>
               )}
@@ -753,7 +778,7 @@ export const BottomInput: React.FC<BottomInputProps> = ({
         <span>|</span>
         <span>LLM {metrics.total_time} · 工具调用 {metrics.tool_time}</span>
         <span>|</span>
-        <span>首 token 平均 2m7s · {metrics.tokens_per_sec} tok/s</span>
+        <span>首 token {metrics.ttft && metrics.ttft !== "--" ? metrics.ttft : "--"} · {metrics.tokens_per_sec} tok/s</span>
         <span>|</span>
         <span>缓存命中 {Math.round(metrics.cache_hit_rate * 100)}%</span>
         <span>|</span>

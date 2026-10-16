@@ -886,7 +886,8 @@ line 3
 
     def test_point_26_console_inherits_agent_max_steps(self):
         """验证点 26: 控制台启动项解除硬编码，正确继承配置最大步数"""
-        with open("cli/console.py", "r", encoding="utf-8") as f:
+        cli_path = "backend/cli/console.py" if Path("backend/cli/console.py").exists() else "cli/console.py"
+        with open(cli_path, "r", encoding="utf-8") as f:
             console_code = f.read()
         self.assertNotIn("agent = ReActAgent(max_steps=10)", console_code)
         self.assertIn("agent = ReActAgent()", console_code)

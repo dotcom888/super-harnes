@@ -61,7 +61,13 @@ class McpServerConfig:
             path_in_root = default_workspace.root / arg
             path_in_cwd = Path(self.cwd) / arg if self.cwd else None
             path_in_agent = agent_home / arg
+            path_in_backend = agent_home / "backend" / arg
             if path_in_root.exists() and path_in_root.is_file():
+                resolved_args.append(str(path_in_root.resolve()))
+            elif (default_workspace.root / "backend" / arg).exists() and (default_workspace.root / "backend" / arg).is_file():
+                resolved_args.append(str((default_workspace.root / "backend" / arg).resolve()))
+            elif path_in_backend.exists() and path_in_backend.is_file():
+                resolved_args.append(str(path_in_backend.resolve()))
                 resolved_args.append(str(path_in_root.resolve()))
             elif path_in_cwd and path_in_cwd.exists() and path_in_cwd.is_file():
                 resolved_args.append(str(path_in_cwd.resolve()))

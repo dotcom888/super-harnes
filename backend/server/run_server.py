@@ -14,11 +14,14 @@ if len(sys.argv) > 1 and sys.argv[1].endswith(".py"):
 # 动态定位项目或打包根目录
 if getattr(sys, "frozen", False):
     ROOT_DIR = Path(sys.executable).resolve().parent
+    PROJECT_ROOT = ROOT_DIR
 else:
     ROOT_DIR = Path(__file__).resolve().parent.parent
+    PROJECT_ROOT = ROOT_DIR.parent
 
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+for p in [str(ROOT_DIR), str(PROJECT_ROOT)]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 import uvicorn
 from server.app import app
