@@ -15,7 +15,7 @@ import { PluginsModal } from "./components/PluginsModal";
 import { ApprovalModal } from "./components/ApprovalModal";
 import { ConfirmModal } from "./components/ConfirmModal";
 import { CreateProjectModal } from "./components/CreateProjectModal";
-import { SessionInfo, ProjectInfo, ToolAction, TaskItem, TurnData, TelemetryMetrics, TrajectoryStep, AttachmentItem, UserInputRequest } from "./types";
+import { SessionInfo, ProjectInfo, ToolAction, TaskItem, TurnData, TrajectoryStep, AttachmentItem, UserInputRequest } from "./types";
 import { TurnRuler } from "./components/TurnRuler";
 import { UserInputModal } from "./components/UserInputModal";
 import { TrajectoryTimeline } from "./components/TrajectoryTimeline";
@@ -294,18 +294,7 @@ export const App: React.FC = () => {
     handleResolveUserInput(requestId, "", "【用户取消操作】");
   };
 
-  // 遥测性能指标 (真实会话动态遥测)
-  const [metrics, setMetrics] = useState<TelemetryMetrics>({
-    turns: 0,
-    steps: 0,
-    total_time: "--",
-    tool_time: "--",
-    tokens_per_sec: 0,
-    cache_hit_rate: 0,
-    prompt_tokens: 0,
-    completion_tokens: 0,
-    total_tokens: 0
-  });
+
 
 
   // 会话输入草稿与文件附件临时保护系统 (包括聊天框与新增会话页面，杜绝切换丢失)
@@ -411,21 +400,23 @@ export const App: React.FC = () => {
       })
       .then((data) => {
         const projs: ProjectInfo[] = (data.projects || []).filter(
-          (p: ProjectInfo) => !["_general", "workspace", "scratchpad", ".super-harnes", "super-server", "bin", "resources", "_internal"].includes(p.name.toLowerCase())
+          (p: ProjectInfo) => !["_general", "workspace", "scratchpad", ".super-harness", ".super-harnes", "super-server", "bin", "resources", "_internal"].includes(p.name.toLowerCase())
         );
         const recents: SessionInfo[] = data.recent_sessions || [];
         setProjects(projs);
         setRecentSessions(recents);
 
-        if (targetProject === "_general") {
+        const desiredProj = targetProject || projectNameRef.current;
+        if (desiredProj === "_general") {
           setProjectName("_general");
           setSessions(recents);
-          const validSession = recents.find((s) => s.session_id === targetSession);
-          const sid = validSession ? validSession.session_id : (targetSession && !shouldLoadSession ? targetSession : (recents.length > 0 ? recents[0].session_id : "default"));
+          const desiredSid = targetSession || activeSessionIdRef.current;
+          const validSession = recents.find((s) => s.session_id === desiredSid);
+          const sid = validSession ? validSession.session_id : (desiredSid && !shouldLoadSession ? desiredSid : (recents.length > 0 ? recents[0].session_id : "default"));
           setActiveSessionId(sid);
 
-          if (!validSession && targetSession && shouldLoadSession) {
-            const delKey = getSessionKey("_general", targetSession);
+          if (!validSession && desiredSid && shouldLoadSession) {
+            const delKey = getSessionKey("_general", desiredSid);
             setSessionTurnsMap((prev) => {
               if (!prev[delKey]) return prev;
               const next = { ...prev };
@@ -436,14 +427,14 @@ export const App: React.FC = () => {
 
           if (shouldLoadSession && recents.length > 0) {
             loadSessionTurns(sid, "_general");
-          } else if (recents.length === 0 && !targetSession) {
+          } else if (recents.length === 0 && !desiredSid) {
             setHasStarted(false);
           }
           return;
         }
 
         // 若目标项目已在磁盘上被物理删除，自动回退到 _general 或首个有效项目，杜绝幽灵残留
-        if (targetProject && targetProject !== "_general" && !projs.some((p) => p.name === targetProject)) {
+        if (desiredProj && desiredProj !== "_general" && !projs.some((p) => p.name === desiredProj)) {
           if (recents.length > 0) {
             setProjectName("_general");
             setSessions(recents);
@@ -489,19 +480,18 @@ export const App: React.FC = () => {
           return;
         }
 
-        const currentProj = (targetProject && projs.some((p) => p.name === targetProject))
-          ? targetProject
-          : (data.name && projs.some((p) => p.name === data.name))
-          ? data.name
-          : projs[0].name;
+        const currentProj = (desiredProj && projs.some((p) => p.name === desiredProj))
+          ? desiredProj
+          : (projs.length > 0 ? projs[0].name : "");
         setProjectName(currentProj);
 
         const matchedProj = projs.find((p) => p.name === currentProj) || projs[0];
         const projSessions = matchedProj?.sessions || [];
         setSessions(projSessions);
 
-        const validSession = projSessions.find((s) => s.session_id === targetSession);
-        const sid = validSession ? validSession.session_id : (targetSession && !shouldLoadSession ? targetSession : (projSessions.length > 0 ? projSessions[0].session_id : "default"));
+        const desiredSid = targetSession || activeSessionIdRef.current;
+        const validSession = projSessions.find((s) => s.session_id === desiredSid);
+        const sid = validSession ? validSession.session_id : (desiredSid && !shouldLoadSession ? desiredSid : (projSessions.length > 0 ? projSessions[0].session_id : "default"));
         setActiveSessionId(sid);
 
         if (!validSession && targetSession && shouldLoadSession) {
@@ -576,7 +566,7 @@ export const App: React.FC = () => {
             ? currentItem.current_goal
             : null;
 
-          const title = existingTitle || goal || (firstPrompt ? (firstPrompt.length > 28 ? firstPrompt.slice(0, 28) + "..." : firstPrompt) : `会话 ${sid}`);
+          const title = existingTitle || goal || (firstPrompt ? (firstPrompt.length > 28 ? firstPrompt.slice(0, 28) + "..." : firstPrompt) : (sid === "default" ? "默认会话" : "新会话"));
           setSessionTitle(title);
 
           const lastTurn = data.turns[data.turns.length - 1];
@@ -587,34 +577,22 @@ export const App: React.FC = () => {
             }));
           }
 
-          let histElapsed = 0;
-          let histToolTime = 0;
-          let histSteps = 0;
-          (data.turns || []).forEach((t: any) => {
-            if (t.elapsed) histElapsed += t.elapsed;
-            const stepList = (t.steps && t.steps.length > 0) ? t.steps : (t.actions || []);
-            histSteps += stepList.length;
-            stepList.forEach((st: any) => {
-              if (st.type === "tool" && st.elapsed) histToolTime += st.elapsed;
-            });
-          });
-          const formatDuration = (sec: number) => {
-            if (!sec) return "--";
-            return sec >= 60 ? `${Math.floor(sec / 60)}m${Math.round(sec % 60)}s` : `${Math.round(sec * 10) / 10}s`;
-          };
 
-          setMetrics((prev) => ({
-            ...prev,
-            turns: data.turns_count || data.turns.length,
-            steps: (data.all_actions || []).length || histSteps || 1,
-            total_time: formatDuration(histElapsed),
-            tool_time: formatDuration(histToolTime),
-            ttft: prev.ttft || "--"
-          }));
 
-          // 数据返回渲染后，直接平滑定位到最新一轮对话（底部），杜绝旧多轮计时器反复闪烁
+          // 数据返回渲染后：若存在该会话离开时的历史滚动停留，精确恢复；若首次加载则平滑定位到最底部
           if (key === getSessionKey(projectNameRef.current, activeSessionIdRef.current)) {
-            scrollToLatestTurn(true);
+            const savedTop = sessionScrollMap.current[key];
+            if (typeof savedTop === "number") {
+              const el = chatContainerRef.current;
+              if (el) {
+                el.scrollTop = savedTop;
+                const atBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) <= 40;
+                isAtBottomRef.current = atBottom;
+                setShowScrollBottom(!atBottom);
+              }
+            } else {
+              scrollToLatestTurn(true);
+            }
           }
         } else {
           // 磁盘无历史轮次：检查内存中是否已有新发起的在途轮次，有则保留
@@ -635,7 +613,13 @@ export const App: React.FC = () => {
             }
             return prev;
           });
-          setSessionTitle(sid === "default" ? "默认会话" : sid);
+          const currentProjObj = projects.find((p) => p.name === proj);
+          const sessionList = currentProjObj ? currentProjObj.sessions : sessions;
+          const targetSessionMeta = sessionList?.find((s) => s.session_id === sid);
+          const titleToShow = targetSessionMeta?.title && targetSessionMeta.title !== sid
+            ? targetSessionMeta.title
+            : (sid === "default" ? "默认会话" : "新会话");
+          setSessionTitle(titleToShow);
         }
       })
       .catch(() => {});
@@ -823,9 +807,12 @@ export const App: React.FC = () => {
 
                 const updated = [...list];
                 const curResponse = curTurn.assistant_response || "";
+                const cleanThought = (curTurn.thought === "正在深度思考与执行下一步排查...")
+                  ? ""
+                  : curTurn.thought;
                 updated[lastIdx] = {
                   ...curTurn,
-                  thought: "",
+                  thought: cleanThought,
                   assistant_response: curResponse + delta
                 };
                 return { ...prev, [targetKey]: updated };
@@ -848,7 +835,11 @@ export const App: React.FC = () => {
                 return;
               }
 
-              setSessionThoughtMap((prev) => ({ ...prev, [targetKey]: payload.content }));
+              const isErrorResp = Boolean(payload.is_error || payload.content?.startsWith("❌") || payload.content?.startsWith("⚠️"));
+              setSessionThoughtMap((prev) => ({
+                ...prev,
+                [targetKey]: isErrorResp ? "" : (payload.thought || payload.content)
+              }));
               setSessionTurnsMap((prev) => {
                 const list = prev[targetKey] || [];
                 if (list.length === 0) return prev;
@@ -867,10 +858,31 @@ export const App: React.FC = () => {
                   : (curTurn.timestamp ? Math.max(1, Math.round(Date.now() / 1000 - curTurn.timestamp)) : curTurn.elapsed);
 
                 const updated = [...list];
+                const existingThought = (curTurn.thought === "正在深度思考与执行下一步排查..." || isErrorResp)
+                  ? ""
+                  : curTurn.thought;
+                const effectiveThought = payload.thought || existingThought || "";
+
+                // 同步保障 steps：若有思考内容但 steps 中尚未记录思考步骤，立即补充思考步骤，确保思考链常驻不消失
+                let updatedSteps = curTurn.steps || [];
+                if (effectiveThought && updatedSteps.filter(s => s.type === "assistant" || s.thought).length === 0) {
+                  updatedSteps = [
+                    {
+                      id: `th_${Date.now()}`,
+                      type: "assistant",
+                      thought: effectiveThought,
+                      timestamp: curTurn.timestamp || Date.now() / 1000
+                    },
+                    ...updatedSteps
+                  ];
+                }
+
                 updated[lastIdx] = {
                   ...curTurn,
+                  thought: effectiveThought,
                   assistant_response: payload.content,
                   elapsed: turnElapsed,
+                  steps: updatedSteps,
                   permission_mode: payload.permission_mode || curTurn.permission_mode
                 };
                 return { ...prev, [targetKey]: updated };
@@ -898,19 +910,6 @@ export const App: React.FC = () => {
                   };
                 }
                 return { ...prev, [targetKey]: updated };
-              });
-            } else if (payload.event === "metrics") {
-              setMetrics({
-                turns: payload.turns,
-                steps: payload.steps,
-                total_time: payload.total_time,
-                tool_time: payload.tool_time,
-                tokens_per_sec: payload.tokens_per_sec,
-                cache_hit_rate: payload.cache_hit_rate,
-                prompt_tokens: payload.prompt_tokens,
-                completion_tokens: payload.completion_tokens,
-                total_tokens: payload.total_tokens,
-                ttft: payload.ttft
               });
             }
           } catch (e) {}
@@ -1063,29 +1062,45 @@ export const App: React.FC = () => {
 
       // 若是在新建会话页面首次发送消息，立刻在该工作区侧边栏中渲染出该新建聊天框
       if (isFirstTurn) {
-        setProjects((prevProjs) =>
-          prevProjs.map((p) => {
-            if (p.name === projectName) {
-              const exists = (p.sessions || []).some((s) => s.session_id === activeSessionId);
-              if (!exists) {
-                const newSessionItem: SessionInfo = {
-                  session_id: activeSessionId,
-                  is_active: true,
-                  turn_count: 1,
-                  current_goal: titleCandidate,
-                  time_ago: "刚刚",
-                  is_pinned: false
-                };
-                return {
-                  ...p,
-                  session_count: (p.sessions || []).length + 1,
-                  sessions: [newSessionItem, ...(p.sessions || [])]
-                };
+        if (projectName === "_general") {
+          setRecentSessions((prev) => {
+            const exists = prev.some((s) => s.session_id === activeSessionId);
+            if (exists) return prev;
+            const newSessionItem: SessionInfo = {
+              session_id: activeSessionId,
+              is_active: true,
+              turn_count: 1,
+              current_goal: titleCandidate,
+              time_ago: "刚刚",
+              is_pinned: false
+            };
+            return [newSessionItem, ...prev];
+          });
+        } else {
+          setProjects((prevProjs) =>
+            prevProjs.map((p) => {
+              if (p.name === projectName) {
+                const exists = (p.sessions || []).some((s) => s.session_id === activeSessionId);
+                if (!exists) {
+                  const newSessionItem: SessionInfo = {
+                    session_id: activeSessionId,
+                    is_active: true,
+                    turn_count: 1,
+                    current_goal: titleCandidate,
+                    time_ago: "刚刚",
+                    is_pinned: false
+                  };
+                  return {
+                    ...p,
+                    session_count: (p.sessions || []).length + 1,
+                    sessions: [newSessionItem, ...(p.sessions || [])]
+                  };
+                }
               }
-            }
-            return p;
-          })
-        );
+              return p;
+            })
+          );
+        }
 
         fetch("http://127.0.0.1:8765/api/sessions/create", {
           method: "POST",
@@ -1266,6 +1281,7 @@ export const App: React.FC = () => {
 
   // 选择会话 (保留并优先恢复内存中在途消息，并记住上一会话的滚动停留位置)
   const handleSelectSession = (sid: string, projName?: string) => {
+    saveCurrentSessionScroll();
     lastScrolledSessionRef.current = null;
     isRestoringScrollRef.current = false;
 
@@ -1299,6 +1315,7 @@ export const App: React.FC = () => {
   // 新建自由独立会话 (归属于最近)
   const handleNewRecentSession = () => {
     saveCurrentSessionScroll();
+    lastScrolledSessionRef.current = null;
     isRestoringScrollRef.current = true;
 
     const generatedSid = `session_${Date.now()}`;
@@ -1313,19 +1330,6 @@ export const App: React.FC = () => {
     setSessionThoughtMap((prev) => ({ ...prev, [newKey]: "" }));
     setSessionTitle("新会话");
 
-    fetch("http://127.0.0.1:8765/api/sessions/create", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project: "_general", session_id: generatedSid })
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        const newSid = data.session_id || generatedSid;
-        fetchWorkspaces("_general", newSid, false);
-      })
-      .catch((err) => {
-        console.warn("后台注册独立新会话:", err);
-      });
   };
 
   // 自由会话移入项目工作区
@@ -1345,6 +1349,7 @@ export const App: React.FC = () => {
   // 新建会话 (注册全新隔离复合键)
   const handleNewSession = () => {
     saveCurrentSessionScroll();
+    lastScrolledSessionRef.current = null;
     isRestoringScrollRef.current = true;
 
     const targetP = (projectName && projectName !== "_general" && projects.some((p) => p.name === projectName)) ? projectName : "_general";
@@ -1359,19 +1364,6 @@ export const App: React.FC = () => {
     setSessionThoughtMap((prev) => ({ ...prev, [newKey]: "" }));
     setSessionTitle("新会话");
 
-    fetch("http://127.0.0.1:8765/api/sessions/create", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project: targetP, session_id: generatedSid })
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        const newSid = data.session_id || generatedSid;
-        fetchWorkspaces(targetP, newSid, false);
-      })
-      .catch((err) => {
-        console.warn("后台注册新会话:", err);
-      });
   };
 
   // 打开图三样式的“新建项目工作区”弹窗
@@ -1476,7 +1468,7 @@ export const App: React.FC = () => {
       body: JSON.stringify({ project, session_id: sid, new_title: newTitle })
     })
       .then(() => {
-        fetchWorkspaces(project, sid);
+        fetchWorkspaces(projectNameRef.current, activeSessionIdRef.current, false);
       })
       .catch(() => {});
   };
@@ -1489,7 +1481,7 @@ export const App: React.FC = () => {
       body: JSON.stringify({ project, session_id: sid, pinned })
     })
       .then(() => {
-        fetchWorkspaces(project, activeSessionId);
+        fetchWorkspaces(projectNameRef.current, activeSessionIdRef.current, false);
       })
       .catch(() => {});
   };
@@ -1499,22 +1491,86 @@ export const App: React.FC = () => {
     setConfirmDialog({
       isOpen: true,
       title: "删除会话",
-      message: "确定要删除此会话记录吗？删除后将无法恢复该对话内容。",
+      message: "确定要删除此会话记录？删除后将无法恢复该对话内容。",
       onConfirm: () => {
         setConfirmDialog(null);
-        fetch("http://127.0.0.1:8765/api/sessions/delete", {
+
+        // 1. 立即乐观更新本地状态，立即从侧边栏列表中剔除，给用户即时反馈
+        const delKey = getSessionKey(project, sid);
+        setSessionTurnsMap((prev) => {
+          if (!prev[delKey]) return prev;
+          const next = { ...prev };
+          delete next[delKey];
+          return next;
+        });
+        setSessionActionsMap((prev) => {
+          if (!prev[delKey]) return prev;
+          const next = { ...prev };
+          delete next[delKey];
+          return next;
+        });
+        setSessionThoughtMap((prev) => {
+          if (!prev[delKey]) return prev;
+          const next = { ...prev };
+          delete next[delKey];
+          return next;
+        });
+
+        // 计算删除后该工作区剩余的有效会话
+        let remainingSessions: SessionInfo[] = [];
+        if (project === "_general") {
+          remainingSessions = recentSessions.filter((s) => s.session_id !== sid);
+        } else {
+          const curP = projects.find((p) => p.name === project || p.name.toLowerCase() === project.toLowerCase());
+          remainingSessions = (curP?.sessions || []).filter((s) => s.session_id !== sid);
+        }
+
+        setRecentSessions((prev) => prev.filter((s) => s.session_id !== sid));
+        setProjects((prev) =>
+          prev.map((p) =>
+            (p.name === project || p.name.toLowerCase() === project.toLowerCase())
+              ? {
+                  ...p,
+                  sessions: (p.sessions || []).filter((s) => s.session_id !== sid),
+                  session_count: Math.max(0, (p.sessions || []).filter((s) => s.session_id !== sid).length)
+                }
+              : p
+          )
+        );
+        setSessions((prev) => prev.filter((s) => s.session_id !== sid));
+
+        // 2. 如果删除的是当前激活会话，平滑切换到同项目的下一个已有会话，杜绝无故生成空 id 会话
+        let nextSidToSelect: string | undefined = undefined;
+        if (sid === activeSessionId) {
+          if (remainingSessions.length > 0) {
+            nextSidToSelect = remainingSessions[0].session_id;
+            setActiveSessionId(nextSidToSelect);
+            setHasStarted(true);
+            loadSessionTurns(nextSidToSelect, project);
+          } else {
+            const freshSid = `session_${Date.now()}`;
+            setActiveSessionId(freshSid);
+            setHasStarted(false);
+            setSessionTitle("新会话");
+          }
+        }
+
+        // 3. 调用后端接口物理删除 (Query 参数与 Request Body 双通道保障，支持 DELETE 与 POST)
+        fetch(`http://127.0.0.1:8765/api/sessions/delete?session_id=${encodeURIComponent(sid)}&project=${encodeURIComponent(project)}`, {
           method: "DELETE",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ project, session_id: sid })
         })
-          .then(() => {
-            if (sid === activeSessionId) {
-              handleNewSession();
-            } else {
-              fetchWorkspaces(project);
-            }
+          .then((res) => {
+            if (!res.ok) console.warn("删除会话响应异常:", res.status);
+            const isDeletingActive = (sid === activeSessionIdRef.current);
+            const targetProjToKeep = isDeletingActive ? project : projectNameRef.current;
+            const targetSidToKeep = isDeletingActive ? nextSidToSelect : activeSessionIdRef.current;
+            fetchWorkspaces(targetProjToKeep, targetSidToKeep, false);
           })
-          .catch(() => {});
+          .catch((err) => {
+            console.error("删除会话失败:", err);
+          });
       }
     });
   };
@@ -1655,8 +1711,6 @@ export const App: React.FC = () => {
                         onEditPrompt={(txt) => setDraftPrompt(txt)}
                         onResendTurn={handleResendTurn}
                         onOpenSettings={() => setShowSettings(true)}
-                        onApprovePlan={handleApprovePlan}
-                        onRefinePlan={handleRefinePlan}
                       />
                     ))
                   )}
@@ -1697,7 +1751,6 @@ export const App: React.FC = () => {
           <BottomInput
             onSend={handleSendPrompt}
             isLoading={isCurrentSessionLoading}
-            metrics={metrics}
             onScrollToBottom={handleScrollToBottom}
             showScrollBottom={showScrollBottom}
             models={availableModels}

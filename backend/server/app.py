@@ -38,7 +38,7 @@ from tools.framework.workspace import default_workspace, set_workspace_root
 from tools.framework.policies import default_policy
 from skills import default_skill_manager
 
-app = FastAPI(title="Super-Harnes Agent Desktop API", version="1.1.0")
+app = FastAPI(title="Super-Harness Agent Desktop API", version="1.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -48,7 +48,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-USER_DATA_ROOT = Path.home() / ".super-harnes"
+USER_DATA_ROOT = Path.home() / ".super-harness"
 USER_DATA_ROOT.mkdir(parents=True, exist_ok=True)
 USER_CONFIG_DIR = USER_DATA_ROOT / "config"
 USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -62,6 +62,50 @@ USER_HISTORY_ROOT.mkdir(parents=True, exist_ok=True)
 HISTORY_ROOT = USER_HISTORY_ROOT
 
 # ================= 数据模型定义 =================
+# ================= 附件存储与工作区旧版迁移 =================
+def migrate_legacy_attachments(ws_root: Optional[Path]):
+    """自动将工作区遗留的旧版 .super-harnes 与 .super_attachments 迁移至 .super-harness 并清理旧目录"""
+    if not ws_root:
+        return
+    try:
+        ws_path = Path(ws_root).resolve()
+        if not ws_path.exists() or not ws_path.is_dir():
+            return
+        target_harness = ws_path / ".super-harness"
+        target_dir = target_harness / "attachments"
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1. 迁移旧版 .super-harnes 到 .super-harness
+        legacy_harnes = ws_path / ".super-harnes"
+        if legacy_harnes.exists() and legacy_harnes.is_dir():
+            for item in list(legacy_harnes.iterdir()):
+                dest = target_harness / item.name
+                if not dest.exists():
+                    shutil.move(str(item), str(dest))
+                elif item.is_dir():
+                    for sub in list(item.iterdir()):
+                        sub_dest = dest / sub.name
+                        if not sub_dest.exists():
+                            shutil.move(str(sub), str(sub_dest))
+            shutil.rmtree(legacy_harnes, ignore_errors=True)
+
+        # 2. 迁移旧版 .super_attachments 到 .super-harness/attachments
+        legacy_dir = ws_path / ".super_attachments"
+        if legacy_dir.exists() and legacy_dir.is_dir():
+            for item in list(legacy_dir.iterdir()):
+                dest = target_dir / item.name
+                if not dest.exists():
+                    shutil.move(str(item), str(dest))
+                elif item.is_dir():
+                    for sub in list(item.iterdir()):
+                        sub_dest = dest / sub.name
+                        if not sub_dest.exists():
+                            shutil.move(str(sub), str(sub_dest))
+            shutil.rmtree(legacy_dir, ignore_errors=True)
+    except Exception as e:
+        logger.warning(f"迁移旧版附件/配置目录失败: {e}")
+
+
 class ApprovalResponseModel(BaseModel):
     ticket_id: str
     approved: bool
@@ -205,6 +249,14 @@ def scan_project_sessions(proj_dir: Path) -> List[Dict[str, Any]]:
         if sid.endswith(".tmp"):
             continue
 
+        # 0 字节文件属于未发生实际对话的空会话占位，静默清理并跳过，绝不在侧边栏展示
+        try:
+            if f.stat().st_size == 0:
+                f.unlink()
+                continue
+        except Exception:
+            pass
+
         turn_count = 0
         current_goal = ""
         mtime = f.stat().st_mtime
@@ -241,6 +293,10 @@ def scan_project_sessions(proj_dir: Path) -> List[Dict[str, Any]]:
             time_ago = f"{int(diff_sec // 86400)}天前"
         else:
             time_ago = "1个月"
+
+        # 仅当会话包含实际对话轮次、用户提问或自定义标题时，才作为历史会话返回
+        if turn_count == 0 and not current_goal and sid not in custom_titles and sid != "default":
+            continue
 
         is_pinned = sid in pinned_sids
         display_title = custom_titles.get(sid) or current_goal or sid
@@ -282,13 +338,15 @@ def get_all_projects_metadata() -> List[Dict[str, Any]]:
                 pname = d.name
                 if pname in deleted_names or pname.lower() in [dn.lower() for dn in deleted_names]:
                     continue
-                if pname.lower() in ("_general", "workspace", "scratchpad", ".super-harnes", "super-server", "bin", "resources", "_internal"):
+                if pname.lower() in ("_general", "workspace", "scratchpad", ".super-harness", ".super-harness", ".super_attachments", "super-server", "bin", "resources", "_internal"):
                     continue
                 known_lower.add(pname.lower())
                 proj_sessions = scan_project_sessions(d)
                 
                 # 全方位解析真实物理磁盘路径
                 proj_path = str(resolve_project_workspace_root(pname))
+                if proj_path and Path(proj_path).exists():
+                    migrate_legacy_attachments(Path(proj_path))
 
                 # 优先采用真实物理目录的标准大小写名称
                 display_pname = pname
@@ -302,7 +360,7 @@ def get_all_projects_metadata() -> List[Dict[str, Any]]:
                     "sessions": proj_sessions
                 })
 
-    # 2. 检查注册在 ~/.super-harnes/projects.json 的磁盘工程 (双向一致同步：若 history/ 下已被物理删除，自动清理注册表绝不重新复活)
+    # 2. 检查注册在 ~/.super-harness/projects.json 的磁盘工程 (双向一致同步：若 history/ 下已被物理删除，自动清理注册表绝不重新复活)
     extra_projects = get_registered_projects()
     registered_changed = False
     valid_registered = []
@@ -339,7 +397,7 @@ def get_all_projects_metadata() -> List[Dict[str, Any]]:
     if not getattr(sys, "frozen", False):
         cur_name = default_workspace.root.name
         cur_dir = HISTORY_ROOT / cur_name
-        if cur_name.lower() not in ("super-server", "bin", "resources", "_internal", "workspace", "super-harnes") and cur_name.lower() not in known_lower and cur_name not in deleted_names:
+        if cur_name.lower() not in ("super-server", "bin", "resources", "_internal", "workspace", "super-harness", "super-harnes") and cur_name.lower() not in known_lower and cur_name not in deleted_names:
             if cur_dir.exists():
                 cur_sessions = scan_project_sessions(cur_dir)
                 projects.insert(0, {
@@ -832,6 +890,7 @@ def switch_workspace(req: WorkspaceSwitchRequest):
         default_workspace.set_root(new_root)
         if bridge.agent:
             bridge.agent.switch_workspace(target_path)
+        migrate_legacy_attachments(new_root)
         return {"success": True, "workspace_path": str(new_root), "name": new_root.name}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -846,7 +905,7 @@ def add_workspace(req: WorkspaceAddRequest):
     proj_name = (req.name or p.name).strip()
     norm_path = str(p)
 
-    # 1. 注册到 ~/.super-harnes/projects.json
+    # 1. 注册到 ~/.super-harness/projects.json
     register_project_path(proj_name, norm_path)
 
     # 2. 自动创建对应项目的历史目录并持久化 project_state.json
@@ -872,6 +931,7 @@ def add_workspace(req: WorkspaceAddRequest):
     set_workspace_root(norm_path)
     if bridge.agent:
         bridge.agent.switch_workspace(norm_path)
+    migrate_legacy_attachments(p)
 
     return {
         "success": True,
@@ -931,12 +991,9 @@ def create_session(req: Optional[SessionActionRequest] = None):
     proj_name = raw_p if raw_p else ("_general" if not default_workspace.root.name or default_workspace.root.name.lower() in ("workspace", "scratchpad") else default_workspace.root.name)
     sid = req.session_id if req and req.session_id else f"session_{int(time.time()*1000)}"
     
-    # 确保磁盘目录存在并即时创建会话文件，保障历史扫描器毫秒级发现
+    # 仅确保磁盘目录存在，未产生实际对话前绝不在磁盘触碰 0 字节文件
     proj_dir = HISTORY_ROOT / proj_name
     proj_dir.mkdir(parents=True, exist_ok=True)
-    target_file = proj_dir / f"{sid}.jsonl"
-    if not target_file.exists():
-        target_file.touch()
 
     if bridge.agent and proj_name == default_workspace.root.name:
         bridge.agent.create_session(sid)
@@ -944,41 +1001,85 @@ def create_session(req: Optional[SessionActionRequest] = None):
     return {"success": True, "session_id": sid, "project": proj_name}
 
 @app.delete("/api/sessions/delete")
-def delete_session(req: SessionActionRequest):
-    """删除会话 (物理清除磁盘文件、同步剔除内存缓存与图钉状态)"""
-    if not req.session_id:
+@app.post("/api/sessions/delete")
+def delete_session(
+    req: Optional[SessionActionRequest] = None,
+    session_id: Optional[str] = Query(None),
+    project: Optional[str] = Query(None)
+):
+    """删除会话 (物理清除磁盘文件、同步剔除内存缓存与图钉状态，支持 DELETE 与 POST，支持 body 与 query 参数)"""
+    sid = (req.session_id if req and req.session_id else session_id)
+    if not sid:
         raise HTTPException(status_code=400, detail="session_id 不能为空")
-    proj_name = req.project or default_workspace.root.name
-    target_file = HISTORY_ROOT / proj_name / f"{req.session_id}.jsonl"
+
+    raw_proj = (req.project if req and req.project else project)
+    proj_name = raw_proj or default_workspace.root.name
+
+    # 1. 物理删除 history 目录下的 jsonl 文件 (兼顾大小写匹配)
+    target_dir = HISTORY_ROOT / proj_name
+    if not target_dir.exists() and HISTORY_ROOT.exists():
+        for d in HISTORY_ROOT.iterdir():
+            if d.is_dir() and d.name.lower() == proj_name.lower():
+                target_dir = d
+                break
+
+    target_file = target_dir / f"{sid}.jsonl"
+    deleted_file = False
     if target_file.exists():
         try:
             target_file.unlink()
-        except Exception:
-            pass
+            deleted_file = True
+        except Exception as e:
+            logger.warning(f"删除会话历史文件失败: {e}")
 
-    # 同步清理内存 agent 缓存
+    # 兜底全盘扫描：若按目标工程未找到文件，在 HISTORY_ROOT 的所有子目录及根目录搜索并物理删除
+    if not deleted_file and HISTORY_ROOT.exists():
+        for pd in HISTORY_ROOT.iterdir():
+            if pd.is_dir():
+                candidate = pd / f"{sid}.jsonl"
+                if candidate.exists():
+                    try:
+                        candidate.unlink()
+                        deleted_file = True
+                        logger.info(f"在项目目录 {pd.name} 中找到并删除了会话文件 {sid}.jsonl")
+                    except Exception as e:
+                        logger.warning(f"删除会话历史文件失败: {e}")
+                    break
+
+    # 2. 同步清理内存 agent 对象
     if hasattr(bridge, "evict_session_agent"):
-        bridge.evict_session_agent(proj_name, req.session_id)
+        bridge.evict_session_agent(proj_name, sid)
 
-    # 同步清理置顶与自定义标题
-    pins = load_pins_config()
-    pinned_sids = pins.get("pinned_sessions", {}).get(proj_name, [])
-    if req.session_id in pinned_sids:
-        pins["pinned_sessions"][proj_name] = [s for s in pinned_sids if s != req.session_id]
-        save_pins_config(pins)
-    custom_titles = pins.get("custom_titles", {}).get(proj_name, {})
-    if req.session_id in custom_titles:
-        custom_titles.pop(req.session_id, None)
-        save_pins_config(pins)
+    # 3. 同步清理置顶与自定义标题
+    try:
+        pins = load_pins_config()
+        changed = False
+        pinned_sids = pins.get("pinned_sessions", {}).get(proj_name, [])
+        if sid in pinned_sids:
+            pins["pinned_sessions"][proj_name] = [s for s in pinned_sids if s != sid]
+            changed = True
+        custom_titles = pins.get("custom_titles", {}).get(proj_name, {})
+        if sid in custom_titles:
+            custom_titles.pop(sid, None)
+            changed = True
+        if changed:
+            save_pins_config(pins)
+    except Exception as e:
+        logger.warning(f"清理图钉配置失败: {e}")
 
-    # 同步清理此会话绑定的本地上传附件，杜绝磁盘孤儿文件堆积
-    att_dir = default_workspace.root / ".super_attachments" / req.session_id
-    if att_dir.exists():
-        try:
-            shutil.rmtree(att_dir, ignore_errors=True)
-        except Exception:
-            pass
-    return {"success": True}
+    # 4. 同步清理此会话绑定的本地上传附件
+    try:
+        ws_root = resolve_project_workspace_root(proj_name) if raw_proj else default_workspace.root
+        if ws_root:
+            att_dir = ws_root / ".super-harness" / "attachments" / sid
+            if att_dir.exists():
+                shutil.rmtree(att_dir, ignore_errors=True)
+            old_att_dir = ws_root / ".super_attachments" / sid
+            if old_att_dir.exists():
+                shutil.rmtree(old_att_dir, ignore_errors=True)
+    except Exception as e:
+        logger.warning(f"清理会话附件失败: {e}")
+    return {"success": True, "session_id": sid, "project": proj_name}
 
 @app.get("/api/skills")
 def get_skills():
@@ -1160,8 +1261,10 @@ async def upload_attachments(
 ):
     """上传文档、图片与数据附件并返回保存路径及预览信息"""
     proj_name = project or default_workspace.root.name
+    ws_root = resolve_project_workspace_root(project) if project else default_workspace.root
+    migrate_legacy_attachments(ws_root)
     sid = session_id or "default"
-    save_dir = default_workspace.root / ".super_attachments" / sid
+    save_dir = ws_root / ".super-harness" / "attachments" / sid
     save_dir.mkdir(parents=True, exist_ok=True)
 
     uploaded_items = []
@@ -1362,6 +1465,29 @@ async def websocket_endpoint(websocket: WebSocket):
                 req_id = payload.get("request_id")
                 sel = payload.get("selected_option", "")
                 cust = payload.get("custom_input", "")
+                sid = payload.get("session_id", "default")
+                pname = payload.get("project_name", "")
+                # 动态自适应响应方案审批决策：若用户在循环内批准了方案，自动切换策略模式并放行写操作
+                if "auto" in sel.lower() or "批准" in sel:
+                    default_policy.mode = "auto"
+                    default_policy.session_approved = True
+                    logger.info("Plan mode approved by user; auto switched policy mode to 'auto'")
+                    await websocket.send_json({
+                        "event": "permission_mode_updated",
+                        "mode": "auto",
+                        "session_id": sid,
+                        "project": pname
+                    })
+                elif "edit" in sel.lower():
+                    default_policy.mode = "edit_auto"
+                    default_policy.session_approved = True
+                    logger.info("Plan mode approved by user; auto switched policy mode to 'edit_auto'")
+                    await websocket.send_json({
+                        "event": "permission_mode_updated",
+                        "mode": "edit_auto",
+                        "session_id": sid,
+                        "project": pname
+                    })
                 ok = bridge.resolve_user_input(req_id, selected_option=sel, custom_input=cust)
                 logger.info(f"WebSocket handled user input response: req_id={req_id}, selected='{sel}', resolved={ok}")
 
@@ -1467,7 +1593,7 @@ def edit_workspace(req: WorkspaceEditRequest):
             raise HTTPException(status_code=500, detail=f"重命名历史目录失败: {e}")
 
     # 2. 更新已登记工作区 projects.json
-    proj_map_file = Path.home() / ".super-harnes" / "projects.json"
+    proj_map_file = Path.home() / ".super-harness" / "projects.json"
     if proj_map_file.exists():
         try:
             with open(proj_map_file, "r", encoding="utf-8") as f:
@@ -1555,8 +1681,8 @@ def delete_workspace(req: WorkspaceDeleteRequest):
         deleted_list.append(del_name_clean)
     save_pins_config(pins)
 
-    # 3. 从 ~/.super-harnes/projects.json 磁盘注册表彻底移除 (大小写不敏感匹配)
-    proj_map_file = Path.home() / ".super-harnes" / "projects.json"
+    # 3. 从 ~/.super-harness/projects.json 磁盘注册表彻底移除 (大小写不敏感匹配)
+    proj_map_file = Path.home() / ".super-harness" / "projects.json"
     if proj_map_file.exists():
         try:
             with open(proj_map_file, "r", encoding="utf-8") as f:
@@ -1567,7 +1693,7 @@ def delete_workspace(req: WorkspaceDeleteRequest):
         except Exception:
             pass
 
-    # 4. 彻底物理删除 history/ 下及 ~/.super-harnes/workspace/ 下对应的项目子目录
+    # 4. 彻底物理删除 history/ 下及 ~/.super-harness/workspace/ 下对应的项目子目录
     for h_dir in [HISTORY_ROOT, USER_DATA_ROOT / "workspace"]:
         if h_dir.exists():
             for d in list(h_dir.iterdir()):
@@ -1633,3 +1759,13 @@ def clear_session_content(req: SessionClearRequest):
         except Exception:
             pass
     return {"success": True}
+
+# 启动时自动迁移当前默认工作区及所有项目中遗留的附件目录
+try:
+    if hasattr(default_workspace, "root") and default_workspace.root and default_workspace.root.exists():
+        migrate_legacy_attachments(default_workspace.root)
+    for p in get_all_projects_metadata():
+        if p.get("path") and Path(p["path"]).exists():
+            migrate_legacy_attachments(Path(p["path"]))
+except Exception:
+    pass

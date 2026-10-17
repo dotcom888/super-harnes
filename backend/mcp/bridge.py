@@ -13,7 +13,7 @@ from tools.policies import default_policy
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 
 def get_tmp_output_dir() -> Path:
-    p = default_workspace.root / ".super-harnes" / "tmp"
+    p = default_workspace.root / ".super-harness" / "tmp"
     p.mkdir(parents=True, exist_ok=True)
     return p
 

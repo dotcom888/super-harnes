@@ -37,6 +37,7 @@ IGNORE_PATTERNS = {
     "coverage",
     ".pytest_cache",
     ".tox",
+    ".super-harness",
     ".super-harnes",
 }
 

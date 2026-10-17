@@ -1,4 +1,4 @@
-# Super-Harnes 🚀
+# Super-Harness 🚀
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
@@ -6,7 +6,7 @@
 [![Context](https://img.shields.io/badge/Context-200K%20~%20500K%20Elastic-orange.svg)](#2-200k--500k-弹性硬预算滑动窗口与分账账本)
 [![Protocol](https://img.shields.io/badge/MCP-JSON--RPC%202.0%20(0%20Ports)-blue.svg)](#4-mcp-model-context-protocol-外部分布式扩展)
 
-> **Super-Harnes** 是一款面向工业级真实软件工程的高性能自主代码编程智能体（Autonomous Coding Agent）。
+> **Super-Harness** 是一款面向工业级真实软件工程的高性能自主代码编程智能体（Autonomous Coding Agent）。
 > 核心采用 **ReAct (Reasoning + Acting)** 多步闭环决策，创新性地构建了 **200K~500K 动态弹性预算上下文滑动窗口**、**三阶段任务状态机**、**反思型死循环熔断器**、**物理快照原子回滚机制**、**MCP 零端口外部进程扩展** 与 **行业兼容级 Skills 技能扩展生态**。
 
 ---
@@ -40,7 +40,7 @@
 
 ### 4. 🗂️ 项目级状态总线与用户全局记忆
 - **项目级共享状态 (`ProjectState`)**：跨会话共享代码修改拓扑、排查行号区间及最新测试结论（`history/<project>/project_state.json`），多会话协作不撞车。
-- **用户全局偏好画像 (`GlobalMemory`)**：位于 `~/.super-harnes/global_memory.json`，跨越所有工程永久沉淀个人编码偏好（如强类型标注、大纲优先）与交互风格，支持 `/remember` 与 `/forget`。
+- **用户全局偏好画像 (`GlobalMemory`)**：位于 `~/.super-harnesss/global_memory.json`，跨越所有工程永久沉淀个人编码偏好（如强类型标注、大纲优先）与交互风格，支持 `/remember` 与 `/forget`。
 - **多会话管理与切换**：支持 `/sessions`、`/switch`、`/session new`，每个会话物理分箱，独立归档。
 
 ### 5. 🛠️ 工业级工程内置工具箱 (Builtin Tools)
@@ -59,7 +59,7 @@
 
 ### 7. 🧩 原生 Skills 技能生态体系
 - 遵循行业主流 `SKILL.md` 规范（兼容 OpenAI / Claude Code / skills.sh 技能生态）。
-- 具备多级发现体系（工作区 `.skills/` $\rightarrow$ 全局 `~/.super-harnes/skills` $\rightarrow$ Codex 兼容目录）。
+- 具备多级发现体系（工作区 `.skills/` $\rightarrow$ 全局 `~/.super-harnesss/skills` $\rightarrow$ Codex 兼容目录）。
 - 默认预置 4 套高阶专业工程技能：
   - **`codebase-design`**：复杂架构设计、DESIGN-IT-TWICE 方案推演；
   - **`codebase-onboarding`**：全新陌生长代码库极速上手与导读；
@@ -127,7 +127,7 @@
 ## 📁 目录结构与功能映射
 
 ```text
-super-harnes/
+super-harness/
 │
 ├── core/                        # 【认知与决策中枢】
 │   ├── agent.py                 # ReActAgent: 纯净的多步推理循环引擎
@@ -146,7 +146,7 @@ super-harnes/
 │   ├── manager.py               # 会话上下文总管，三段式水位调度
 │   ├── window.py                # 逆向滑动窗口与原子轮次 (TurnChunk)
 │   ├── project_state.py         # 项目级跨会话共享工作区状态总线
-│   ├── global_memory.py         # 用户全局跨工程偏好画像 (~/.super-harnes)
+│   ├── global_memory.py         # 用户全局跨工程偏好画像 (~/.super-harnesss)
 │   ├── snapshot.py              # 物理磁盘快照与原子回滚事务
 │   ├── summarizer.py            # 区间追踪与三维防抖长期记忆摘要器
 │   └── token_counter.py         # 高精度 Token 计算器
@@ -207,8 +207,8 @@ super-harnes/
 ### 1. 环境准备与依赖安装
 确保安装了 Python 3.10 及以上环境：
 ```bash
-git clone https://github.com/your-username/super-harnes.git
-cd super-harnes
+git clone https://github.com/your-username/super-harness.git
+cd super-harness
 
 # 创建并激活虚拟环境
 python -m venv .venv

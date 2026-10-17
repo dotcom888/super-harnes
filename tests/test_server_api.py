@@ -69,23 +69,22 @@ class TestServerAPI(unittest.TestCase):
                 initial_cfg_path.write_text(initial_backup, encoding="utf-8")
 
     def test_workspaces_multi_project(self):
-        """验证 /api/workspaces 自动扫描全部 4 个项目的历史"""
+        """验证 /api/workspaces 自动扫描已发现项目的历史"""
         response = self.client.get("/api/workspaces")
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertIn("projects", data)
         proj_names = [p["name"] for p in data["projects"]]
-        self.assertIn("ceshi", proj_names)
-        self.assertIn("ECoHarvest", proj_names)
+        self.assertIn("Heim", proj_names)
         self.assertNotIn("Administrator", proj_names)
 
     def test_session_turns_cross_project(self):
         """验证跨项目历史轮次精准还原"""
-        # 读取 ceshi 项目
-        response = self.client.get("/api/sessions/turns?session_id=default&project=ceshi")
+        # 读取 Heim 项目真实历史会话
+        response = self.client.get("/api/sessions/turns?session_id=session_1791775241917&project=Heim")
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertEqual(data.get("project"), "ceshi")
+        self.assertEqual(data.get("project"), "Heim")
         self.assertTrue(data.get("turns_count") > 0)
 
     def test_mode_endpoint(self):
@@ -137,7 +136,7 @@ class TestServerAPI(unittest.TestCase):
         import time
 
         from server.app import HISTORY_ROOT
-        test_dir = HISTORY_ROOT / "super-harnes"
+        test_dir = HISTORY_ROOT / "super-harness"
         test_dir.mkdir(parents=True, exist_ok=True)
         test_sid = f"test_mock_turn0_{int(time.time() * 1000)}"
         mock_file = test_dir / f"{test_sid}.jsonl"
@@ -151,7 +150,7 @@ class TestServerAPI(unittest.TestCase):
         mock_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
         try:
-            response = self.client.get(f"/api/sessions/turns?session_id={test_sid}&project=super-harnes")
+            response = self.client.get(f"/api/sessions/turns?session_id={test_sid}&project=super-harness")
             self.assertEqual(response.status_code, 200)
             data = response.json()
             turn_ids = [t["turn_id"] for t in data.get("turns", [])]
@@ -166,5 +165,89 @@ class TestServerAPI(unittest.TestCase):
             if mock_file.exists():
                 mock_file.unlink()
 
+    def test_attachments_storage_and_legacy_migration(self):
+        """验证附件存储于 .super-harness/attachments/ 以及旧版 .super_attachments 自动平滑迁移"""
+        from tools.framework.workspace import default_workspace
+        from server.app import migrate_legacy_attachments
+
+        ws_root = default_workspace.root
+        test_sid = "test_att_session"
+
+        # 1. 测试旧版 .super_attachments 目录自动迁移
+        legacy_dir = ws_root / ".super_attachments" / test_sid
+        legacy_dir.mkdir(parents=True, exist_ok=True)
+        legacy_file = legacy_dir / "legacy_test.txt"
+        legacy_file.write_text("legacy attachment content", encoding="utf-8")
+
+        migrate_legacy_attachments(ws_root)
+
+        # 验证旧目录已被移除，文件已迁移到 .super-harness/attachments/
+        self.assertFalse(legacy_dir.exists())
+        migrated_file = ws_root / ".super-harness" / "attachments" / test_sid / "legacy_test.txt"
+        self.assertTrue(migrated_file.exists())
+        self.assertEqual(migrated_file.read_text(encoding="utf-8"), "legacy attachment content")
+
+        # 2. 测试上传接口落盘到 .super-harness/attachments/
+        upload_resp = self.client.post(
+            "/api/attachments/upload",
+            data={"session_id": test_sid},
+            files={"files": ("uploaded_note.txt", b"hello new attachment", "text/plain")}
+        )
+        self.assertEqual(upload_resp.status_code, 200)
+        att_data = upload_resp.json().get("attachments", [])
+        self.assertEqual(len(att_data), 1)
+        saved_path = Path(att_data[0]["path"])
+        self.assertTrue(".super-harness" in str(saved_path))
+        self.assertTrue("attachments" in str(saved_path))
+        self.assertTrue(saved_path.exists())
+
+        # 3. 测试删除会话清理附件
+        del_resp = self.client.request("DELETE", "/api/sessions/delete", json={"session_id": test_sid})
+        self.assertEqual(del_resp.status_code, 200)
+        session_att_dir = ws_root / ".super-harness" / "attachments" / test_sid
+        self.assertFalse(session_att_dir.exists())
+
+    def test_session_delete_query_params_and_post_and_fallback(self):
+        """验证删除会话接口通过 Query 参数、POST 方法以及跨目录兜底搜索物理删除"""
+        from server.app import HISTORY_ROOT
+
+        # 1. 创建测试会话文件在 _general 目录
+        gen_dir = HISTORY_ROOT / "_general"
+        gen_dir.mkdir(parents=True, exist_ok=True)
+        test_sid_query = "test_del_query_session"
+        test_file = gen_dir / f"{test_sid_query}.jsonl"
+        test_file.write_text("test_turn", encoding="utf-8")
+        self.assertTrue(test_file.exists())
+
+        # 通过 DELETE 请求携带 Query 参数删除（模拟请求体被剥离场景）
+        del_resp = self.client.request(
+            "DELETE",
+            f"/api/sessions/delete?session_id={test_sid_query}&project=_general"
+        )
+        self.assertEqual(del_resp.status_code, 200)
+        self.assertFalse(test_file.exists())
+
+        # 2. 测试 POST 方法与跨目录兜底清理
+        proj_dir = HISTORY_ROOT / "TestProjFallback"
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        test_sid_fallback = "test_del_fallback_session"
+        fb_file = proj_dir / f"{test_sid_fallback}.jsonl"
+        fb_file.write_text("test_fallback", encoding="utf-8")
+        self.assertTrue(fb_file.exists())
+
+        # 即使前端传入了错误的 project 名称，后端也能全盘搜索并安全删除
+        post_resp = self.client.post(
+            "/api/sessions/delete",
+            json={"session_id": test_sid_fallback, "project": "WrongProjectName"}
+        )
+        self.assertEqual(post_resp.status_code, 200)
+        self.assertFalse(fb_file.exists())
+
+        # 清理测试目录
+        if proj_dir.exists():
+            import shutil
+            shutil.rmtree(proj_dir, ignore_errors=True)
+
 if __name__ == "__main__":
     unittest.main()
+

@@ -43,7 +43,7 @@ class SessionManager:
                 # 自定义测试沙箱或独立历史根目录：分箱落盘于 base_dir / <project_name>
                 self.history_dir = b_path / self.project_name
         else:
-            # 默认统一建立在用户中央数据目录: ~/.super-harnes/history/<project_name>/
+            # 默认统一建立在用户中央数据目录: ~/.super-harness/history/<project_name>/
             self.history_dir = (HISTORY_DIR / self.project_name).resolve()
         self.history_dir.mkdir(parents=True, exist_ok=True)
         self.base_dir = self.history_dir

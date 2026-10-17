@@ -26,16 +26,16 @@ ERROR_PATTERNS = [
     re.compile(r"(\b(?:FAILURES|ERRORS)\b[\s\S]+?)(?=\n={5,}|\Z)", re.IGNORECASE)
 ]
 
-# 水位对应的自适应单步输出字符预算
+# 水位对应的自适应单步输出字符预算 (支持大输出：绿区翻倍至 40,000 字符，保障排错与长日志完整呈现)
 WATERMARK_CHAR_QUOTAS = {
-    "GREEN": 20000,   # 充裕区 (< 60%): 充分保留长上下文与完整堆栈
-    "YELLOW": 7000,   # 警戒区 (60% ~ 75%): 聚焦关键行与紧凑堆栈
-    "RED": 2500       # 告急区 (>= 75%): 强力精炼，仅保留核心异常与追查透镜
+    "GREEN": 40000,   # 充裕区 (< 60%): 翻倍至 40,000 字符 (~10k~12k Tokens)，完整保留长输出与长日志
+    "YELLOW": 15000,  # 警戒区 (60% ~ 75%): 提升至 15,000 字符，保留核心代码块与异常
+    "RED": 5000       # 告急区 (>= 75%): 提升至 5,000 字符，紧凑堆栈与追查透镜
 }
 
 def get_tmp_spool_dir() -> Path:
     """获取并确保工作区临时溢出转存目录存在"""
-    p = default_workspace.root / ".super-harnes" / "tmp"
+    p = default_workspace.root / ".super-harness" / "tmp"
     p.mkdir(parents=True, exist_ok=True)
     return p
 

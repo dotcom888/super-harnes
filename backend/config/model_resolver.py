@@ -12,9 +12,11 @@ from typing import Dict, Any, Optional, Tuple, List
 
 logger = logging.getLogger("config.model_resolver")
 
-USER_DATA_ROOT = Path.home() / ".super-harnes"
+USER_DATA_ROOT = Path.home() / ".super-harness"
 USER_CONFIG_DIR = USER_DATA_ROOT / "config"
 USER_MODELS_CONFIG_PATH = USER_CONFIG_DIR / "models_config.json"
+LEGACY_DATA_ROOT = Path.home() / ".super-harnes"
+LEGACY_MODELS_CONFIG_PATH = LEGACY_DATA_ROOT / "config" / "models_config.json"
 
 
 def get_user_models_config_path() -> Path:
@@ -45,9 +47,10 @@ def clean_base_url(url: str, protocol: str = "openai_chat") -> str:
 
 def load_user_models_config() -> Dict[str, Any]:
     """读取用户中央模型配置文件"""
-    if USER_MODELS_CONFIG_PATH.exists():
+    target_path = USER_MODELS_CONFIG_PATH if USER_MODELS_CONFIG_PATH.exists() else LEGACY_MODELS_CONFIG_PATH
+    if target_path.exists():
         try:
-            with open(USER_MODELS_CONFIG_PATH, "r", encoding="utf-8") as f:
+            with open(target_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
                     return data
@@ -67,7 +70,7 @@ def resolve_active_model_config(
     优先级规则：
     1. 显式指定参数（命令行 --model 或代码构造入参）
     2. 局部环境变量 / 工作区 .env（若配置了有效非空的 LLM_API_KEY）
-    3. 桌面端已同步的用户中央配置 (~/.super-harnes/config/models_config.json)
+    3. 桌面端已同步的用户中央配置 (~/.super-harness/config/models_config.json)
     4. 兜底默认值
 
     返回: (resolved_model, resolved_api_key, resolved_base_url, source_info)
@@ -95,24 +98,38 @@ def resolve_active_model_config(
     else:
         target_model = "deepseek-chat"
 
-    # 3. 尝试从桌面端 providers 寻找匹配该模型的提供方配置
+    # 3. 尝试从桌面端 providers 寻找匹配该模型的提供方配置 (大小写与空白自适应容错)
     matched_provider = None
+    target_model_clean = target_model.strip()
     if providers:
+        # 3.1 精确匹配模型名
         for p in providers:
-            p_models = p.get("models", [])
-            if target_model in p_models:
+            p_models = [m.strip() for m in p.get("models", [])]
+            if target_model_clean in p_models:
                 p_key = p.get("api_key", "").strip()
                 if p_key:
                     matched_provider = p
                     break
 
-        if not matched_provider and not model and not env_key:
+        # 3.2 大小写不敏感匹配
+        if not matched_provider:
+            for p in providers:
+                p_models_lower = [m.strip().lower() for m in p.get("models", [])]
+                if target_model_clean.lower() in p_models_lower:
+                    p_key = p.get("api_key", "").strip()
+                    if p_key:
+                        matched_provider = p
+                        break
+
+        # 3.3 兜底回退：若未配置指定模型但有可用有效 Key 的 Provider，优先借用有效 Provider 凭据
+        if not matched_provider and not env_key:
             for p in providers:
                 p_key = p.get("api_key", "").strip()
                 p_models = p.get("models", [])
-                if p_key and p_models:
+                if p_key:
                     matched_provider = p
-                    target_model = desktop_model if (desktop_model and desktop_model in p_models) else p_models[0]
+                    if not model:
+                        target_model = desktop_model if (desktop_model and desktop_model in p_models) else (p_models[0] if p_models else target_model)
                     break
 
     # 4. 提取提供方密钥与 Base URL
@@ -143,7 +160,7 @@ def resolve_active_model_config(
     elif provider_key:
         final_key = provider_key
         final_url = explicit_url or provider_url or os.getenv("LLM_BASE_URL", "").strip() or "https://api.deepseek.com"
-        source = "桌面端配置 (~/.super-harnes/config/models_config.json)"
+        source = "桌面端配置 (~/.super-harness/config/models_config.json)"
     else:
         final_key = ""
         final_url = explicit_url or os.getenv("LLM_BASE_URL", "").strip() or "https://api.deepseek.com"

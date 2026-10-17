@@ -704,7 +704,7 @@ class TestProjectLevelStateAndFusionWorkingMemory(unittest.TestCase):
 
 
 class TestGlobalUserMemory(unittest.TestCase):
-    """验证用户级全局共享记忆 (~/.super-harnes/global_memory.json) 跨工程偏好沉淀与上下文构造顺序"""
+    """验证用户级全局共享记忆 (~/.super-harness/global_memory.json) 跨工程偏好沉淀与上下文构造顺序"""
 
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp(prefix="test_global_mem_")
@@ -870,3 +870,186 @@ class TestGlobalUserMemory(unittest.TestCase):
             sys.stdout = old_stdout
         self.assertTrue(handled)
         self.assertIn("已移除", captured.getvalue())
+
+
+class TestReasoningContentAndThinkingChainPreservation(unittest.TestCase):
+    """验证思维链在简单问题直接回答时的捕获、回调与持久化保障"""
+
+    def test_convert_response_extracts_reasoning_and_think_tags(self):
+        from core.agent import ReActAgent
+        from unittest.mock import MagicMock
+
+        agent = ReActAgent.__new__(ReActAgent)
+
+        # 1. 直接属性 reasoning_content
+        mock_msg1 = MagicMock()
+        mock_msg1.content = "我是代码助手。"
+        mock_msg1.reasoning_content = "深度分析用户关于自身身份的提问..."
+        mock_msg1.tool_calls = None
+        d1 = agent._convert_response_to_dict(mock_msg1)
+        self.assertEqual(d1["content"], "我是代码助手。")
+        self.assertEqual(d1["reasoning_content"], "深度分析用户关于自身身份的提问...")
+
+        # 2. model_extra 字典
+        mock_msg2 = MagicMock()
+        mock_msg2.content = "回答内容"
+        mock_msg2.reasoning_content = None
+        mock_msg2.model_extra = {"reasoning_content": "通过 model_extra 传递的思考过程"}
+        mock_msg2.reasoning = None
+        mock_msg2.tool_calls = None
+        d2 = agent._convert_response_to_dict(mock_msg2)
+        self.assertEqual(d2["reasoning_content"], "通过 model_extra 传递的思考过程")
+
+        # 3. <think> 标签提取与正文剥离
+        mock_msg3 = MagicMock()
+        mock_msg3.content = "<think>这是思考过程</think>这是最终正文"
+        mock_msg3.reasoning_content = None
+        mock_msg3.model_extra = None
+        mock_msg3.reasoning = None
+        mock_msg3.tool_calls = None
+        d3 = agent._convert_response_to_dict(mock_msg3)
+        self.assertEqual(d3["content"], "这是最终正文")
+        self.assertEqual(d3["reasoning_content"], "这是思考过程")
+
+    def test_direct_answer_thought_callback_called(self):
+        from core.agent import ReActAgent
+        from unittest.mock import MagicMock
+        from context import ContextManager, BudgetLedger, TokenCounter
+
+        ledger = BudgetLedger(total_budget=400, output_reserve=100)
+        counter = TokenCounter(char_per_token=1.0)
+        cm = ContextManager(session_id="test_direct_thought", budget_ledger=ledger, token_counter=counter)
+        cm.clear()
+
+        agent = ReActAgent.__new__(ReActAgent)
+        agent.client = MagicMock()
+        agent.model = "deepseek-reasoner"
+        agent.api_key = "test_key"
+        agent.base_url = "https://api.test.com"
+        agent.max_steps = 10
+        agent.context_manager = cm
+        agent.session_manager = MagicMock()
+        agent.session_manager.active_session = cm
+        agent.stage_manager = MagicMock()
+        agent.loop_detector = MagicMock()
+        agent.executor = MagicMock()
+        agent.executor.registry = MagicMock()
+        agent.executor.registry.get_schemas.return_value = []
+        agent.executor.registry.get_tool_names.return_value = []
+        agent.executor.tool_policies = {}
+        agent._custom_system_prompt = "You are a helpful assistant."
+        agent.abort_requested = False
+
+        mock_resp = MagicMock()
+        mock_choice = MagicMock()
+        mock_msg = MagicMock()
+        mock_msg.content = "我是一名全流程工程开发助手。"
+        mock_msg.reasoning_content = "用户提问简单意图，符合日常问询，无需调用工具直接解答。"
+        mock_msg.tool_calls = None
+        mock_choice.message = mock_msg
+        mock_resp.choices = [mock_choice]
+        mock_resp.usage = None
+        agent.client.chat.completions.create.return_value = mock_resp
+
+        thought_received = []
+        token_received = []
+
+        def on_thought(th):
+            thought_received.append(th)
+
+        def on_token(tok):
+            token_received.append(tok)
+
+        res = agent.run("你能做什么", verbose=False, thought_callback=on_thought, token_callback=on_token)
+
+        self.assertIn("我是一名全流程工程开发助手。", res)
+        self.assertEqual(len(thought_received), 1)
+        self.assertEqual(thought_received[0], "用户提问简单意图，符合日常问询，无需调用工具直接解答。")
+        self.assertTrue(len(token_received) > 0)
+        self.assertEqual("".join(token_received), "我是一名全流程工程开发助手。")
+
+        # 验证已持久化至 context_manager 的 completed_turns
+        self.assertTrue(len(cm.completed_turns) > 0)
+        last_turn = cm.completed_turns[-1]
+        asst_msg = next((m for m in last_turn.messages if m.get("role") == "assistant"), None)
+        self.assertIsNotNone(asst_msg)
+        self.assertEqual(asst_msg.get("reasoning_content"), "用户提问简单意图，符合日常问询，无需调用工具直接解答。")
+
+        if cm.history_file.exists():
+            import os
+            try:
+                os.remove(cm.history_file)
+            except Exception:
+                pass
+
+    def test_think_tag_in_chat_completion_extracted_as_reasoning_and_stripped_from_content(self):
+        from core.agent import ReActAgent
+        from unittest.mock import MagicMock
+        from context import ContextManager, BudgetLedger, TokenCounter
+
+        ledger = BudgetLedger(total_budget=400, output_reserve=100)
+        counter = TokenCounter(char_per_token=1.0)
+        cm = ContextManager(session_id="test_think_tag_session", budget_ledger=ledger, token_counter=counter)
+        cm.clear()
+
+        agent = ReActAgent.__new__(ReActAgent)
+        agent.client = MagicMock()
+        agent.model = "gemini-3.8-flash-high"
+        agent.api_key = "test_key"
+        agent.base_url = "https://api.test.com"
+        agent.max_steps = 10
+        agent.context_manager = cm
+        agent.session_manager = MagicMock()
+        agent.session_manager.active_session = cm
+        agent.stage_manager = MagicMock()
+        agent.loop_detector = MagicMock()
+        agent.executor = MagicMock()
+        agent.executor.registry = MagicMock()
+        agent.executor.registry.get_schemas.return_value = []
+        agent.executor.registry.get_tool_names.return_value = []
+        agent.executor.tool_policies = {}
+        agent._custom_system_prompt = "You are a helpful assistant."
+        agent.abort_requested = False
+
+        # 模拟普通模型按照 Thinking Protocol 协议返回包含 <think> 标签的回答
+        mock_resp = MagicMock()
+        mock_choice = MagicMock()
+        mock_msg = MagicMock()
+        mock_msg.content = "<think>用户问候，属于常规日常交流，无需调用工具排查，直接给出友好回复。</think>你好！我是工程研发助手，随时为你排查代码。"
+        mock_msg.reasoning_content = None
+        mock_msg.model_extra = None
+        mock_msg.reasoning = None
+        mock_msg.tool_calls = None
+        mock_choice.message = mock_msg
+        mock_resp.choices = [mock_choice]
+        mock_resp.usage = None
+        agent.client.chat.completions.create.return_value = mock_resp
+
+        thought_received = []
+        token_received = []
+
+        res = agent.run("你好", verbose=False, thought_callback=lambda th: thought_received.append(th), token_callback=lambda tok: token_received.append(tok))
+
+        # 核心断言：正文中 <think> 标签必须被彻底清洗，只保留干净正文
+        self.assertEqual(res, "你好！我是工程研发助手，随时为你排查代码。")
+        self.assertEqual("".join(token_received), "你好！我是工程研发助手，随时为你排查代码。")
+        self.assertNotIn("<think>", res)
+        self.assertNotIn("</think>", res)
+
+        # 思考回调必须接收到模型真实的思考过程
+        self.assertEqual(len(thought_received), 1)
+        self.assertEqual(thought_received[0], "用户问候，属于常规日常交流，无需调用工具排查，直接给出友好回复。")
+
+        # 持久化落盘与 completed_turns 验证
+        last_turn = cm.completed_turns[-1]
+        asst_msg = next((m for m in last_turn.messages if m.get("role") == "assistant"), None)
+        self.assertIsNotNone(asst_msg)
+        self.assertEqual(asst_msg.get("content"), "你好！我是工程研发助手，随时为你排查代码。")
+        self.assertEqual(asst_msg.get("reasoning_content"), "用户问候，属于常规日常交流，无需调用工具排查，直接给出友好回复。")
+
+        if cm.history_file.exists():
+            import os
+            try:
+                os.remove(cm.history_file)
+            except Exception:
+                pass

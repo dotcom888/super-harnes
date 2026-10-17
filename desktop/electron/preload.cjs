@@ -20,6 +20,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on(channel, listener);
     return () => ipcRenderer.removeListener(channel, listener);
   },
+  onTerminalCwd: (id, callback) => {
+    const channel = `terminal:cwd:${id}`;
+    const listener = (_event, cwd) => callback(cwd);
+    ipcRenderer.on(channel, listener);
+    return () => ipcRenderer.removeListener(channel, listener);
+  },
   onTerminalExit: (id, callback) => {
     const channel = `terminal:exit:${id}`;
     const listener = (_event, code) => callback(code);

@@ -19,6 +19,7 @@ ENV/
 
 # Agent Runtime & Local states
 history/
+.super-harness/
 .super-harnes/
 *.log
 

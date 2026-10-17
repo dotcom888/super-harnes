@@ -26,7 +26,7 @@ from tools.builtin.interaction_tools import set_user_interaction_handler
 logger = logging.getLogger("server.agent_bridge")
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-HISTORY_ROOT = Path.home() / ".super-harnes" / "history"
+HISTORY_ROOT = Path.home() / ".super-harness" / "history"
 HISTORY_ROOT.mkdir(parents=True, exist_ok=True)
 
 def format_tool_display(tool_name: str, args: Dict[str, Any]) -> Dict[str, str]:
@@ -486,7 +486,11 @@ class AgentBridge:
                     "timestamp": time.time()
                 })
 
+            collected_thoughts: List[str] = []
+
             def on_thought_chunk(thought: str):
+                if thought and thought not in collected_thoughts:
+                    collected_thoughts.append(thought)
                 wrapped_callback({
                     "event": "thought",
                     "thought": thought,
@@ -620,10 +624,25 @@ class AgentBridge:
                 # 计算从用户发送到回复完成的真实总耗时
                 elapsed_total = round(max(1.0, time.time() - start_time), 1)
 
-                # 最终答复确认推送 (包含真实耗时 elapsed 与当前运行安全模式)
+                final_thought = ""
+                if collected_thoughts:
+                    final_thought = "\n\n".join(collected_thoughts)
+                elif getattr(cur_agent, "context_manager", None) and cur_agent.context_manager.completed_turns:
+                    last_turn = cur_agent.context_manager.completed_turns[-1]
+                    t_list = []
+                    for m in getattr(last_turn, "messages", []):
+                        if m.get("role") == "assistant":
+                            th = m.get("reasoning_content") or m.get("thought")
+                            if th and th not in t_list:
+                                t_list.append(th)
+                    if t_list:
+                        final_thought = "\n\n".join(t_list)
+
+                # 最终答复确认推送 (包含真实耗时 elapsed、思考内容 thought 与当前运行安全模式)
                 wrapped_callback({
                     "event": "assistant_response",
                     "content": result,
+                    "thought": final_thought,
                     "elapsed": elapsed_total,
                     "timestamp": time.time(),
                     "permission_mode": getattr(default_policy, "mode", "auto")

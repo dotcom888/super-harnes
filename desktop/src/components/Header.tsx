@@ -14,7 +14,7 @@ interface HeaderProps {
 
 export const Header: React.FC<HeaderProps> = ({
   sessionTitle,
-  projectName = "super-harnes",
+  projectName = "super-harness",
   activeTab,
   onTabChange,
   onExportLog,

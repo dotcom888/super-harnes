@@ -50,7 +50,7 @@ class FileSnapshotRecord:
 class SnapshotManager:
     """
     负责本地终端物理磁盘文件快照与还原
-    快照保存在：<workspace_root>/.super-harnes/snapshots/session_{session_id}/turn_{turn_id}/
+    快照保存在：<workspace_root>/.super-harness/snapshots/session_{session_id}/turn_{turn_id}/
     """
     def __init__(self, workspace=default_workspace):
         self.workspace = workspace
@@ -61,7 +61,7 @@ class SnapshotManager:
 
     @property
     def base_snapshot_dir(self) -> Path:
-        return self.workspace.root / ".super-harnes" / "snapshots"
+        return self.workspace.root / ".super-harness" / "snapshots"
 
     def get_turn_dir(self, session_id: str, turn_id: int) -> Path:
         return self.base_snapshot_dir / f"session_{session_id}" / f"turn_{turn_id}"

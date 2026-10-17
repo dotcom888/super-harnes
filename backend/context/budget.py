@@ -6,16 +6,15 @@ DEFAULT_EXPANSION_TIERS = [200000, 250000, 350000, 500000]
 
 class BudgetLedger:
     """
-    上下文硬预算账本与动态弹性扩容账本 (Elastic Budget Ledger):
-    支持 200k 基准上下文与 250k ~ 500k 按需动态弹性扩展阶梯。
+    上下文硬预算账本 (Fixed 200k High-Output Budget Ledger):
+    固定最多 200,000 Tokens 上下文预算，不启用弹性伸缩，倾斜资源以保障深度思考与大工具输出。
     分账明细：
-      - 总预算 (Total):           默认 200,000 Tokens (基线 Tier 0，支持环境变量 AGENT_TOTAL_BUDGET)
-      - 弹性梯队 (Tiers):          [200k, 250k, 350k, 500k]，高水位按需自动向上跃迁，低水位防抖冷却缩容
-      - 系统提示词 (System):        默认 4,000 Tokens (不可变，保障 Prompt 缓存稳态)
-      - 工具定义 (Tools):          默认 6,000 Tokens (工具 Schema 与 MCP 空间)
-      - 状态与摘要 (Memory):       默认 6,000 Tokens (WorkingMemory + 历史纪要)
-      - 输出预留区 (Output Reserve): 默认 8,000 Tokens (确保模型输出大 Patch / 完整回复不截断)
-      - 历史滑动窗口 (History):    动态计算 (total - 各预留，200k 基线提供 176,000 Tokens 广阔滑窗)
+      - 总预算 (Total):           固定 200,000 Tokens (支持环境变量 AGENT_TOTAL_BUDGET)
+      - 系统提示词 (System):        最大 15% (30,000 Tokens，默认预留 30k 阈值，按需计费与前缀缓存)
+      - 工具定义 (Tools):          极限 10% (20,000 Tokens，原生支持多个大型 MCP 服务)
+      - 状态与记忆 (Memory):       默认 8,000 Tokens (WorkingMemory + 历史纪要，占比 4%)
+      - 输出预留区 (Output Reserve): 默认 16,000 Tokens (确保模型长思维链 CoT 与大 Patch 生成不截断，占比 8%)
+      - 历史滑动窗口 (History):    动态计算 (total - 各预留，保障 126,000 ~ 150,000 Tokens 广阔滑窗，未用额度自动回流)
     """
     def __init__(
         self,
@@ -36,9 +35,9 @@ class BudgetLedger:
 
         if system_reserve is None:
             if total_budget >= 200000:
-                system_reserve = 4000
+                system_reserve = 30000  # 最大 15% (30k)
             elif total_budget >= 64000:
-                system_reserve = 3000
+                system_reserve = int(total_budget * 0.15)
             elif total_budget >= 8000:
                 system_reserve = 2000
             else:
@@ -46,9 +45,9 @@ class BudgetLedger:
 
         if tools_reserve is None:
             if total_budget >= 200000:
-                tools_reserve = 6000
+                tools_reserve = 20000   # 极限 10% (20k)
             elif total_budget >= 64000:
-                tools_reserve = 3000
+                tools_reserve = int(total_budget * 0.10)
             elif total_budget >= 8000:
                 tools_reserve = 2000
             else:
@@ -56,9 +55,9 @@ class BudgetLedger:
 
         if memory_reserve is None:
             if total_budget >= 200000:
-                memory_reserve = 6000
+                memory_reserve = 8000   # 增强 WorkingMemory 至 8,000 (4%)
             elif total_budget >= 64000:
-                memory_reserve = 3000
+                memory_reserve = 4000
             elif total_budget >= 8000:
                 memory_reserve = 2000
             else:
@@ -66,11 +65,11 @@ class BudgetLedger:
 
         if output_reserve is None:
             if total_budget >= 200000:
-                output_reserve = 8000
+                output_reserve = 16000  # 模型单次输出预留翻倍至 16,000 (8%)
             elif total_budget >= 64000:
-                output_reserve = 4000
+                output_reserve = 8000
             elif total_budget >= 8000:
-                output_reserve = 3000
+                output_reserve = 4000
             else:
                 output_reserve = max(20, int(total_budget * 0.1))
 
@@ -123,12 +122,12 @@ class BudgetLedger:
 
         if max_expand_budget is None:
             env_max = os.getenv("AGENT_MAX_EXPAND_BUDGET")
-            max_expand_budget = int(env_max) if env_max else max(500000, total_budget)
+            max_expand_budget = int(env_max) if env_max else total_budget
         if max_expand_budget < base_budget:
             max_expand_budget = base_budget
 
         if auto_expand is None:
-            auto_expand = os.getenv("AGENT_AUTO_EXPAND", "true").lower() in ("true", "1", "yes")
+            auto_expand = os.getenv("AGENT_AUTO_EXPAND", "false").lower() in ("true", "1", "yes")
 
         # 保护性防扰动：若传入小微测试预算 (如 200, 300, 500, 1000) 且未显式指定梯队与环境变量，默认关闭自动扩展
         if total_budget < 10000 and expansion_tiers is None and "AGENT_AUTO_EXPAND" not in os.environ:

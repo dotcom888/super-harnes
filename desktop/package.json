@@ -1,7 +1,7 @@
 {
-  "name": "super-harnes-desktop",
-  "version": "5.7.13",
-  "description": "Super-Harnes AI Coding Agent Desktop Client (DeepSeek Harness Edition)",
+  "name": "super-harness-desktop",
+  "version": "5.7.14",
+  "description": "Super-Harness AI Coding Agent Desktop Client (DeepSeek Harness Edition)",
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
@@ -30,8 +30,8 @@
     "vite": "^5.4.10"
   },
   "build": {
-    "appId": "com.superharnes.desktop",
-    "productName": "super-harnes",
+    "appId": "com.superharness.desktop",
+    "productName": "super harness",
     "directories": {
       "output": "release"
     },
@@ -62,7 +62,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "super-harnes"
+      "shortcutName": "super harness"
     },
     "extraResources": [
       {

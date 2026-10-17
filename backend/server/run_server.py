@@ -30,7 +30,7 @@ def main():
     port = 8765
     if len(sys.argv) > 1 and sys.argv[1].isdigit():
         port = int(sys.argv[1])
-    print(f"Starting Super-Harnes Agent Backend on http://127.0.0.1:{port}...")
+    print(f"Starting Super-Harness Agent Backend on http://127.0.0.1:{port}...")
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
 
 if __name__ == "__main__":

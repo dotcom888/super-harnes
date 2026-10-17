@@ -722,35 +722,48 @@ class TestContextEnhancements(unittest.TestCase):
         shutil.rmtree(temp_wrapup_dir, ignore_errors=True)
 
     def test_point_23_dynamic_budget_ledger_200k_default_and_elastic_expansion(self):
-        """验证点 23: 默认 200K 基线硬预算账本、分账配额与按需 250k-500k 动态弹性阶梯扩展"""
+        """验证点 23: 默认最多 200K 硬预算账本、各分区配额分配以及显式配置下的阶梯兼容"""
         default_ledger = BudgetLedger()
         self.assertEqual(default_ledger.total_budget, 200000)
-        self.assertEqual(default_ledger.system_reserve, 4000)
-        self.assertEqual(default_ledger.tools_reserve, 6000)
-        self.assertEqual(default_ledger.memory_reserve, 6000)
-        self.assertEqual(default_ledger.output_reserve, 8000)
-        self.assertEqual(default_ledger.history_budget, 176000)
-        self.assertEqual(default_ledger.expansion_tiers, [200000, 250000, 350000, 500000])
+        self.assertEqual(default_ledger.system_reserve, 30000)
+        self.assertEqual(default_ledger.tools_reserve, 20000)
+        self.assertEqual(default_ledger.memory_reserve, 8000)
+        self.assertEqual(default_ledger.output_reserve, 16000)
+        self.assertEqual(default_ledger.history_budget, 126000)
+        self.assertEqual(default_ledger.expansion_tiers, [200000])
         self.assertFalse(default_ledger.is_expanded)
-
-        # 验证单步向上跃迁至 250k (Tier 1)
-        stepped = default_ledger.step_up_tier()
-        self.assertTrue(stepped)
-        self.assertEqual(default_ledger.total_budget, 250000)
-        self.assertEqual(default_ledger.history_budget, 226000)
-        self.assertTrue(default_ledger.is_expanded)
-        self.assertEqual(default_ledger.current_tier_index, 1)
-
-        # 验证继续跃迁至 350k (Tier 2) 与 500k (Tier 3)
-        self.assertTrue(default_ledger.step_up_tier())
-        self.assertEqual(default_ledger.total_budget, 350000)
-        self.assertTrue(default_ledger.step_up_tier())
-        self.assertEqual(default_ledger.total_budget, 500000)
-        # 到达最高梯队 500k，无法进一步向上跃迁
+        self.assertFalse(default_ledger.auto_expand)
         self.assertFalse(default_ledger.step_up_tier())
 
+        # 验证显式开启弹性梯队时的扩展机制兼容性
+        test_ledger = BudgetLedger(
+            total_budget=200000,
+            base_budget=200000,
+            max_expand_budget=500000,
+            auto_expand=True,
+            expansion_tiers=[200000, 250000, 350000, 500000]
+        )
+        self.assertEqual(test_ledger.expansion_tiers, [200000, 250000, 350000, 500000])
+        self.assertTrue(test_ledger.step_up_tier())
+        self.assertEqual(test_ledger.total_budget, 250000)
+        self.assertEqual(test_ledger.history_budget, 176000)
+        self.assertTrue(test_ledger.is_expanded)
+        self.assertEqual(test_ledger.current_tier_index, 1)
+
+        self.assertTrue(test_ledger.step_up_tier())
+        self.assertEqual(test_ledger.total_budget, 350000)
+        self.assertTrue(test_ledger.step_up_tier())
+        self.assertEqual(test_ledger.total_budget, 500000)
+        self.assertFalse(test_ledger.step_up_tier())
+
         # 验证多级自动按需扩容 (expand_if_needed)
-        test_ledger = BudgetLedger()
+        test_ledger = BudgetLedger(
+            total_budget=200000,
+            base_budget=200000,
+            max_expand_budget=500000,
+            auto_expand=True,
+            expansion_tiers=[200000, 250000, 350000, 500000]
+        )
         # 当预估需求为 180,000 时，超过 200k 的 85% (170,000)，自动扩容至 250k (180k 在 250k 中占 72% < 85%)
         expanded = test_ledger.expand_if_needed(180000, threshold_ratio=0.85)
         self.assertTrue(expanded)
@@ -785,7 +798,7 @@ class TestContextEnhancements(unittest.TestCase):
             os.environ["AGENT_TOTAL_BUDGET"] = "128000"
             big_ledger = BudgetLedger()
             self.assertEqual(big_ledger.total_budget, 128000)
-            self.assertEqual(big_ledger.history_budget, 115000)
+            self.assertEqual(big_ledger.history_budget, 84000)
         finally:
             if old_env is not None:
                 os.environ["AGENT_TOTAL_BUDGET"] = old_env
@@ -944,7 +957,7 @@ line 3
 
             # 注入历史轮次使需求触及高位 (约 180,000 tokens > 176k*0.85 = 149.6k)
             big_turn = TurnChunk(turn_id=1)
-            big_turn.add_message({"role": "user", "content": "x" * 700000})  # ~184,000 tokens > 85%
+            big_turn.add_message({"role": "user", "content": "x" * 600000})  # ~157,000 tokens > 126k*0.85
             mgr.completed_turns.append(big_turn)
             mgr.turn_count = 1
 

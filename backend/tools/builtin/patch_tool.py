@@ -81,7 +81,7 @@ def _validate_patch_target(target_path_str: str) -> Path:
                 f"【安全拦截】：目标路径包含受保护资产 '{part}'，禁止写入！"
             )
 
-    # 3. 跨工作区防篡改保护：当处于非 super-harnes 项目时，绝对禁止修改 super-harnes 自身源码
+    # 3. 跨工作区防篡改保护：当处于非 super-harness 项目时，绝对禁止修改 super-harness 自身源码
     if default_workspace.root.resolve() != AGENT_SOURCE_ROOT.resolve():
         try:
             resolved.relative_to(AGENT_SOURCE_ROOT.resolve())

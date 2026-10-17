@@ -24,7 +24,7 @@ class TestHistorySyncAndCliGeneral(unittest.TestCase):
     def setUp(self):
         self.test_proj = f"unit_test_proj_{uuid.uuid4().hex[:8]}"
         self.test_hist_dir = HISTORY_ROOT / self.test_proj
-        self.test_ws_dir = Path.home() / ".super-harnes" / "workspace" / self.test_proj
+        self.test_ws_dir = Path.home() / ".super-harness" / "workspace" / self.test_proj
         self.test_ws_dir.mkdir(parents=True, exist_ok=True)
         self.test_hist_dir.mkdir(parents=True, exist_ok=True)
 

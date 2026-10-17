@@ -47,7 +47,7 @@ class ReActAgent:
         mcp_manager: Optional[McpManager] = None,
         session_manager: Optional[SessionManager] = None
     ):
-        # 自动同步解析模型、凭据与 Base URL (优先参数/环境，默认无缝对齐桌面端 ~/.super-harnes/config/models_config.json)
+        # 自动同步解析模型、凭据与 Base URL (优先参数/环境，默认无缝对齐桌面端 ~/.super-harness/config/models_config.json)
         from config.model_resolver import resolve_active_model_config
         resolved_model, resolved_key, resolved_url, resolved_source = resolve_active_model_config(
             model=model,
@@ -187,6 +187,22 @@ class ReActAgent:
             "content": getattr(message, "content", "") or ""
         }
         reasoning = getattr(message, "reasoning_content", "") or ""
+        if not reasoning and hasattr(message, "model_extra") and isinstance(message.model_extra, dict):
+            reasoning = message.model_extra.get("reasoning_content") or message.model_extra.get("reasoning") or ""
+        if not reasoning:
+            reasoning = getattr(message, "reasoning", "") or ""
+
+        content_str = msg_dict.get("content", "")
+        if not reasoning and isinstance(content_str, str) and ("<think>" in content_str.lower()):
+            import re
+            m = re.search(r"<think>(.*?)(?:</think>|$)", content_str, flags=re.DOTALL | re.IGNORECASE)
+            if m:
+                think_part = m.group(1).strip()
+                cleaned_content = re.sub(r"<think>.*?(?:</think>|$)", "", content_str, flags=re.DOTALL | re.IGNORECASE).strip()
+                if think_part:
+                    reasoning = think_part
+                    msg_dict["content"] = cleaned_content
+
         if reasoning:
             msg_dict["reasoning_content"] = reasoning
         tool_calls = getattr(message, "tool_calls", None)
@@ -655,6 +671,15 @@ class ReActAgent:
                             print(f"\n[平滑收尾] Agent 在最终步 (第 {step} 步) 成功汇总事实并完成解答。")
                         else:
                             print(f"\n[任务达成] Agent 在第 {step} 步完成了本轮推理（无需继续调用工具，自然结束）。")
+
+                    thought_str = assistant_dict.get("reasoning_content") or ""
+                    if thought_str:
+                        if thought_callback:
+                            thought_callback(thought_str)
+                        if is_ui:
+                            default_ui.render_thinking(thought_str)
+                        elif verbose:
+                            print(f"  [Thought] {thought_str}")
 
                     final_text = assistant_dict.get("content") or "（无返回内容）"
                     if token_callback and final_text:

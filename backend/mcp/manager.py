@@ -45,13 +45,14 @@ class McpManager:
         """
         获取多层级级联候选路径列表（按优先级从高到低）：
         1. 目标工程项目专属配置：<workspace>/.super/mcp_servers.json、<workspace>/config/mcp_servers.json、<workspace>/mcp_servers.json
-        2. 用户全局配置：~/.super-harnes/mcp_servers.json
+        2. 用户全局配置：~/.super-harness/mcp_servers.json
         3. Agent 安装包内置保底配置：<agent_home>/config/mcp_servers.json、<agent_home>/mcp_servers.json
         """
         candidates: List[Path] = [
             default_workspace.root / ".super" / "mcp_servers.json",
             default_workspace.root / "config" / "mcp_servers.json",
             default_workspace.root / "mcp_servers.json",
+            Path.home() / ".super-harness" / "mcp_servers.json",
             Path.home() / ".super-harnes" / "mcp_servers.json",
             AGENT_INSTALL_ROOT / "backend" / "config" / "mcp_servers.json",
             AGENT_INSTALL_ROOT / "config" / "mcp_servers.json",

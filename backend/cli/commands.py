@@ -245,7 +245,7 @@ def handle_slash_command(agent, prompt: str) -> Tuple[bool, bool]:
         from context.global_memory import default_global_memory
         if default_global_memory.add_habit(habit_text):
             print(f"【全局记忆已更新】已成功记入偏好规范：\n  • {habit_text}")
-            print("💡 该偏好已永久保存至 ~/.super-harnes/global_memory.json，跨所有工程与会话生效。")
+            print("💡 该偏好已永久保存至 ~/.super-harness/global_memory.json，跨所有工程与会话生效。")
         else:
             print("【提示】该偏好此前已登记，无需重复添加。")
         return True, False

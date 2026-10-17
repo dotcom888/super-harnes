@@ -603,7 +603,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               className="w-full flex items-center gap-2 px-3 py-2 hover:bg-red-50 dark:hover:bg-red-950/30 text-red-600 dark:text-red-400 text-left transition cursor-pointer"
             >
               <Trash2 size={13} />
-              <span>删除</span>
+              <span>删除会话</span>
             </button>
           </div>
         </>

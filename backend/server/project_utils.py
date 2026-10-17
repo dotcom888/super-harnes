@@ -7,18 +7,53 @@ logger = logging.getLogger("super-server.project_utils")
 
 # 服务端代码自身的物理根目录
 import sys
+import shutil
+
+logger = logging.getLogger("super-server.project_utils")
+
+def migrate_legacy_user_data_root():
+    """自动将 ~/.super-harnes 平滑迁移合并至 ~/.super-harness"""
+    old_root = Path.home() / ".super-harnes"
+    new_root = Path.home() / ".super-harness"
+    if old_root.exists() and old_root.is_dir():
+        try:
+            new_root.mkdir(parents=True, exist_ok=True)
+            def merge_tree(src: Path, dst: Path):
+                dst.mkdir(parents=True, exist_ok=True)
+                for item in list(src.iterdir()):
+                    target = dst / item.name
+                    if item.is_dir():
+                        merge_tree(item, target)
+                    else:
+                        if not target.exists() or item.stat().st_mtime > target.stat().st_mtime:
+                            shutil.copy2(str(item), str(target))
+            merge_tree(old_root, new_root)
+            # 兼容迁移历史中的自身工程名称
+            old_self = new_root / "history" / "super-harnes"
+            new_self = new_root / "history" / "super-harness"
+            if old_self.exists() and not new_self.exists():
+                old_self.rename(new_self)
+            # 迁移完成后清理旧版目录，保持用户主目录纯净
+            shutil.rmtree(old_root, ignore_errors=True)
+            logger.info("已成功将 ~/.super-harnes 迁移并合并至 ~/.super-harness，并清理旧版目录")
+        except Exception as e:
+            logger.warning(f"迁移 ~/.super-harnes 失败: {e}")
+
+migrate_legacy_user_data_root()
+
+
 if getattr(sys, "frozen", False):
     AGENT_SOURCE_ROOT = Path(sys.executable).resolve().parent
 else:
     AGENT_SOURCE_ROOT = Path(__file__).resolve().parents[1]
 
-HISTORY_ROOT = Path.home() / ".super-harnes" / "history"
+HISTORY_ROOT = Path.home() / ".super-harness" / "history"
 HISTORY_ROOT.mkdir(parents=True, exist_ok=True)
-PROJECTS_CONFIG_FILE = Path.home() / ".super-harnes" / "projects.json"
+PROJECTS_CONFIG_FILE = Path.home() / ".super-harness" / "projects.json"
 PINS_CONFIG_FILE = HISTORY_ROOT / "pins_config.json"
 
 def get_registered_projects() -> list:
-    """读取 ~/.super-harnes/projects.json 中注册的磁盘项目映射"""
+    """读取 ~/.super-harness/projects.json 中注册的磁盘项目映射"""
     if PROJECTS_CONFIG_FILE.exists():
         try:
             with open(PROJECTS_CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -30,7 +65,7 @@ def get_registered_projects() -> list:
     return []
 
 def save_registered_projects(projects: list) -> None:
-    """持久化保存 ~/.super-harnes/projects.json"""
+    """持久化保存 ~/.super-harness/projects.json"""
     PROJECTS_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(PROJECTS_CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(projects, f, ensure_ascii=False, indent=2)
@@ -39,10 +74,10 @@ def resolve_project_workspace_root(project_name: str) -> Path:
     """
     全方位解析项目工作区的真实物理路径，支持大小写自适应与自动探测：
     1. 优先读取 history/<project_name>/project_state.json 的 workspace_root
-    2. 检索 ~/.super-harnes/projects.json 中注册的物理路径 (不区分大小写匹配)
+    2. 检索 ~/.super-harness/projects.json 中注册的物理路径 (不区分大小写匹配)
     3. 自动探测同级目录 (例如 E:\\study\\<project_name>)
     4. 若为 super-harnes 本身，返回 AGENT_SOURCE_ROOT
-    5. 兜底回退：在 ~/.super-harnes/workspace/<project_name> 创建独立项目根目录
+    5. 兜底回退：在 ~/.super-harness/workspace/<project_name> 创建独立项目根目录
     """
     pname_clean = project_name.strip()
     pname_lower = pname_clean.lower()
@@ -69,7 +104,7 @@ def resolve_project_workspace_root(project_name: str) -> Path:
         except Exception:
             pass
 
-    # 2. 检查 ~/.super-harnes/projects.json 注册表
+    # 2. 检查 ~/.super-harness/projects.json 注册表
     registered = get_registered_projects()
     for reg in registered:
         r_name = str(reg.get("name", "")).strip()
@@ -94,16 +129,16 @@ def resolve_project_workspace_root(project_name: str) -> Path:
                 return found_path
 
     # 4. 若名称为 super-harnes 则直接为自身代码根目录
-    if not getattr(sys, "frozen", False) and pname_lower in ("super-harnes", "super-server"):
+    if not getattr(sys, "frozen", False) and pname_lower in ("super-harness", "super-harnes", "super-server"):
         return AGENT_SOURCE_ROOT
 
     # 5. 兜底：独立会话或暂存沙箱，严禁指向 super-harnes 源码
     if not pname_clean or pname_clean.lower() in ("_general", "scratchpad", "workspace"):
-        fallback_dir = Path.home() / ".super-harnes" / "scratchpad"
+        fallback_dir = Path.home() / ".super-harness" / "scratchpad"
         fallback_dir.mkdir(parents=True, exist_ok=True)
         return fallback_dir
 
-    fallback_dir = Path.home() / ".super-harnes" / "workspace" / pname_clean
+    fallback_dir = Path.home() / ".super-harness" / "workspace" / pname_clean
     fallback_dir.mkdir(parents=True, exist_ok=True)
     if target_history_dir.exists():
         register_project_path(pname_clean, str(fallback_dir))
@@ -130,7 +165,7 @@ def _persist_project_state(proj_dir: Path, proj_name: str, ws_path: str):
         logger.warning(f"Failed to persist project_state for {proj_name}: {e}")
 
 def register_project_path(name: str, path: str):
-    """将新项目或更新路径登记到 ~/.super-harnes/projects.json 并确保 history/ 目录与 project_state.json 同步"""
+    """将新项目或更新路径登记到 ~/.super-harness/projects.json 并确保 history/ 目录与 project_state.json 同步"""
     projects = get_registered_projects()
     norm_path = str(Path(path).resolve())
     updated = False

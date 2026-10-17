@@ -102,6 +102,8 @@ export const DevToolsSidebar: React.FC<DevToolsSidebarProps> = ({
   const [terminalInput, setTerminalInput] = useState("");
   const [historyCmds, setHistoryCmds] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
+  const [tabCwds, setTabCwds] = useState<Record<string, string>>({});
+  const activeCwd = (activeTabId && tabCwds[activeTabId]) || workspacePath || "";
   const terminalContainerRef = useRef<HTMLDivElement>(null);
   const terminalInputRef = useRef<HTMLInputElement>(null);
   const terminalOutputsRef = useRef(terminalOutputs);
@@ -242,22 +244,34 @@ export const DevToolsSidebar: React.FC<DevToolsSidebarProps> = ({
     const tabId = activeTab.id;
 
     if ((window as any).electronAPI?.terminalCreate) {
-      (window as any).electronAPI.terminalCreate({ id: tabId, cwd: workspacePath }).catch(() => {});
+      (window as any).electronAPI.terminalCreate({ id: tabId, cwd: activeCwd || workspacePath }).then((res: any) => {
+        if (res?.cwd) {
+          setTabCwds((prev) => ({ ...prev, [tabId]: res.cwd }));
+        }
+      }).catch(() => {});
     }
 
-    if ((window as any).electronAPI?.onTerminalData) {
-      const unsub = (window as any).electronAPI.onTerminalData(tabId, (chunk: string) => {
-        if (!chunk) return;
-        const curList = terminalOutputsRef.current[tabId] || defaultTerminalHeader;
-        onTerminalOutputsChange({
-          ...terminalOutputsRef.current,
-          [tabId]: [...curList, chunk]
-        });
+    const unsubData = (window as any).electronAPI?.onTerminalData?.(tabId, (chunk: string) => {
+      if (!chunk) return;
+      const cleanChunk = chunk.replace(/(\r\n|\n)+$/, "");
+      if (!cleanChunk) return;
+      const curList = terminalOutputsRef.current[tabId] || defaultTerminalHeader;
+      onTerminalOutputsChange({
+        ...terminalOutputsRef.current,
+        [tabId]: [...curList, cleanChunk]
       });
-      return () => {
-        if (typeof unsub === "function") unsub();
-      };
-    }
+    });
+
+    const unsubCwd = (window as any).electronAPI?.onTerminalCwd?.(tabId, (newCwd: string) => {
+      if (newCwd) {
+        setTabCwds((prev) => ({ ...prev, [tabId]: newCwd }));
+      }
+    });
+
+    return () => {
+      if (typeof unsubData === "function") unsubData();
+      if (typeof unsubCwd === "function") unsubCwd();
+    };
   }, [activeTabId, activeTab?.type, workspacePath]);
 
   // 终端命令执行与历史维护
@@ -269,8 +283,11 @@ export const DevToolsSidebar: React.FC<DevToolsSidebarProps> = ({
       const curList = terminalOutputsRef.current[activeTabId] || defaultTerminalHeader;
       onTerminalOutputsChange({
         ...terminalOutputsRef.current,
-        [activeTabId]: [...curList, `PS ${workspacePath}>`]
+        [activeTabId]: [...curList, `PS ${activeCwd}>`]
       });
+      if ((window as any).electronAPI?.terminalWrite) {
+        (window as any).electronAPI.terminalWrite({ id: activeTabId, data: "\r\n", cwd: activeCwd });
+      }
       setTerminalInput("");
       return;
     }
@@ -287,16 +304,16 @@ export const DevToolsSidebar: React.FC<DevToolsSidebarProps> = ({
       return;
     }
 
-    const promptLine = `PS ${workspacePath}> ${cmd}`;
+    const promptLine = `PS ${activeCwd}> ${cmd}`;
     const curList = terminalOutputsRef.current[activeTabId] || defaultTerminalHeader;
 
-    // 优先通过 Electron PTY 管道发送
+    // 优先通过 Electron 管道发送
     if ((window as any).electronAPI?.terminalWrite) {
       onTerminalOutputsChange({
         ...terminalOutputsRef.current,
         [activeTabId]: [...curList, promptLine]
       });
-      (window as any).electronAPI.terminalWrite({ id: activeTabId, data: cmd + "\r\n", cwd: workspacePath });
+      (window as any).electronAPI.terminalWrite({ id: activeTabId, data: cmd + "\r\n", cwd: activeCwd });
       setTerminalInput("");
     } else {
       // 纯 Web 调试模式或 Electron 桥接不可用时，通过后端 /api/terminal/exec 真实执行
@@ -305,20 +322,42 @@ export const DevToolsSidebar: React.FC<DevToolsSidebarProps> = ({
         [activeTabId]: [...curList, promptLine]
       });
       setTerminalInput("");
+
+      // Web 模式下的 cd 解析与路径状态维护
+      let nextCwd = activeCwd;
+      if (cmd.toLowerCase().startsWith("cd ") || cmd.toLowerCase() === "cd") {
+        const rawTarget = cmd.slice(2).trim().replace(/^["']|["']$/g, "");
+        if (rawTarget) {
+          if (/^[a-zA-Z]:[\\\/]/.test(rawTarget)) {
+            nextCwd = rawTarget;
+          } else if (rawTarget === ".." || rawTarget.startsWith("../") || rawTarget.startsWith("..\\")) {
+            const parts = activeCwd.split(/[\\\/]/).filter(Boolean);
+            parts.pop();
+            nextCwd = parts.join("\\") || activeCwd;
+          } else if (rawTarget !== ".") {
+            nextCwd = `${activeCwd}\\${rawTarget}`.replace(/\\\\+/g, "\\");
+          }
+          setTabCwds((prev) => ({ ...prev, [activeTabId]: nextCwd }));
+        }
+      }
+
       try {
         const res = await fetch("http://127.0.0.1:8765/api/terminal/exec", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ command: cmd, cwd: workspacePath || undefined })
+          body: JSON.stringify({ command: cmd, cwd: nextCwd || workspacePath || undefined })
         });
         if (res.ok) {
           const data = await res.json();
           const out = data.stdout || data.stderr || "";
           const afterList = terminalOutputsRef.current[activeTabId] || [];
-          onTerminalOutputsChange({
-            ...terminalOutputsRef.current,
-            [activeTabId]: [...afterList, out.trimEnd()]
-          });
+          const cleanOut = out.replace(/(\r\n|\n)+$/, "");
+          if (cleanOut) {
+            onTerminalOutputsChange({
+              ...terminalOutputsRef.current,
+              [activeTabId]: [...afterList, cleanOut]
+            });
+          }
         }
       } catch (err: any) {
         const afterList = terminalOutputsRef.current[activeTabId] || [];
@@ -691,7 +730,7 @@ export const DevToolsSidebar: React.FC<DevToolsSidebarProps> = ({
           onClick={() => terminalInputRef.current?.focus()}
           className="flex-1 p-4 overflow-y-auto font-mono text-xs text-gray-900 dark:text-gray-100 bg-white dark:bg-[#0c0d12] select-text cursor-text leading-relaxed"
         >
-          {filteredOutputs.map((line, idx) => (
+          {currentOutputs.map((line, idx) => (
             <div key={idx} className="whitespace-pre-wrap">
               {line}
             </div>
@@ -700,7 +739,7 @@ export const DevToolsSidebar: React.FC<DevToolsSidebarProps> = ({
           {/* 唯一的活跃行内交互提示符 */}
           <div className="flex items-center flex-wrap pt-0.5">
             <span className="text-gray-900 dark:text-gray-100 font-bold mr-1.5 select-none shrink-0">
-              PS {workspacePath}&gt;
+              PS {activeCwd}&gt;
             </span>
             <input
               ref={terminalInputRef}

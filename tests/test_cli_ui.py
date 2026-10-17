@@ -20,7 +20,7 @@ class TestClaudeCodeUI(unittest.TestCase):
         with patch.object(self.ui.console, "print") as mock_print:
             self.ui.render_banner(
                 workspace_path=Path.cwd(),
-                project_name="super-harnes",
+                project_name="super-harness",
                 session_id="default",
                 model="deepseek-chat",
                 native_tools=["run_shell", "read_file"],
@@ -97,7 +97,7 @@ class TestClaudeCodeUI(unittest.TestCase):
             sessions = [
                 {"session_id": "default", "is_active": True, "turn_count": 2, "modified_files_count": 1, "has_disk_file": True, "current_goal": "Refactor"}
             ]
-            self.ui.render_sessions_table(sessions, "super-harnes")
+            self.ui.render_sessions_table(sessions, "super-harness")
             self.assertTrue(mock_print.called)
 
     def test_user_prompt_rendering(self):

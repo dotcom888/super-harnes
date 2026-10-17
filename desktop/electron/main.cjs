@@ -49,7 +49,7 @@ function resolvePythonCommand() {
 function startBackendDaemon() {
   checkBackendReady((isReady) => {
     if (isReady) {
-      console.log('Super-Harnes backend is already running on port', BACKEND_PORT);
+      console.log('Super-Harness backend is already running on port', BACKEND_PORT);
       return;
     }
 
@@ -247,14 +247,50 @@ function createWindow() {
     return result.filePaths[0];
   });
 
+  function sendTerminalMsg(channel, ...args) {
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+      mainWindow.webContents.send(channel, ...args);
+    }
+  }
+
+  function decodeTerminalBuf(buf) {
+    try {
+      const utf8 = new TextDecoder('utf-8', { fatal: true });
+      return utf8.decode(buf);
+    } catch {
+      try {
+        const gbk = new TextDecoder('gbk');
+        return gbk.decode(buf);
+      } catch {
+        return buf.toString();
+      }
+    }
+  }
+
+  function handleProcOutput(id, rawBuf) {
+    const text = decodeTerminalBuf(rawBuf);
+    const match = text.match(/__CWD__:(.*?)__(\r\n|\n)?/);
+    let clean = text;
+    if (match) {
+      const detectedCwd = match[1].trim();
+      clean = text.replace(/__CWD__:.*?__(\r\n|\n)?/g, '');
+      sendTerminalMsg(`terminal:cwd:${id}`, detectedCwd);
+    }
+    const trimmed = clean.replace(/(\r\n|\n)+$/, '');
+    if (trimmed) {
+      sendTerminalMsg(`terminal:data:${id}`, trimmed);
+    }
+  }
+
   // 终端会话 IPC 处理 (用于右侧调试侧边栏运行 PowerShell / 终端)
   ipcMain.handle('terminal:create', (event, { id, cwd }) => {
+    const targetCwd = cwd || path.resolve(__dirname, '../..');
     if (terminalSessions.has(id)) {
-      return { success: true, cwd: cwd || path.resolve(__dirname, '../..') };
+      sendTerminalMsg(`terminal:cwd:${id}`, targetCwd);
+      return { success: true, cwd: targetCwd };
     }
     const shellCmd = process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || 'bash');
-    const shellArgs = process.platform === 'win32' ? ['-NoLogo', '-ExecutionPolicy', 'Bypass'] : [];
-    const targetCwd = cwd || path.resolve(__dirname, '../..');
+    const shellArgs = process.platform === 'win32' ? ['-NoLogo', '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', '-'] : [];
 
     try {
       const proc = spawn(shellCmd, shellArgs, {
@@ -263,20 +299,16 @@ function createWindow() {
         windowsHide: true
       });
 
-      proc.stdout.on('data', (data) => {
-        event.sender.send(`terminal:data:${id}`, data.toString('utf8'));
-      });
-
-      proc.stderr.on('data', (data) => {
-        event.sender.send(`terminal:data:${id}`, data.toString('utf8'));
-      });
+      proc.stdout.on('data', (data) => handleProcOutput(id, data));
+      proc.stderr.on('data', (data) => handleProcOutput(id, data));
 
       proc.on('exit', (code) => {
-        event.sender.send(`terminal:exit:${id}`, code);
+        sendTerminalMsg(`terminal:exit:${id}`, code);
         terminalSessions.delete(id);
       });
 
       terminalSessions.set(id, proc);
+      sendTerminalMsg(`terminal:cwd:${id}`, targetCwd);
       return { success: true, cwd: targetCwd };
     } catch (err) {
       return { success: false, error: err.message };
@@ -287,7 +319,7 @@ function createWindow() {
     let proc = terminalSessions.get(id);
     if (!proc) {
       const shellCmd = process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || 'bash');
-      const shellArgs = process.platform === 'win32' ? ['-NoLogo', '-ExecutionPolicy', 'Bypass'] : [];
+      const shellArgs = process.platform === 'win32' ? ['-NoLogo', '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', '-'] : [];
       const targetCwd = cwd || path.resolve(__dirname, '../..');
       try {
         proc = spawn(shellCmd, shellArgs, {
@@ -295,19 +327,25 @@ function createWindow() {
           env: { ...process.env, TERM: 'xterm-256color' },
           windowsHide: true
         });
-        proc.stdout.on('data', (d) => event.sender.send(`terminal:data:${id}`, d.toString('utf8')));
-        proc.stderr.on('data', (d) => event.sender.send(`terminal:data:${id}`, d.toString('utf8')));
+        proc.stdout.on('data', (d) => handleProcOutput(id, d));
+        proc.stderr.on('data', (d) => handleProcOutput(id, d));
         proc.on('exit', (code) => {
-          event.sender.send(`terminal:exit:${id}`, code);
+          sendTerminalMsg(`terminal:exit:${id}`, code);
           terminalSessions.delete(id);
         });
         terminalSessions.set(id, proc);
+        sendTerminalMsg(`terminal:cwd:${id}`, targetCwd);
       } catch (e) {
         console.error('Failed to auto-spawn terminal in write:', e);
       }
     }
     if (proc && proc.stdin && proc.stdin.writable) {
-      proc.stdin.write(data);
+      if (process.platform === 'win32' && data.endsWith('\r\n') && data.trim().length > 0) {
+        proc.stdin.write(data);
+        proc.stdin.write("Write-Host \"__CWD__:$($executionContext.SessionState.Path.CurrentLocation)__\"\r\n");
+      } else {
+        proc.stdin.write(data);
+      }
     }
   });
 

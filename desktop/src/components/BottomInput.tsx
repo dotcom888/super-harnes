@@ -24,7 +24,7 @@ import {
   UploadCloud,
   Loader2
 } from "lucide-react";
-import { TelemetryMetrics, AttachmentItem } from "../types";
+import { AttachmentItem } from "../types";
 import { PendingAttachmentChip } from "./AttachmentCards";
 import { readMediaFromClipboard, extractFilesFromClipboardEvent, saveDraft, loadDraft, clearDraft } from "../utils/clipboardHelper";
 import { InputContextMenu, ContextMenuPosition } from "./InputContextMenu";
@@ -33,7 +33,6 @@ import { EXECUTION_MODES, normalizeModeId, getModeDisplayName, ExecutionModeId }
 interface BottomInputProps {
   onSend: (text: string, model: string, permission: string, attachments?: AttachmentItem[]) => void;
   isLoading: boolean;
-  metrics: TelemetryMetrics;
   onScrollToBottom?: () => void;
   showScrollBottom?: boolean;
   models?: string[];
@@ -62,7 +61,6 @@ interface CommandItem {
 export const BottomInput: React.FC<BottomInputProps> = ({
   onSend,
   isLoading,
-  metrics,
   onScrollToBottom,
   showScrollBottom = false,
   models = [],
@@ -772,18 +770,7 @@ export const BottomInput: React.FC<BottomInputProps> = ({
         onSelectAll={handleMenuSelectAll}
       />
 
-      {/* 底部遥测状态栏 */}
-      <div className="w-full text-center py-1 text-[11px] text-gray-400 dark:text-gray-500 font-mono tracking-tight flex items-center justify-center gap-2">
-        <span>{metrics.turns} 轮 · {metrics.steps} 步</span>
-        <span>|</span>
-        <span>LLM {metrics.total_time} · 工具调用 {metrics.tool_time}</span>
-        <span>|</span>
-        <span>首 token {metrics.ttft && metrics.ttft !== "--" ? metrics.ttft : "--"} · {metrics.tokens_per_sec} tok/s</span>
-        <span>|</span>
-        <span>缓存命中 {Math.round(metrics.cache_hit_rate * 100)}%</span>
-        <span>|</span>
-        <span>输入 {(metrics.prompt_tokens / 1000000).toFixed(1)}M tok · 输出 {(metrics.completion_tokens / 1000).toFixed(1)}k tok</span>
-      </div>
+
     </div>
   );
 };

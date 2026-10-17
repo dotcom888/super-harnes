@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class GlobalMemory:
     """
     用户级全局共享记忆 (Global User Memory):
-    位于操作系统的用户主目录 (~/.super-harnes/global_memory.json)。
+    位于操作系统的用户主目录 (~/.super-harness/global_memory.json)。
     跨越所有项目工程生效，永久保留：
     1. 用户编码偏好与开发规范 (user_profile.coding_habits)
     2. 交互语言与回复风格 (user_profile.language, interaction_preference)
@@ -21,7 +21,7 @@ class GlobalMemory:
         if storage_path:
             self.storage_path = Path(storage_path).resolve()
         else:
-            self.storage_path = (Path.home() / ".super-harnes" / "global_memory.json").resolve()
+            self.storage_path = (Path.home() / ".super-harness" / "global_memory.json").resolve()
 
         self.version = "1.0"
         self.updated_at = time.time()
@@ -187,7 +187,7 @@ class GlobalMemory:
 
     def format_profile_view(self) -> str:
         """生成控制台展示看板"""
-        lines = [f"\n{'='*22} 用户全局共享记忆 (~/.super-harnes) {'='*22}"]
+        lines = [f"\n{'='*22} 用户全局共享记忆 (~/.super-harness) {'='*22}"]
         lines.append(f"• 交互语言: {self.user_profile.get('language', '简体中文')}")
         prefs = self.user_profile.get("interaction_preference", [])
         if prefs:

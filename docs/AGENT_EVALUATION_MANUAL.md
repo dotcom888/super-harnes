@@ -1,10 +1,10 @@
-# Super-Harnes 智能体综合评估与评测手册 (Agent Evaluation Manual)
+# Super-Harness 智能体综合评估与评测手册 (Agent Evaluation Manual)
 
 > **文档版本**: v2.5.0  
 > **文档密级**: 核心技术标准规范 / 公开发布版  
 > **发布日期**: 2026-09-28  
 > **面向对象**: AI 评测专家、LLM/Agent 算法工程师、系统架构师、QA 评测负责人  
-> **评测对象**: **Super-Harnes** 工业级自主代码编程智能体 (Autonomous Coding Agent)
+> **评测对象**: **Super-Harness** 工业级自主代码编程智能体 (Autonomous Coding Agent)
 
 ---
 
@@ -81,11 +81,11 @@
 
 ## 2. 七大核心评估维度与量化指标体系
 
-Super-Harnes 评测体系提炼了面向工业级编码智能体的七大核心评估维度，并对每个维度定义了严格的量化 KPI 公式与达标基准线：
+Super-Harness 评测体系提炼了面向工业级编码智能体的七大核心评估维度，并对每个维度定义了严格的量化 KPI 公式与达标基准线：
 
 ```
   +--------------------------------------------------------------------------+
-  |              Super-Harnes 智能体 7 维全景评估模型 (Radar Model)           |
+  |              Super-Harness 智能体 7 维全景评估模型 (Radar Model)           |
   +--------------------------------------------------------------------------+
   |  1. 任务解决率 (Resolution Rate)    ── 真实缺陷修复率、测试通过率 (Pass@1)  |
   |  2. 工具决策质量 (Tool Precision)   ── 工具选择准确度、参数合法性、阶段流转  |
@@ -190,12 +190,12 @@ Super-Harnes 评测体系提炼了面向工业级编码智能体的七大核心�
 ## 3. 评测基准数据集设计与规范
 
 ### 3.1 SWE-bench 行业标准对齐
-Super-Harnes 评测框架全面拥抱国际顶尖的软件工程基准：
+Super-Harness 评测框架全面拥抱国际顶尖的软件工程基准：
 1. **SWE-bench Lite (300 Tasks)**：精选自真实 GitHub 仓库（如 Django、SymPy、Flask、Requests、Pytest 等）的自包含高频问题，作为标准学术及行业横向对比基准。
 2. **SWE-bench Verified (500 Tasks)**：人工二次审核验证、排除题目模糊与虚假失败的黄金子集，作为模型核心能力的最高级别校准集。
 
 ### 3.2 自建 Golden Set 评测集设计 (工业级场景精选集)
-为了精准评测 Super-Harnes 专有的 **200k~500k 弹性滑窗**、**三阶段状态机**、**反思型死循环拦截** 与 **物理磁盘快照回滚** 能力，官方自建了 60 道端到端真实场景 Golden Set（覆盖 5 大工程类型与 3 级复杂度）：
+为了精准评测 Super-Harness 专有的 **200k~500k 弹性滑窗**、**三阶段状态机**、**反思型死循环拦截** 与 **物理磁盘快照回滚** 能力，官方自建了 60 道端到端真实场景 Golden Set（覆盖 5 大工程类型与 3 级复杂度）：
 
 | 场景分类代号 | 任务类型 | 占比 | 典型任务场景 | 重点考核能力 |
 | :--- | :--- | :---: | :--- | :--- |
@@ -239,7 +239,7 @@ Super-Harnes 评测框架全面拥抱国际顶尖的软件工程基准：
 
 ## 4. 评测方法论与分级评分细则
 
-Super-Harnes 创新性地采用**三层梯度综合评分机制**，兼顾绝对结果正确性、代码实现质量与人机协同体验：
+Super-Harness 创新性地采用**三层梯度综合评分机制**，兼顾绝对结果正确性、代码实现质量与人机协同体验：
 
 ```
   Level 3: 人机协同体验 (Human Experience) ── 15% 权重 (开发者打扰度、审批疲劳、回滚确定性)
@@ -304,10 +304,10 @@ $$S_{\text{task}} = \left( S_{\text{det}} \times 0.60 \right) + \left( \frac{S_{
 
 ```
   +--------------------------------------------------------------------------+
-  |              Super-Harnes 自动化评测流水线 (Evaluation Pipeline)          |
+  |              Super-Harness 自动化评测流水线 (Evaluation Pipeline)          |
   +--------------------------------------------------------------------------+
   | 1. 环境准备 (Setup)   ── 启动纯净沙箱，注入待测代码工程并复位 Git 提交   |
-  | 2. 任务分发 (Dispatch)── 注入 problem_statement，启动 Super-Harnes 引擎   |
+  | 2. 任务分发 (Dispatch)── 注入 problem_statement，启动 Super-Harness 引擎   |
   | 3. 闭环推理 (ReAct)   ── Agent 自主探索、修改与验证，全链路采集 Telemetry|
   | 4. 自动化判卷 (Grade) ── 执行 target pytest，校验 exit_code 与 AST 合法性 |
   | 5. 专家打分 (Judge)   ── 触发 LLM-as-a-Judge 评估推理逻辑链与代码规范度  |
@@ -400,7 +400,7 @@ $$S_{\text{task}} = \left( S_{\text{det}} \times 0.60 \right) + \left( \frac{S_{
 2. **工具 Schema 缺乏负向约束**: 模型未意识到目标文件已经被排除，盲目重复尝试；
 3. **缺乏状态机约束**: 没有明确从 EXPLORE 到 MODIFY 的推进门槛。
 
-#### Super-Harnes 调优与应对 SOP：
+#### Super-Harness 调优与应对 SOP：
 - **两级防线介入**:
   - 第 3 次循环时，`LoopDetector` 自动触发黄牌（WARNING），向模型注入反思提示：`【检测到重复排查停滞】...请停止盲目重试，建议使用 view_file_outline 或调整关键词`；
   - 第 4 次若继续振荡，出示红牌（FORCE_WRAPUP），强行关闭工具接口，迫使模型基于掌握的事实收尾并汇报困难。
@@ -420,7 +420,7 @@ $$S_{\text{task}} = \left( S_{\text{det}} \times 0.60 \right) + \left( \frac{S_{
 2. **行号前缀污染**: 模型从 IDE 带行号的提示中复制了代码（如 `42 | def foo():`）；
 3. **跨平台换行混淆**: Linux LF 与 Windows CRLF 换行符差异导致精准字符串匹配失败。
 
-#### Super-Harnes 调优与应对 SOP：
+#### Super-Harness 调优与应对 SOP：
 - **内核确定性防御**:
   - `apply_patch` 自动执行正则行号剥离与全局 CRLF/LF 预归一化；
   - 补丁写入物理磁盘前，立即执行 `ast.parse` 语法自检；
@@ -440,7 +440,7 @@ $$S_{\text{task}} = \left( S_{\text{det}} \times 0.60 \right) + \left( \frac{S_{
 2. **滑窗机械截断丢关键信息**: 简单从头部剔除消息导致用户最开始提出的详细需求被移出上下文；
 3. **Prompt Cache 缓存位置不合理**: 动态信息插入在静态提示词前方，破坏了大模型服务端缓存。
 
-#### Super-Harnes 调优与应对 SOP：
+#### Super-Harness 调优与应对 SOP：
 - **专款专用账本与工作记忆保全**:
   - `WorkingMemory` 中始终锁定保留 `current_goal`、`inspected_files` 与 `last_test_status`；
   - 逆向滑动窗口（SlidingWindow）始终成对保留最新交互，红区自动触发带轮次锚点的结构化增量纪要（如 `【历史排查纪要 (#1 ~ #8)】`）；
@@ -458,7 +458,7 @@ $$S_{\text{task}} = \left( S_{\text{det}} \times 0.60 \right) + \left( \frac{S_{
 1. **缺乏闭环验证机制**: 模型在生成代码修改后缺乏自我怀疑态度，将“修改完毕”等同于“问题解决”；
 2. **验证工具 Schema 优先级过低**: 模型注意力未聚焦在测试运行工具上。
 
-#### Super-Harnes 调优与应对 SOP：
+#### Super-Harness 调优与应对 SOP：
 - **状态机阶段置顶重排**:
   - 任何代码修改成功（`apply_patch` / `write_file`）后，`StageManager` 立即将状态自动跃迁为 `TaskStage.VERIFY`；
   - 动态重排工具列表，将 `run_shell` 置顶，并注入引导 Banner：`【当前任务阶段: 验证闭环态 (VERIFY)】代码已修改完成，请优先运行 pytest 或构建命令进行闭环验证！`；
@@ -476,7 +476,7 @@ $$S_{\text{task}} = \left( S_{\text{det}} \times 0.60 \right) + \left( \frac{S_{
 1. **串行阻塞启动**: 多个外部子进程顺序启动，单个外部命令响应慢拖垮整体；
 2. **操作系统管道缓冲区阻塞**: Stderr 管道未被持续异步排空，达到 64KB 缓冲上限后子进程挂起。
 
-#### Super-Harnes 调优与应对 SOP：
+#### Super-Harness 调优与应对 SOP：
 - **并发握手与异步守护**:
   - `McpManager` 采用多线程并行并发发起子进程初始化；
   - 每一个外部进程配备独立守护线程持续排空 Stderr；
@@ -486,6 +486,6 @@ $$S_{\text{task}} = \left( S_{\text{det}} \times 0.60 \right) + \left( \frac{S_{
 
 ## 7. 评估总结与版本演进基准
 
-Super-Harnes 评估手册为 Coding Agent 从实验室原型走向工业级生产环境奠定了科学、严谨、量化的度量标尺。
+Super-Harness 评估手册为 Coding Agent 从实验室原型走向工业级生产环境奠定了科学、严谨、量化的度量标尺。
 
-通过将 **七大核心维度量化考核**、**60 道真实工程场景 Golden Set**、**确定性与语义多层评分** 以及 **五大典型失效模式排查 SOP** 深度固化在工程研发与 CI/CD 流程中，Super-Harnes 持续确保每一个版本的迭代均具备最高的工程可用性、严苛的安全防线与极致的 Token 经济性！
+通过将 **七大核心维度量化考核**、**60 道真实工程场景 Golden Set**、**确定性与语义多层评分** 以及 **五大典型失效模式排查 SOP** 深度固化在工程研发与 CI/CD 流程中，Super-Harness 持续确保每一个版本的迭代均具备最高的工程可用性、严苛的安全防线与极致的 Token 经济性！

@@ -46,10 +46,10 @@ class WorkspaceContext:
         # 2. 降级为当前终端物理工作目录 (若处于打包内置目录则重定向至用户工程区)
         p = Path.cwd().resolve()
         if p.name.lower() in ("super-server", "bin", "resources", "_internal", "workspace"):
-            user_proj = Path.home() / "super-harnes"
+            user_proj = Path.home() / "super-harness"
             if user_proj.exists():
                 return user_proj
-            user_scratch = Path.home() / ".super-harnes" / "scratchpad"
+            user_scratch = Path.home() / ".super-harness" / "scratchpad"
             user_scratch.mkdir(parents=True, exist_ok=True)
             return user_scratch
         return p

@@ -236,22 +236,22 @@ class TestSpoolingAndOutputOptimization(unittest.TestCase):
 
         self.assertGreater(green_quota, yellow_quota)
         self.assertGreater(yellow_quota, red_quota)
-        self.assertEqual(green_quota, 20000)
-        self.assertEqual(yellow_quota, 7000)
-        self.assertEqual(red_quota, 2500)
+        self.assertEqual(green_quota, 40000)
+        self.assertEqual(yellow_quota, 15000)
+        self.assertEqual(red_quota, 5000)
 
     def test_agent_protect_tool_result_watermark_linkage(self):
         """验证 ReActAgent._protect_tool_result 动态感知红区水位紧缩"""
-        agent = ReActAgent(model="mock")
+        agent = ReActAgent(model="mock", api_key="sk-mock-key")
         huge_text = "log message normal status\n" * 500  # 约 13000 字符
 
-        # 绿区水位 (20000 字符)：13000 字符充盈放行
+        # 绿区水位 (40000 字符)：13000 字符充盈放行
         green_res = agent._protect_tool_result(huge_text, zone="GREEN")
         self.assertEqual(green_res, huge_text)
 
-        # 红区水位 (2500 字符)：自动强力压缩并落盘
+        # 红区水位 (5000 字符)：自动强力压缩并落盘
         red_res = agent._protect_tool_result(huge_text, zone="RED")
-        self.assertLessEqual(len(red_res), 2500)
+        self.assertLessEqual(len(red_res), 5000)
         self.assertIn("系统提示: 完整原始输出", red_res)
 
 

@@ -23,14 +23,14 @@ if not MCP_CONFIG_PATH.exists():
 
 # 历史会话归档目录
 # 历史会话归档目录 (全环境统一使用用户中央数据目录，严格杜绝污染本地源码仓库)
-HISTORY_DIR = Path.home() / ".super-harnes" / "history"
+HISTORY_DIR = Path.home() / ".super-harness" / "history"
 HISTORY_DIR.mkdir(parents=True, exist_ok=True)
 # Agent 运行与预算配置
 AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "0"))  # 0 或 <=0 代表不限步数自主排查
-AGENT_TOTAL_BUDGET = int(os.getenv("AGENT_TOTAL_BUDGET", "200000"))  # 默认 200k 基线预算
+AGENT_TOTAL_BUDGET = int(os.getenv("AGENT_TOTAL_BUDGET", "200000"))  # 最多 200k 上下文预算
 AGENT_BASE_BUDGET = int(os.getenv("AGENT_BASE_BUDGET", str(AGENT_TOTAL_BUDGET)))
-AGENT_MAX_EXPAND_BUDGET = int(os.getenv("AGENT_MAX_EXPAND_BUDGET", "500000"))  # 弹性扩容最高上限 500k
-AGENT_AUTO_EXPAND = os.getenv("AGENT_AUTO_EXPAND", "true").lower() in ("true", "1", "yes")
+AGENT_MAX_EXPAND_BUDGET = int(os.getenv("AGENT_MAX_EXPAND_BUDGET", "200000"))  # 固定上限 200k，关闭弹性扩容
+AGENT_AUTO_EXPAND = os.getenv("AGENT_AUTO_EXPAND", "false").lower() in ("true", "1", "yes")  # 默认无弹性
 
 # 安全审批策略模式: 'auto' (类似 Claude AUTO 免打扰全自动执行，非黑名单高危命令均自动放行) / 'ask' (每次敏感命令交互确认)
 APPROVAL_MODE = os.getenv("APPROVAL_MODE", os.getenv("SUPER_APPROVAL_MODE", "auto")).strip().lower()

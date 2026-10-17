@@ -159,7 +159,7 @@ class TestMcpIntegration(unittest.TestCase):
         self.assertIn("完整原始输出已存至:", clamped)
 
     def test_spool_file_rotation(self):
-        """验证 .super-harnes/tmp 目录在文件过多时自动执行滚动淘汰，保证磁盘空间有界"""
+        """验证 .super-harness/tmp 目录在文件过多时自动执行滚动淘汰，保证磁盘空间有界"""
         TMP_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         # 创建 105 个模拟旧日志文件
         test_files = []

@@ -160,7 +160,7 @@ def main():
                 f"[bold yellow]⚠️ 未检测到有效的大模型 API 密钥[/bold yellow]\n\n"
                 f"[white]super 支持以下两种配置方式（任选其一，推荐方式 1 与桌面端无缝同步）：[/white]\n"
                 f"  1. [bold cyan]桌面端一键配置[/bold cyan]：启动桌面端并在「设置」->「模型提供方」中填入 API Key 与接口地址\n"
-                f"     [dim]（配置将保存在本机用户目录 ~/.super-harnes/config/，绝不泄露到 Git 仓库）[/dim]\n"
+                f"     [dim]（配置将保存在本机用户目录 ~/.super-harness/config/，绝不泄露到 Git 仓库）[/dim]\n"
                 f"  2. [bold cyan]工作区配置[/bold cyan]：在当前项目根目录创建 [bold yellow].env[/bold yellow] 文件，填写：\n"
                 f"     [dim]LLM_API_KEY=your_key\n     LLM_BASE_URL=https://api.deepseek.com/v1\n     LLM_MODEL=deepseek-chat[/dim]",
                 title="[bold red]配置提示[/bold red]",

@@ -41,8 +41,6 @@ interface ChatMessageProps {
   userInputReq?: UserInputRequest | null;
   onSubmitUserInput?: (requestId: string, selectedOption: string, customInput: string) => void;
   onCancelUserInput?: (requestId: string) => void;
-  onApprovePlan?: (targetMode: "auto" | "edit_auto") => void;
-  onRefinePlan?: () => void;
 }
 
 // 格式化时间戳为 20:49 形式 (精确还原历史时间，杜绝无数据时默认为当前时间)
@@ -688,25 +686,10 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   userInputReq,
   onSubmitUserInput,
   onCancelUserInput,
-  onApprovePlan,
-  onRefinePlan
 }) => {
   const isPaused = Boolean(turn.is_paused || turn.assistant_response?.includes("【用户已手动暂停】"));
 
-  // 对标 Claude Code Plan 模式检测：当前轮次为 plan 模式或包含了完整的方案规划
-  const isPlanTurn = turn.permission_mode === "plan" || (
-    Boolean(turn.assistant_response) && (
-      turn.assistant_response!.includes("实施方案") ||
-      turn.assistant_response!.includes("施工方案") ||
-      turn.assistant_response!.includes("Plan 规划模式") ||
-      turn.assistant_response!.includes("Plan 模式")
-    ) && (
-      turn.assistant_response!.includes("分步实施计划") ||
-      turn.assistant_response!.includes("待修改或新建") ||
-      turn.assistant_response!.includes("影响范围与变动文件") ||
-      turn.assistant_response!.includes("方案目标")
-    )
-  );
+
   // 思考状态默认保持展开展示，每一行平铺流光动态，用户可自由折叠与展开 (若已暂停则默认收起)
   const [traceExpanded, setTraceExpanded] = useState<boolean>(() => {
     if (isPaused) return false;
@@ -770,7 +753,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 
   const steps: TrajectoryStep[] = (turn.steps && turn.steps.length > 0) ? turn.steps : [];
   if (steps.length === 0) {
-    if (turn.thought) {
+    if (turn.thought && turn.thought !== "正在深度思考与执行下一步排查...") {
       steps.push({
         id: "th_legacy",
         type: "assistant",
@@ -897,8 +880,8 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
         </div>
       )}
 
-      {/* 2. 思考过程与工具调用过程 (对标图二：去框化无卡片，流光溢彩动态呼吸，全中文展示，默认展开可自由折叠) */}
-      {(hasSteps || isLoading) && (
+      {/* 2. 思考过程与工具调用过程 (去框化无卡片，流光溢彩动态呼吸，默认展开可自由折叠) */}
+      {(hasSteps || (isLoading && !isPaused)) && (
         <div className="w-full max-w-full mr-auto pl-1 my-1">
           <div className="mb-1.5 flex items-center justify-between">
             <button
@@ -1023,17 +1006,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
       {(turn.assistant_response || (!turn.user_prompt && !hasSteps)) && (
         <div className="w-full max-w-full mr-auto group">
           <div className="w-full bg-white dark:bg-[#1a1c24] border border-gray-200/90 dark:border-gray-800 shadow-2xs rounded-2xl px-5 py-4 sm:px-6 sm:py-5 text-sm text-gray-800 dark:text-gray-200 leading-[1.75] select-text">
-            {/* 卡片顶部：品牌标识 */}
-            <div className="flex items-center justify-between pb-2.5 mb-3 border-b border-gray-100 dark:border-gray-800/80 text-xs text-gray-500 select-none">
-              <div className="flex items-center gap-2 font-medium text-gray-700 dark:text-gray-300">
-                <span className="font-bold text-gray-900 dark:text-white text-[13.5px]">super</span>
-                {!hasSteps && elapsedStr && (
-                  <span className="text-[11px] font-mono text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-[#20232e] px-2 py-0.5 rounded-full border border-gray-100 dark:border-gray-800">
-                    用时 {elapsedStr}
-                  </span>
-                )}
-              </div>
-            </div>
+
 
             {/* 核心 Markdown 输出 (表格、流程图、代码块、层级标题，若为异常信息则醒目警示) */}
             {turn.assistant_response ? (
@@ -1065,70 +1038,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
               <div className="text-xs text-gray-400 italic">正在组织最终答复...</div>
             ) : null}
 
-            {/* 对标 Claude Code Plan 模式：施工方案生成完毕后的一键审批与无缝执行卡片 */}
-            {isPlanTurn && Boolean(turn.assistant_response) && (
-              <div className="mt-4 p-4 rounded-xl border border-amber-200/90 dark:border-amber-900/50 bg-gradient-to-r from-amber-50/80 via-orange-50/50 to-amber-50/80 dark:from-[#211d16] dark:via-[#261f18] dark:to-[#211d16] shadow-xs select-none">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <Compass size={16} className="text-amber-500 shrink-0" />
-                    <span className="font-bold text-xs text-amber-900 dark:text-amber-200">
-                      施工方案已就绪 (Plan 模式)
-                    </span>
-                  </div>
-                  {isLatestTurn && !isLoading ? (
-                    <span className="text-[10px] font-medium text-amber-800 dark:text-amber-300 bg-amber-100/90 dark:bg-amber-950/70 px-2.5 py-0.5 rounded-full border border-amber-300/80 dark:border-amber-800/60 animate-pulse">
-                      待审批确认
-                    </span>
-                  ) : (
-                    <span className="text-[10px] font-medium text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-900/60 flex items-center gap-1">
-                      <Check size={11} />
-                      <span>方案已审阅</span>
-                    </span>
-                  )}
-                </div>
 
-                <p className="text-xs text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
-                  {isLatestTurn && !isLoading
-                    ? "方案规划已完成。如认可上方规划，点击下方按钮将自动切换模式并立即开始分步落地执行："
-                    : "上方施工方案已制定完成，后续轮次已推进实施。如需重新执行或微调方案，也可点击下方重新触发。"}
-                </p>
-
-                {isLatestTurn && !isLoading ? (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => onApprovePlan?.("auto")}
-                      className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium transition cursor-pointer shadow-xs flex items-center gap-1.5"
-                      title="自动切换至 Auto 模式并立即开始执行"
-                    >
-                      <Zap size={13} className="text-amber-300" />
-                      <span>批准并以 Auto 模式执行</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onApprovePlan?.("edit_auto")}
-                      className="px-3 py-1.5 bg-purple-50 hover:bg-purple-100 dark:bg-purple-950/40 dark:hover:bg-purple-900/50 text-purple-700 dark:text-purple-300 border border-purple-200/80 dark:border-purple-800/60 rounded-lg text-xs font-medium transition cursor-pointer flex items-center gap-1.5"
-                      title="自动切换至 Edit automatically 模式执行"
-                    >
-                      <FileEdit size={13} />
-                      <span>以自动编辑执行 (Edit 模式)</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onRefinePlan?.()}
-                      className="px-3 py-1.5 bg-white hover:bg-gray-50 dark:bg-[#1a1d27] dark:hover:bg-[#252836] text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 rounded-lg text-xs font-medium transition cursor-pointer flex items-center gap-1.5"
-                      title="在输入框中补充细节或调整要求"
-                    >
-                      <span>💬 提出修改意见</span>
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2 pt-1 text-[11px] text-gray-500 dark:text-gray-400 font-mono">
-                    <span>💡 提示: 您可在底部工具栏自由切换至 Auto、Edit 或 Plan 模式。</span>
-                  </div>
-                )}
-              </div>
-            )}
 
             {/* 卡片底栏：时间戳 + 复制全文 + 点赞点踩 (对标图三) */}
             {turn.assistant_response && (

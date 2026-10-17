@@ -71,11 +71,13 @@ class SkillManager:
         if ws and ws.exists() and ws.resolve() != agent_source_root.resolve():
             candidates.append((ws / ".skills", "project"))
             candidates.append((ws / ".agents" / "skills", "project"))
+            candidates.append((ws / ".super-harness" / "skills", "project"))
             candidates.append((ws / ".super-harnes" / "skills", "project"))
 
         # 3. 用户全局宿主机目录 (跨 Agent 共享技能库)
         home = Path.home()
         candidates.append((home / ".agents" / "skills", "user"))
+        candidates.append((home / ".super-harness" / "skills", "user"))
         candidates.append((home / ".super-harnes" / "skills", "user"))
         candidates.append((home / ".codex" / "skills", "codex"))
 

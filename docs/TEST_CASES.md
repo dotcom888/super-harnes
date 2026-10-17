@@ -1,10 +1,10 @@
-# Super-Harnes 智能体自动化与全场景测试用例规范全景手册
+# Super-Harness 智能体自动化与全场景测试用例规范全景手册
 
 > **文档版本**: v2.5.0  
 > **文档密级**: 核心工程技术资产 / 公开开源技术规范  
 > **发布日期**: 2026-09-28  
 > **面向对象**: Agent 核心研发架构师、QA 自动化测试工程师、评测算法工程师与开源贡献者  
-> **被测系统**: **Super-Harnes** 工业级自主代码编程智能体 (Autonomous Coding Agent)  
+> **被测系统**: **Super-Harness** 工业级自主代码编程智能体 (Autonomous Coding Agent)  
 > **测试通过基线**: 全量 145 项核心自动化单元与集成回归测试通过 (100% Pass Rate)
 
 ---
@@ -59,7 +59,7 @@
 ## 1. 测试架构与测试全景
 
 ### 1.1 测试设计原则与分层模型
-针对自主代码编程智能体（Coding Agent）的高复杂度与非确定性决策流，Super-Harnes 建立了**纵深防御测试模型（Defense-in-Depth Testing Matrix）**，将测试体系划分为四个确定性梯队：
+针对自主代码编程智能体（Coding Agent）的高复杂度与非确定性决策流，Super-Harness 建立了**纵深防御测试模型（Defense-in-Depth Testing Matrix）**，将测试体系划分为四个确定性梯队：
 
 ```
   +--------------------------------------------------------------+
@@ -642,7 +642,7 @@
 - **测试标识**: `TC-CMD-002`
 - **测试输入**: `/remember 必须使用严格类型标注与 Google 风格 Docstring`。
 - **预期结果**:
-  1. 写入 `~/.super-harnes/global_memory.json`；
+  1. 写入 `~/.super-harness/global_memory.json`；
   2. 新启动的项目与会话中，System Prompt 自动包含该全局注记。
 - **对应自动化测试**: `tests/test_session.py::TestGlobalUserMemory.test_cli_global_memory_commands`
 
@@ -885,7 +885,7 @@ python -m unittest tests/test_cli_ui.py
 在 `.github/workflows/ci.yml` 中配置了工业级持续集成门禁，确保每一项提交均满足质量基线：
 
 ```yaml
-name: Super-Harnes Regression Tests
+name: Super-Harness Regression Tests
 
 on:
   push:
@@ -920,4 +920,4 @@ jobs:
 
 ---
 
-> **质量全景总结**: Super-Harnes 自动化测试体系从底层 AST 语法树自检、中层 MCP 零端口分布式协议交互到顶层 200k~500k 弹性滑窗，构建了坚不可摧的立体化质量防护网。145 项核心测试 100% 稳定通过，奠定了工业级 Autonomous Coding Agent 的工程交付基石！
+> **质量全景总结**: Super-Harness 自动化测试体系从底层 AST 语法树自检、中层 MCP 零端口分布式协议交互到顶层 200k~500k 弹性滑窗，构建了坚不可摧的立体化质量防护网。145 项核心测试 100% 稳定通过，奠定了工业级 Autonomous Coding Agent 的工程交付基石！

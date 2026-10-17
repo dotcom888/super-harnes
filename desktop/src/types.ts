@@ -97,18 +97,7 @@ export interface ModelProvider {
   status: 'connected' | 'unconfigured';
 }
 
-export interface TelemetryMetrics {
-  turns: number;
-  steps: number;
-  total_time: string;
-  tool_time: string;
-  tokens_per_sec: number;
-  cache_hit_rate: number;
-  prompt_tokens: number;
-  completion_tokens: number;
-  total_tokens: number;
-  ttft?: string;
-}
+
 
 export interface SystemStatus {
   ready: boolean;

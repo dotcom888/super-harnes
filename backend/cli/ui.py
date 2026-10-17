@@ -95,8 +95,8 @@ class SlashCommandCompleter(Completer):
         ("/profile", "查看用户全局编码规范画像与开发习惯", "开发画像"),
         ("/remember", "永久记入一条跨工程生效的全局编程偏好", "开发画像"),
         ("/forget", "从全局记忆中移除指定的规则偏好", "开发画像"),
-        ("exit", "安全保存并退出 Super-Harnes 智能体终端", "系统退出"),
-        ("quit", "安全保存并退出 Super-Harnes 智能体终端", "系统退出"),
+        ("exit", "安全保存并退出 Super-Harness 智能体终端", "系统退出"),
+        ("quit", "安全保存并退出 Super-Harness 智能体终端", "系统退出"),
     ]
 
 
@@ -126,7 +126,7 @@ class TerminalUI:
     def __init__(self):
         self.console = Console(theme=TERMINAL_THEME, force_terminal=True, highlight=False)
         self.is_active = False
-        self._history_file = Path.home() / ".super-harnes" / "cli_history"
+        self._history_file = Path.home() / ".super-harness" / "cli_history"
         self._prompt_session = None
         self._init_history_dir()
 
@@ -200,7 +200,7 @@ class TerminalUI:
     ):
         """呈现极简且具工业美感的启动卡片"""
         header_text = Text()
-        header_text.append(" ● SUPER-HARNES ", style=f"bold {ClaudeTheme.COLOR_SUCCESS}")
+        header_text.append(" ● SUPER-HARNESS ", style=f"bold {ClaudeTheme.COLOR_SUCCESS}")
         header_text.append("本地自主代码智能体 (Local Coding Agent)", style="dim #9ca3af")
 
         meta_table = Table.grid(padding=(0, 1))
@@ -601,7 +601,7 @@ class TerminalUI:
             ("/remember <偏好>", "开发画像", "永久记入一条跨项目通用的编码规则或开发习惯"),
             ("/forget <关键字>", "开发画像", "从全局共享记忆中移除匹配的规则偏好"),
             ("/help", "系统操作", "显示此控制指令帮助表格手册"),
-            ("exit, quit", "系统操作", "安全保存并退出 Super-Harnes 智能体终端")
+            ("exit, quit", "系统操作", "安全保存并退出 Super-Harness 智能体终端")
         ]
         for cmd, cat, desc in commands:
             table.add_row(cmd, cat, desc)
@@ -648,7 +648,7 @@ class TerminalUI:
                 ("/forget", "移除偏好", "开发画像", "从全局记忆中移除指定的规则偏好"),
                 ("/skills", "技能系统", "技能扩展", "查看已挂载的所有领域专家技能 (Skills / SOPs)"),
                 ("/help --all", "打印手册", "系统操作", "在终端输出全部控制指令的完整表格手册"),
-                ("exit", "退出程序", "系统操作", "安全保存并退出 Super-Harnes 智能体终端"),
+                ("exit", "退出程序", "系统操作", "安全保存并退出 Super-Harness 智能体终端"),
             ]
             selected_idx = 0
             page_size = 9
@@ -783,8 +783,8 @@ class TerminalUI:
             pass
 
         tier_info = cm.budget.get_tier_info() if hasattr(cm.budget, "get_tier_info") else {}
-        tier_badge = f" [bold yellow]({tier_info['tier_name']})[/]" if tier_info.get("is_expanded") else " [dim](基线 200k)[/dim]"
-        max_burst = f" [dim](弹性上限: {tier_info.get('max_expand_budget', 500000):,})[/dim]" if tier_info.get("auto_expand") else ""
+        tier_badge = f" [bold yellow]({tier_info['tier_name']})[/]" if tier_info.get("is_expanded") else " [dim](固定 200k)[/dim]"
+        max_burst = f" [dim](弹性上限: {tier_info.get('max_expand_budget', 200000):,})[/dim]" if tier_info.get("auto_expand") else ""
         table.add_row(
             "Token 预算",
             f"当前: [white]{cm.budget.total_budget:,}[/]{tier_badge}{max_burst} | 输出预留: [white]{cm.budget.output_reserve:,}[/] | "
@@ -910,7 +910,7 @@ class TerminalUI:
         支持上下箭头翻阅历史、Tab 自动补全、底栏快捷键提示，
         在 Windows 非屏幕缓冲模式下平滑降级为 input()。
         """
-        prompt_str = f"super-harnes [{project_name}:{session_id}] › "
+        prompt_str = f"super-harness [{project_name}:{session_id}] › "
 
         # 尝试使用 prompt_toolkit
         if self._prompt_session is not None:
