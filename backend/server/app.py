@@ -83,7 +83,7 @@ class PromptRequest(BaseModel):
     project: Optional[str] = None
 
 class SessionActionRequest(BaseModel):
-    session_id: str
+    session_id: Optional[str] = None
     project: Optional[str] = None
 
 class WorkspaceSwitchRequest(BaseModel):
@@ -246,7 +246,7 @@ def scan_project_sessions(proj_dir: Path) -> List[Dict[str, Any]]:
         display_title = custom_titles.get(sid) or current_goal or sid
         sessions.append({
             "session_id": sid,
-            "turn_count": max(turn_count, 1),
+            "turn_count": turn_count,
             "current_goal": display_title,
             "time_ago": time_ago,
             "is_active": sid == "default",
@@ -946,6 +946,8 @@ def create_session(req: Optional[SessionActionRequest] = None):
 @app.delete("/api/sessions/delete")
 def delete_session(req: SessionActionRequest):
     """删除会话 (物理清除磁盘文件、同步剔除内存缓存与图钉状态)"""
+    if not req.session_id:
+        raise HTTPException(status_code=400, detail="session_id 不能为空")
     proj_name = req.project or default_workspace.root.name
     target_file = HISTORY_ROOT / proj_name / f"{req.session_id}.jsonl"
     if target_file.exists():

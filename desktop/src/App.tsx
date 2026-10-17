@@ -421,10 +421,10 @@ export const App: React.FC = () => {
           setProjectName("_general");
           setSessions(recents);
           const validSession = recents.find((s) => s.session_id === targetSession);
-          const sid = validSession ? validSession.session_id : (recents.length > 0 ? recents[0].session_id : "default");
+          const sid = validSession ? validSession.session_id : (targetSession && !shouldLoadSession ? targetSession : (recents.length > 0 ? recents[0].session_id : "default"));
           setActiveSessionId(sid);
 
-          if (!validSession && targetSession) {
+          if (!validSession && targetSession && shouldLoadSession) {
             const delKey = getSessionKey("_general", targetSession);
             setSessionTurnsMap((prev) => {
               if (!prev[delKey]) return prev;
@@ -436,7 +436,7 @@ export const App: React.FC = () => {
 
           if (shouldLoadSession && recents.length > 0) {
             loadSessionTurns(sid, "_general");
-          } else if (recents.length === 0) {
+          } else if (recents.length === 0 && !targetSession) {
             setHasStarted(false);
           }
           return;
@@ -501,10 +501,10 @@ export const App: React.FC = () => {
         setSessions(projSessions);
 
         const validSession = projSessions.find((s) => s.session_id === targetSession);
-        const sid = validSession ? validSession.session_id : (projSessions.length > 0 ? projSessions[0].session_id : "default");
+        const sid = validSession ? validSession.session_id : (targetSession && !shouldLoadSession ? targetSession : (projSessions.length > 0 ? projSessions[0].session_id : "default"));
         setActiveSessionId(sid);
 
-        if (!validSession && targetSession) {
+        if (!validSession && targetSession && shouldLoadSession) {
           const delKey = getSessionKey(matchedProj ? matchedProj.name : currentProj, targetSession);
           setSessionTurnsMap((prev) => {
             if (!prev[delKey]) return prev;
@@ -1286,11 +1286,10 @@ export const App: React.FC = () => {
       const currentProjObj = projects.find((p) => p.name === targetProj);
       const sessionList = currentProjObj ? currentProjObj.sessions : sessions;
       const targetSessionMeta = sessionList?.find((s) => s.session_id === sid);
-      if (targetSessionMeta && (targetSessionMeta.turn_count > 0 || targetSessionMeta.current_goal)) {
+      if (targetSessionMeta && targetSessionMeta.turn_count > 0) {
         setHasStarted(true);
       } else {
-        // 点击侧边栏已有会话时，绝不提前置为 false，先保持为 true 显示过渡态，彻底杜绝闪烁新建会话页面
-        setHasStarted(true);
+        setHasStarted(false);
       }
     }
 
@@ -1302,26 +1301,30 @@ export const App: React.FC = () => {
     saveCurrentSessionScroll();
     isRestoringScrollRef.current = true;
 
+    const generatedSid = `session_${Date.now()}`;
+    const newKey = getSessionKey("_general", generatedSid);
+
+    // 立即就绪新建会话状态，无缝展示空态，彻底消除等待响应时的闪烁
+    setProjectName("_general");
+    setActiveSessionId(generatedSid);
+    setHasStarted(false);
+    setSessionTurnsMap((prev) => ({ ...prev, [newKey]: [] }));
+    setSessionActionsMap((prev) => ({ ...prev, [newKey]: [] }));
+    setSessionThoughtMap((prev) => ({ ...prev, [newKey]: "" }));
+    setSessionTitle("新会话");
+
     fetch("http://127.0.0.1:8765/api/sessions/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project: "_general" })
+      body: JSON.stringify({ project: "_general", session_id: generatedSid })
     })
       .then((res) => res.json())
       .then((data) => {
-        const newSid = data.session_id || ("session_" + Date.now());
-        const newKey = getSessionKey("_general", newSid);
-        setProjectName("_general");
-        setActiveSessionId(newSid);
-        setHasStarted(false);
-        setSessionTurnsMap((prev) => ({ ...prev, [newKey]: [] }));
-        setSessionActionsMap((prev) => ({ ...prev, [newKey]: [] }));
-        setSessionThoughtMap((prev) => ({ ...prev, [newKey]: "" }));
-        setSessionTitle("新会话");
+        const newSid = data.session_id || generatedSid;
         fetchWorkspaces("_general", newSid, false);
       })
-      .catch(() => {
-        setHasStarted(false);
+      .catch((err) => {
+        console.warn("后台注册独立新会话:", err);
       });
   };
 
@@ -1345,25 +1348,29 @@ export const App: React.FC = () => {
     isRestoringScrollRef.current = true;
 
     const targetP = (projectName && projectName !== "_general" && projects.some((p) => p.name === projectName)) ? projectName : "_general";
+    const generatedSid = `session_${Date.now()}`;
+    const newKey = getSessionKey(targetP, generatedSid);
+
+    // 立即就绪新建会话状态，无缝展示空态，彻底消除等待响应时的闪烁
+    setActiveSessionId(generatedSid);
+    setHasStarted(false);
+    setSessionTurnsMap((prev) => ({ ...prev, [newKey]: [] }));
+    setSessionActionsMap((prev) => ({ ...prev, [newKey]: [] }));
+    setSessionThoughtMap((prev) => ({ ...prev, [newKey]: "" }));
+    setSessionTitle("新会话");
+
     fetch("http://127.0.0.1:8765/api/sessions/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project: targetP })
+      body: JSON.stringify({ project: targetP, session_id: generatedSid })
     })
       .then((res) => res.json())
       .then((data) => {
-        const newSid = data.session_id || `session_${Date.now()}`;
-        const newKey = getSessionKey(targetP, newSid);
-        setActiveSessionId(newSid);
-        setHasStarted(false);
-        setSessionTurnsMap((prev) => ({ ...prev, [newKey]: [] }));
-        setSessionActionsMap((prev) => ({ ...prev, [newKey]: [] }));
-        setSessionThoughtMap((prev) => ({ ...prev, [newKey]: "" }));
-        setSessionTitle("新会话");
+        const newSid = data.session_id || generatedSid;
         fetchWorkspaces(targetP, newSid, false);
       })
-      .catch(() => {
-        setHasStarted(false);
+      .catch((err) => {
+        console.warn("后台注册新会话:", err);
       });
   };
 
